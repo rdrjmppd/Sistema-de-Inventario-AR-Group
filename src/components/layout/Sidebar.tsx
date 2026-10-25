@@ -16,6 +16,7 @@ import {
   Webhook,
   Settings,
   X,
+  History,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -146,6 +147,13 @@ const NAV_ITEMS: NavItem[] = [
     group: 'INTELIGENCIA & GOBIERNO',
     icon: Settings,
     allowedRoles: [UserRole.SUPERADMIN],
+  },
+  {
+    id: 'AUDIT_HISTORY',
+    defaultLabel: 'Histórico & Sesiones',
+    group: 'INTELIGENCIA & GOBIERNO',
+    icon: History,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE],
   },
 ];
 

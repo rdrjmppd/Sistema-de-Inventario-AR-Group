@@ -669,10 +669,10 @@ export function buildEnterpriseExcelStructuredPayload(
 // OPENXML EXECUTIVE CELL STYLING ENGINE (xlsx-js-style)
 // ============================================================================
 
-type BorderWeight = 'thin' | 'medium' | 'thick' | 'double';
+type BorderWeight = 'thin' | 'medium' | 'thick' | 'dashed' | 'dotted';
 
 function makeBorderSide(style: BorderWeight, rgb: string) {
-  return { style, color: { rgb } };
+  return { style: style as XLSXTypes.BorderType, color: { rgb } };
 }
 
 function makeFullBorder(
@@ -695,7 +695,7 @@ function makeFullBorder(
 
 function makeUniformBorder(
   style: BorderWeight = 'thin',
-  rgb = 'CBD5E1'
+  rgb = '94A3B8'
 ): NonNullable<XLSXTypes.CellStyle['border']> {
   return {
     top: makeBorderSide(style, rgb),
@@ -762,9 +762,9 @@ function styleCorporateLetterheadBlock(
     });
   }
 
-  // Rows 1..4: Corporate Fiscal Metadata Grid (Cols 0..5, with Col 5 merged to spanCols if spanCols > 5 && spanCols <= 9)
-  const mergeLastColToSpan = spanCols > 5 && spanCols <= 9;
-  const effectiveRightCol = mergeLastColToSpan ? spanCols : 5;
+  // Rows 1..4: Corporate Fiscal Metadata Grid (Cols 0..5, with Col 5 merged to spanCols if spanCols > 5)
+  const mergeLastColToSpan = spanCols > 5;
+  const effectiveRightCol = spanCols;
 
   for (let r = 1; r <= 4; r++) {
     if (mergeLastColToSpan) {
@@ -811,13 +811,13 @@ function styleCorporateLetterheadBlock(
         numFmt: isRateCell ? '"Bs. "#,##0.00' : undefined,
         border: makeFullBorder(
           r === 1 ? 'medium' : 'thin',
-          r === 1 ? '10B981' : '94A3B8',
+          r === 1 ? '10B981' : '64748B',
           isBottomRow ? 'medium' : 'thin',
-          isBottomRow ? '0F172A' : '94A3B8',
+          isBottomRow ? '0F172A' : '64748B',
           c === 0 ? 'medium' : 'thin',
-          c === 0 ? '0F172A' : '94A3B8',
+          c === 0 ? '0F172A' : '64748B',
           c === effectiveRightCol ? 'medium' : 'thin',
-          c === effectiveRightCol ? '0F172A' : '94A3B8'
+          c === effectiveRightCol ? '0F172A' : '64748B'
         ),
       });
     }
@@ -1126,8 +1126,8 @@ function styleMatrizWorksheet(
   const merges: XLSXTypes.Range[] = [];
   const totalCols = payload.matrizColumnWidths.length;
 
-  // 1. Style Corporate Letterhead (Rows 0..4) across columns 0..5 (with Row 0 banner merged 0..9)
-  styleCorporateLetterheadBlock(ws, 5, merges);
+  // 1. Style Corporate Letterhead (Rows 0..4) across all table columns (A..lastCol)
+  styleCorporateLetterheadBlock(ws, totalCols - 1, merges);
 
   // 2. Style Row 5 (Excel Row 6: TÍTULO DEL REPORTE strip)
   for (let c = 0; c <= 5; c++) {

@@ -44,6 +44,13 @@ interface FinanceContextType {
     inventoryValuationUsd: number,
     closedBy: string
   ) => MonthlyClosureReport;
+  resetFinanceState: () => void;
+  restoreFinanceState: (data: {
+    suppliers?: Supplier[];
+    invoices?: PurchaseInvoice[];
+    payments?: AccountsPayablePayment[];
+    closures?: MonthlyClosureReport[];
+  }) => void;
 }
 
 const INITIAL_SUPPLIERS: Supplier[] = [
@@ -202,7 +209,7 @@ const STORAGE_KEY_INVOICES = 'chrystal_erp_invoices_v1';
 const STORAGE_KEY_SUPPLIERS = 'chrystal_erp_suppliers_v1';
 const STORAGE_KEY_CLOSURES = 'chrystal_erp_closures_v1';
 
-const FinanceContext = createContext<FinanceContextType | undefined>(undefined);
+export const FinanceContext = createContext<FinanceContextType | undefined>(undefined);
 
 export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Initialize with verified live BCV rates (886.23 Spot / 887.30 Portal BCV) and immediately sync live on mount
@@ -507,6 +514,55 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return report;
   };
 
+  const resetFinanceState = () => {
+    setSuppliers([]);
+    setInvoices([]);
+    setPayments([]);
+    setClosures([]);
+    try {
+      localStorage.setItem(STORAGE_KEY_SUPPLIERS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_INVOICES, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_CLOSURES, JSON.stringify([]));
+    } catch {
+      // ignore
+    }
+  };
+
+  const restoreFinanceState = (data: {
+    suppliers?: Supplier[];
+    invoices?: PurchaseInvoice[];
+    payments?: AccountsPayablePayment[];
+    closures?: MonthlyClosureReport[];
+  }) => {
+    if (data.suppliers) {
+      setSuppliers(data.suppliers);
+      try {
+        localStorage.setItem(STORAGE_KEY_SUPPLIERS, JSON.stringify(data.suppliers));
+      } catch {
+        // ignore
+      }
+    }
+    if (data.invoices) {
+      setInvoices(data.invoices);
+      try {
+        localStorage.setItem(STORAGE_KEY_INVOICES, JSON.stringify(data.invoices));
+      } catch {
+        // ignore
+      }
+    }
+    if (data.payments) {
+      setPayments(data.payments);
+    }
+    if (data.closures) {
+      setClosures(data.closures);
+      try {
+        localStorage.setItem(STORAGE_KEY_CLOSURES, JSON.stringify(data.closures));
+      } catch {
+        // ignore
+      }
+    }
+  };
+
   return (
     <FinanceContext.Provider
       value={{
@@ -525,6 +581,8 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         registerInvoicePayment,
         closures,
         generateMonthlyClosure,
+        resetFinanceState,
+        restoreFinanceState,
       }}
     >
       {children}

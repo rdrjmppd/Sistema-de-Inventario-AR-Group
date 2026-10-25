@@ -1,5 +1,6 @@
 import { LocationNode, ManualRiskMode, Product, RotationHorizonDays } from '../types';
 import { toDecimal, round2 } from './decimal';
+import { getCaracasNow } from './bcv';
 
 export const ROTATION_HORIZONS_DAYS: RotationHorizonDays[] = [7, 15, 30, 45, 60];
 
@@ -205,10 +206,15 @@ export interface ReorderAlertItem {
 export function evaluateReorderAlerts(
   products: Product[],
   locations: LocationNode[],
-  activeBcvRate: number,
-  timestampVet: string
+  activeBcvRate: number = 886.23,
+  timestampVet?: string
 ): ReorderAlertItem[] {
   const alerts: ReorderAlertItem[] = [];
+  const safeRate =
+    typeof activeBcvRate === 'number' && !isNaN(activeBcvRate) && activeBcvRate > 0
+      ? activeBcvRate
+      : 886.23;
+  const safeTimestamp = timestampVet || getCaracasNow().isoTimestamp;
 
   for (const product of products) {
     for (const loc of locations) {
@@ -255,7 +261,7 @@ export function evaluateReorderAlerts(
           toDecimal(suggestedOrderQty).times(product.costUsd)
         );
         const estimatedOrderCostVes = round2(
-          toDecimal(estimatedOrderCostUsd).times(activeBcvRate)
+          toDecimal(estimatedOrderCostUsd).times(safeRate)
         );
 
         const criticalThreshold = round2(toDecimal(reorderPoint).times(0.5));
@@ -292,7 +298,7 @@ export function evaluateReorderAlerts(
           severity,
           riskSource: isManualForced ? 'MANUAL_FORZADO' : 'ROTACION_SISTEMA',
           manualRiskMode: manualMode,
-          detectedAtVet: timestampVet,
+          detectedAtVet: safeTimestamp,
         });
       }
     }

@@ -125,6 +125,7 @@ export interface BcvRateState {
   rateSourceLabel: string;
   valueDateLabel?: string;
   lastSyncVet?: string;
+  lastUpdatedIso?: string;
   providerSource?: string;
   latencyMs?: number;
   isLiveConnected?: boolean;
@@ -334,4 +335,85 @@ export type NavigationTab =
   | 'PURCHASE_ORDERS_CENTER'
   | 'MONTHLY_CLOSING'
   | 'POS_API_SYNC'
-  | 'SETTINGS_RBAC';
+  | 'SETTINGS_RBAC'
+  | 'AUDIT_HISTORY';
+
+export type AuditActionType =
+  | 'LOGIN'
+  | 'LOGOUT'
+  | 'CONFIG_CHANGE'
+  | 'MIN_STOCK_UPDATE'
+  | 'PRODUCT_CREATE'
+  | 'PRODUCT_UPDATE'
+  | 'LOCATION_CREATE'
+  | 'LOCATION_DELETE'
+  | 'STOCK_TRANSFER'
+  | 'PURCHASE_ORDER_CREATE'
+  | 'PURCHASE_ORDER_RECEIVE'
+  | 'BACKUP_EXPORT'
+  | 'BACKUP_RESTORE'
+  | 'PLATFORM_RESET';
+
+export interface AuditLogEntry {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userDisplayName: string;
+  userRole: UserRole;
+  action: AuditActionType;
+  entityType: string;
+  entityId?: string;
+  description: string;
+  details?: Record<string, unknown>;
+  ipAddress?: string;
+  timestampVet: string;
+}
+
+export interface UserSessionRecord {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userDisplayName: string;
+  userRole: UserRole;
+  loginAtVet: string;
+  logoutAtVet?: string;
+  durationMinutes?: number;
+  isActive: boolean;
+}
+
+export interface PlatformBackupPayload {
+  version: '2.0.0';
+  exportedAtVet: string;
+  exportedBy: string;
+  exportedByEmail: string;
+  companyProfile: CompanyFiscalProfile;
+  products: Product[];
+  locations: LocationNode[];
+  suppliers: Supplier[];
+  invoices: PurchaseInvoice[];
+  payments: AccountsPayablePayment[];
+  transfers: StockTransfer[];
+  purchaseOrders: SupplierPurchaseOrder[];
+  manualReceipts: PostPurchaseManualReceipt[];
+  salesEvents: SalesSyncEvent[];
+  closures: MonthlyClosureReport[];
+  auditLogs: AuditLogEntry[];
+  sessionHistory: UserSessionRecord[];
+}
+
+export interface EncryptedBackupEnvelope {
+  format: 'CHRYSTAL_ENCRYPTED_BACKUP_V1';
+  checksumSha256: string;
+  createdAtVet: string;
+  cipherText: string;
+  salt: string;
+  iv: string;
+  metadata: {
+    totalProducts: number;
+    totalLocations: number;
+    totalInvoices: number;
+    totalAuditLogs: number;
+    companyRif: string;
+    companyRazonSocial: string;
+  };
+}

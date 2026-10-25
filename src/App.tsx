@@ -28,6 +28,7 @@ import { PurchaseInvoices } from './components/finance/PurchaseInvoices';
 import { AccountsPayable } from './components/finance/AccountsPayable';
 import { MonthlyClosing } from './components/finance/MonthlyClosing';
 import { BusinessSettings } from './components/dashboard/BusinessSettings';
+import { AuditHistoryView } from './components/dashboard/AuditHistoryView';
 
 const LoginView: React.FC = () => {
   const { login } = useAuth();
@@ -148,6 +149,7 @@ const MainShell: React.FC = () => {
       {activeTab === 'POS_API_SYNC' && <SalesApiSimulator />}
       {activeTab === 'MONTHLY_CLOSING' && <MonthlyClosing />}
       {activeTab === 'SETTINGS_RBAC' && <BusinessSettings />}
+      {activeTab === 'AUDIT_HISTORY' && <AuditHistoryView />}
     </Layout>
   );
 };

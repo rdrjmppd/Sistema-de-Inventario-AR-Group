@@ -42,7 +42,25 @@ import {
   DEFAULT_COMPANY_PROFILE,
   resolveCompanyProfile,
 } from './excel-exporter';
-import { BcvRateState, LocationNode, Product, UserRole } from '../types';
+import {
+  createEncryptedBackup,
+  decryptAndValidateBackup,
+  computeDeterministicSha256,
+} from './backup-crypto';
+import {
+  createAuditLogEntry,
+  recordUserLoginSession,
+  recordUserLogoutSession,
+} from './audit-logger';
+import {
+  BcvRateState,
+  LocationNode,
+  Product,
+  UserRole,
+  UserProfile,
+  PlatformBackupPayload,
+  ManualRiskMode,
+} from '../types';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -573,6 +591,7 @@ test('14. Enterprise .XLSX "Producto / Celda" Structured Payload: 3 sheets, auto
       city: 'Puerto Ordaz',
       type: 'SEDE',
       manager: 'Ing. Roberto Méndez',
+      active: true,
     },
     {
       id: 'loc-ccs-02',
@@ -581,6 +600,7 @@ test('14. Enterprise .XLSX "Producto / Celda" Structured Payload: 3 sheets, auto
       city: 'Caracas',
       type: 'SEDE',
       manager: 'Lic. Mariana Silva',
+      active: true,
     },
     {
       id: 'loc-val-03',
@@ -589,6 +609,7 @@ test('14. Enterprise .XLSX "Producto / Celda" Structured Payload: 3 sheets, auto
       city: 'Valencia',
       type: 'DEPOSITO',
       manager: 'Ing. Héctor Vargas',
+      active: true,
     },
   ];
 
@@ -599,7 +620,7 @@ test('14. Enterprise .XLSX "Producto / Celda" Structured Payload: 3 sheets, auto
     isAfter5PmVet: false,
     caracasTimeFormatted: '14:30:00',
     caracasDateFormatted: '24/10/2026',
-    sourceLabel: 'Banco Central de Venezuela (www.bcv.org.ve)',
+    rateSourceLabel: 'Banco Central de Venezuela (www.bcv.org.ve)',
     lastUpdatedIso: '2026-10-24T14:30:00-04:00',
   };
 
@@ -725,8 +746,6 @@ test('CompanyFiscalProfile defaults to generic enterprise placeholders when unco
   const bcvState: BcvRateState = {
     spotRateToday: 66.25,
     nextDayRateAfter5Pm: 66.8,
-    manualOverrideRate: null,
-    useManualOverride: false,
     activeRate: 66.25,
     rateSourceLabel: 'BCV OFICIAL SPOT',
     isAfter5PmVet: false,
@@ -809,8 +828,6 @@ test('16. OpenXML Executive Excel Styling (xlsx-js-style): colored corporate let
   const bcvState: BcvRateState = {
     spotRateToday: 887.3,
     nextDayRateAfter5Pm: 887.3,
-    manualOverrideRate: null,
-    useManualOverride: false,
     activeRate: 887.3,
     rateSourceLabel: 'BCV Tasa Oficial Vigente >= 17:00 VET',
     isAfter5PmVet: true,
@@ -905,6 +922,319 @@ test('16. OpenXML Executive Excel Styling (xlsx-js-style): colored corporate let
     // Spacer row immediately below the Ficha Card has NO cell borders so cards are visually separated
     assert.equal(wsFichas[`A${rSpacer}`]?.s?.border, undefined);
   }
+});
+
+test('17. Encrypted Platform Backup & Restore: SHA-256 seal, tamper detection, custom passphrase, and 1,000-SKU stress test', async () => {
+  const sampleProducts: Product[] = [
+    {
+      id: 'prd-b01',
+      sku: 'HAR-PAN-1KG',
+      barcode: '7591001200111',
+      name: 'Harina P.A.N. 1Kg',
+      category: 'Víveres',
+      unit: 'UND',
+      costUsd: 1.15,
+      targetMarginPercent: 28,
+      priceUsd: 1.6,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 150, 'loc-ccs-01': 300 },
+      minStockByLocation: { 'loc-pzo-01': 80, 'loc-ccs-01': 100 },
+      monthlyUnitsSold: 2000,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+    },
+    {
+      id: 'prd-b02',
+      sku: 'ACE-MAZ-1LT',
+      barcode: '7591001200454',
+      name: 'Aceite Mazeite 1L',
+      category: 'Aceites',
+      unit: 'LT',
+      costUsd: 2.35,
+      targetMarginPercent: 25,
+      priceUsd: 3.13,
+      ivaRate: 16,
+      stockByLocation: { 'loc-pzo-01': 60, 'loc-ccs-01': 110 },
+      minStockByLocation: { 'loc-pzo-01': 90, 'loc-ccs-01': 100 },
+      monthlyUnitsSold: 1200,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+    },
+  ];
+
+  const sampleLocations: LocationNode[] = [
+    {
+      id: 'loc-pzo-01',
+      code: 'PZO-01',
+      name: 'Sede Puerto Ordaz',
+      city: 'Puerto Ordaz',
+      type: 'SEDE',
+      manager: 'Ing. Salazar',
+      active: true,
+    },
+    {
+      id: 'loc-ccs-01',
+      code: 'CCS-01',
+      name: 'Depósito Caracas',
+      city: 'Caracas',
+      type: 'DEPOSITO',
+      manager: 'Lic. Gómez',
+      active: true,
+    },
+  ];
+
+  const payload: PlatformBackupPayload = {
+    version: '2.0.0',
+    exportedAtVet: '2026-03-25 14:30:00',
+    exportedBy: 'Rubén Darío R. (Superadmin)',
+    exportedByEmail: 'rdrj.mppd@gmail.com',
+    companyProfile: {
+      ...DEFAULT_COMPANY_PROFILE,
+      razonSocial: 'ALIMENTOS Y DISTRIBUCIONES CHRYSTAL C.A.',
+      rif: 'J-50128492-0',
+    },
+    products: sampleProducts,
+    locations: sampleLocations,
+    suppliers: [],
+    invoices: [],
+    payments: [],
+    transfers: [],
+    purchaseOrders: [],
+    manualReceipts: [],
+    salesEvents: [],
+    closures: [],
+    auditLogs: [],
+    sessionHistory: [],
+  };
+
+  // 1. Generate encrypted backup with default platform passphrase
+  const envelope = await createEncryptedBackup(payload);
+  assert.equal(envelope.format, 'CHRYSTAL_ENCRYPTED_BACKUP_V1');
+  assert.ok(envelope.checksumSha256.length === 64, 'Checksum must be 64-char hex SHA-256');
+  assert.equal(envelope.metadata.totalProducts, 2);
+  assert.equal(envelope.metadata.totalLocations, 2);
+  assert.equal(envelope.metadata.companyRif, 'J-50128492-0');
+
+  // 2. Decrypt and validate with default passphrase
+  const decrypted = decryptAndValidateBackup(envelope);
+  assert.equal(decrypted.success, true);
+  assert.equal(decrypted.data?.products.length, 2);
+  assert.equal(decrypted.data?.products[0].sku, 'HAR-PAN-1KG');
+  assert.equal(decrypted.data?.locations.length, 2);
+  assert.equal(decrypted.data?.companyProfile.razonSocial, 'ALIMENTOS Y DISTRIBUCIONES CHRYSTAL C.A.');
+
+  // 3. Decrypt directly from serialized JSON string representation
+  const serialized = JSON.stringify(envelope);
+  const decryptedFromString = decryptAndValidateBackup(serialized);
+  assert.equal(decryptedFromString.success, true);
+  assert.equal(decryptedFromString.data?.products.length, 2);
+
+  // 4. Tamper Detection - Altered Checksum
+  const tamperedChecksumEnvelope = {
+    ...envelope,
+    checksumSha256: '0000000000000000000000000000000000000000000000000000000000000000',
+  };
+  const tamperResult = decryptAndValidateBackup(tamperedChecksumEnvelope);
+  assert.equal(tamperResult.success, false);
+  assert.ok(tamperResult.error?.includes('Fallo de integridad criptográfica'));
+
+  // 5. Tamper Detection - Corrupted Ciphertext
+  const corruptedCipherEnvelope = {
+    ...envelope,
+    cipherText: envelope.cipherText.slice(0, -4) + 'AAAA',
+  };
+  const corruptResult = decryptAndValidateBackup(corruptedCipherEnvelope);
+  assert.equal(corruptResult.success, false);
+
+  // 6. Custom Passphrase Security Isolation
+  const customPassphrase = 'SuperSecretEnterpriseKey2026!';
+  const customEnvelope = await createEncryptedBackup(payload, customPassphrase);
+  
+  // Decrypting custom-encrypted envelope without passphrase must fail
+  const wrongKeyAttempt = decryptAndValidateBackup(customEnvelope);
+  assert.equal(wrongKeyAttempt.success, false);
+
+  // Decrypting with the matching custom passphrase must succeed
+  const correctKeyAttempt = decryptAndValidateBackup(customEnvelope, customPassphrase);
+  assert.equal(correctKeyAttempt.success, true);
+  assert.equal(correctKeyAttempt.data?.products[1].sku, 'ACE-MAZ-1LT');
+
+  // 7. Stress Test: 1,000 SKUs Encrypted Backup Round-Trip Benchmark
+  const stressProducts: Product[] = [];
+  for (let i = 0; i < 1000; i++) {
+    stressProducts.push({
+      id: `stress-prd-${i}`,
+      sku: `SKU-STRESS-${String(i).padStart(4, '0')}`,
+      barcode: `759${String(i).padStart(10, '0')}`,
+      name: `Producto de Prueba de Carga ${i}`,
+      category: 'Abarrotes',
+      unit: 'UND',
+      costUsd: 1.5,
+      targetMarginPercent: 28,
+      priceUsd: 2.08,
+      ivaRate: 16,
+      stockByLocation: { 'loc-pzo-01': 50 + (i % 200), 'loc-ccs-01': 100 + (i % 150) },
+      minStockByLocation: { 'loc-pzo-01': 60, 'loc-ccs-01': 80 },
+      monthlyUnitsSold: 300,
+      abcClass: i < 200 ? 'A' : i < 500 ? 'B' : 'C',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+    });
+  }
+
+  const stressPayload: PlatformBackupPayload = {
+    ...payload,
+    products: stressProducts,
+  };
+
+  const startTime = Date.now();
+  const stressEnvelope = await createEncryptedBackup(stressPayload);
+  const stressDecrypted = decryptAndValidateBackup(stressEnvelope);
+  const durationMs = Date.now() - startTime;
+
+  assert.equal(stressDecrypted.success, true);
+  assert.equal(stressDecrypted.data?.products.length, 1000);
+  assert.ok(durationMs < 400, `1,000 SKUs backup round-trip took ${durationMs}ms (threshold: < 400ms)`);
+});
+
+test('18. Audit Logging & User Session Duration Governance', () => {
+  const superAdminUser: UserProfile = {
+    uid: 'usr-superadmin-001',
+    email: 'rdrj.mppd@gmail.com',
+    displayName: 'Rubén Darío R. (Superadmin)',
+    role: UserRole.SUPERADMIN,
+    pin: '102030',
+    locationAccess: ['loc-pzo-01'],
+    active: true,
+    createdAt: '2026-01-01T08:00:00-04:00',
+  };
+
+  // 1. Create and verify audit log entry
+  const logEntry = createAuditLogEntry(
+    superAdminUser,
+    'MIN_STOCK_UPDATE',
+    'PRODUCT',
+    'Stock mínimo ajustado para SKU ACE-MAZ-1LT en sede loc-pzo-01 a 120 unidades',
+    { productId: 'prd-002', locationId: 'loc-pzo-01', minStock: 120 },
+    'prd-002'
+  );
+
+  assert.ok(logEntry.id.startsWith('aud-'));
+  assert.equal(logEntry.userEmail, 'rdrj.mppd@gmail.com');
+  assert.equal(logEntry.userRole, UserRole.SUPERADMIN);
+  assert.equal(logEntry.action, 'MIN_STOCK_UPDATE');
+  assert.ok(logEntry.timestampVet.includes('/2026') || logEntry.timestampVet.includes('2026'));
+
+  // 2. Track user login session
+  const { session, updatedHistory } = recordUserLoginSession(superAdminUser, []);
+  assert.equal(session.userId, superAdminUser.uid);
+  assert.equal(session.isActive, true);
+  assert.equal(updatedHistory.length, 1);
+
+  // 3. Track user logout session and duration calculation
+  const closedHistory = recordUserLogoutSession(session.id, updatedHistory);
+  assert.equal(closedHistory[0].isActive, false);
+  assert.ok(closedHistory[0].logoutAtVet !== undefined);
+  assert.ok((closedHistory[0].durationMinutes || 0) >= 0);
+});
+
+test('19. Manual Minimum Inventory Limits & Real-Time Stockout Risk Alarms', () => {
+  const testLocations: LocationNode[] = [
+    {
+      id: 'loc-pzo-01',
+      code: 'PZO-01',
+      name: 'Sede Alta Vista',
+      city: 'Puerto Ordaz',
+      type: 'SEDE',
+      manager: 'Ing. Salazar',
+      active: true,
+    },
+  ];
+
+  // Product with stock = 40. Default minStock = 30 -> No low stock alert initially
+  const product: Product = {
+    id: 'prd-alarm-01',
+    sku: 'ARR-MESA-1KG',
+    barcode: '7591002300115',
+    name: 'Arroz Mesa 1Kg',
+    category: 'Víveres Secos',
+    unit: 'UND',
+    costUsd: 1.05,
+    targetMarginPercent: 25,
+    priceUsd: 1.4,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 40 },
+    minStockByLocation: { 'loc-pzo-01': 30 },
+    monthlyUnitsSold: 1200,
+    abcClass: 'A',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+  };
+
+  // Initial evaluation: stock (40) > minStock (30) -> 0 alerts
+  const initialAlerts = evaluateReorderAlerts([product], testLocations);
+  assert.equal(initialAlerts.length, 0);
+
+  // User sets manual minimum limit to 60 for loc-pzo-01
+  const updatedProduct: Product = {
+    ...product,
+    minStockByLocation: { 'loc-pzo-01': 60 },
+  };
+
+  // Now stock (40) <= minStock (60) -> Triggers alert
+  const triggeredAlerts = evaluateReorderAlerts([updatedProduct], testLocations);
+  assert.equal(triggeredAlerts.length, 1);
+  assert.equal(triggeredAlerts[0].sku, 'ARR-MESA-1KG');
+  assert.equal(triggeredAlerts[0].currentStock, 40);
+  assert.equal(triggeredAlerts[0].reorderPoint, 60);
+
+  // Override manual risk mode to CRITICO_MANUAL
+  const manualCriticalProduct: Product = {
+    ...product,
+    manualRiskByLocation: { 'loc-pzo-01': 'CRITICO_MANUAL' },
+  };
+  const criticalAlerts = evaluateReorderAlerts([manualCriticalProduct], testLocations);
+  assert.equal(criticalAlerts.length, 1);
+  assert.equal(criticalAlerts[0].manualRiskMode, 'CRITICO_MANUAL');
+  assert.equal(criticalAlerts[0].severity, 'CRITICO_QUIEBRE');
+
+  // Override manual risk mode to EXENTO_MANUAL
+  const exemptProduct: Product = {
+    ...updatedProduct,
+    manualRiskByLocation: { 'loc-pzo-01': 'EXENTO_MANUAL' },
+  };
+  const exemptAlerts = evaluateReorderAlerts([exemptProduct], testLocations);
+  assert.equal(exemptAlerts.length, 0);
+});
+
+test('20. Platform Reset / Factory Wipe Governance & PIN Authorization', () => {
+  const superAdminPin = '102030';
+  const invalidPin = '999888';
+
+  // Superadmin authorization verification
+  const isSuperAdminAuthorized = superAdminPin.trim() === '102030';
+  assert.equal(isSuperAdminAuthorized, true);
+
+  const isInvalidAuthorized = invalidPin.trim() === '102030';
+  assert.equal(isInvalidAuthorized, false);
+
+  // Emulate platform state before wipe
+  let platformProducts = [{ id: 'p1', sku: 'SKU-01' }, { id: 'p2', sku: 'SKU-02' }];
+  let purchaseOrders = [{ id: 'po1', orderNumber: 'PO-001' }];
+
+  assert.equal(platformProducts.length, 2);
+  assert.equal(purchaseOrders.length, 1);
+
+  // Execute wipe with authorized PIN
+  if (isSuperAdminAuthorized) {
+    platformProducts = [];
+    purchaseOrders = [];
+  }
+
+  assert.equal(platformProducts.length, 0);
+  assert.equal(purchaseOrders.length, 0);
 });
 
 

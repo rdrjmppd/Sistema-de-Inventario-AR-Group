@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   TrendingUp,
   Package,
@@ -12,23 +12,63 @@ import {
   MapPin,
   Phone,
   Edit3,
+  RotateCcw,
+  ShieldAlert,
+  Database,
+  CheckCircle,
+  Lock,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
 import { useUIConfig } from '../../context/UIConfigContext';
-import { NavigationTab } from '../../types';
+import { useAuth } from '../../context/AuthContext';
+import { NavigationTab, UserRole } from '../../types';
 import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
 import { DEFAULT_COMPANY_PROFILE } from '../../lib/excel-exporter';
+import { BackupRestoreManager } from './BackupRestoreManager';
 
 interface AnalyticsDashboardProps {
   onNavigate: (tab: NavigationTab) => void;
 }
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNavigate }) => {
-  const { products, locations, selectedLocationId, reorderAlerts } = useInventory();
+  const { products, locations, selectedLocationId, reorderAlerts, wipePlatformDataToPristine } = useInventory();
   const { bcvState, invoices } = useFinance();
   const { config, setIsCompanyModalOpen } = useUIConfig();
+  const { user } = useAuth();
   const company = config.companyProfile || DEFAULT_COMPANY_PROFILE;
+
+  const isSuperAdmin = user?.role === UserRole.SUPERADMIN;
+  const [showBackupSection, setShowBackupSection] = useState(false);
+  const [isWipeModalOpen, setIsWipeModalOpen] = useState(false);
+  const [superAdminPinInput, setSuperAdminPinInput] = useState('');
+  const [confirmPhraseInput, setConfirmPhraseInput] = useState('');
+  const [wipeError, setWipeError] = useState<string | null>(null);
+  const [wipeSuccess, setWipeSuccess] = useState(false);
+
+  const handleExecuteWipe = (e: React.FormEvent) => {
+    e.preventDefault();
+    setWipeError(null);
+
+    if (confirmPhraseInput.trim() !== 'REINICIAR-SISTEMA') {
+      setWipeError('Debe escribir exactamente la frase de confirmación: REINICIAR-SISTEMA');
+      return;
+    }
+
+    const res = wipePlatformDataToPristine(superAdminPinInput);
+    if (!res.success) {
+      setWipeError(res.error || 'Código PIN de Superadministrador incorrecto.');
+      return;
+    }
+
+    setWipeSuccess(true);
+    setTimeout(() => {
+      setIsWipeModalOpen(false);
+      setSuperAdminPinInput('');
+      setConfirmPhraseInput('');
+      setWipeSuccess(false);
+    }, 2000);
+  };
 
   // Compute consolidated or location-filtered metrics with Decimal.js
   let totalCostUsd = toDecimal(0);
@@ -327,6 +367,156 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
           </div>
         </div>
       </div>
+
+      {/* Continuidad del Negocio, Respaldos Cifrados y Gobernanza de Reinicio */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-sky-950 text-sky-400 border border-sky-800/80">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-white">
+                Continuidad del Negocio & Gobernanza Crítica
+              </h3>
+              <p className="text-xs text-slate-400">
+                Gestión de respaldos cifrados (.chrystal-backup) e histórico de auditoría del sistema.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowBackupSection(!showBackupSection)}
+              className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs rounded-lg transition shadow-sm min-h-[44px] flex items-center gap-1.5"
+            >
+              <Database className="w-4 h-4" />
+              {showBackupSection ? 'Ocultar Gestor de Respaldos' : 'Gestionar Respaldos Cifrados'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate('AUDIT_HISTORY')}
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-lg transition min-h-[44px] flex items-center gap-1.5"
+            >
+              <span>Ver Histórico & Auditoría</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setWipeError(null);
+                  setWipeSuccess(false);
+                  setSuperAdminPinInput('');
+                  setConfirmPhraseInput('');
+                  setIsWipeModalOpen(true);
+                }}
+                className="px-3.5 py-2 bg-red-600/90 hover:bg-red-600 text-white font-bold text-xs rounded-lg transition shadow-md shadow-red-950/40 min-h-[44px] flex items-center gap-1.5"
+                title="Solo visible para Superadministrador"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Reiniciar Plataforma (Pristine Wipe)
+              </button>
+            )}
+          </div>
+        </div>
+
+        {showBackupSection && (
+          <div className="pt-4 border-t border-slate-800">
+            <BackupRestoreManager />
+          </div>
+        )}
+      </div>
+
+      {/* Superadmin Wipe Modal */}
+      {isWipeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-red-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 border-b border-red-900/60 pb-3">
+              <div className="p-2 bg-red-950 text-red-400 rounded-lg">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">
+                  Confirmación Crítica: Reinicio Total de Fábrica
+                </h3>
+                <p className="text-xs text-red-400">Esta acción vaciará el catálogo y todos los registros.</p>
+              </div>
+            </div>
+
+            {wipeSuccess ? (
+              <div className="p-4 bg-emerald-950/80 border border-emerald-600 text-emerald-200 rounded-xl text-center space-y-2">
+                <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto" />
+                <p className="font-bold text-sm">¡Plataforma Reiniciada Exitosamente!</p>
+                <p className="text-xs text-emerald-300/80">
+                  La base de datos ha sido reseteada a estado virgen. Puede comenzar a cargar nuevos datos o restaurar un respaldo.
+                </p>
+              </div>
+            ) : (
+              <form onSubmit={handleExecuteWipe} className="space-y-4">
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Para confirmar el borrado total, ingrese su <strong>PIN de Superadministrador</strong> y escriba exactamente la frase <span className="text-red-400 font-mono font-bold">REINICIAR-SISTEMA</span>:
+                </p>
+
+                {wipeError && (
+                  <div className="p-3 bg-red-950/80 border border-red-700 text-red-300 rounded-lg text-xs">
+                    {wipeError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    PIN de Superadministrador (102030)
+                  </label>
+                  <input
+                    type="password"
+                    maxLength={10}
+                    placeholder="Ingrese su PIN de Superadmin"
+                    value={superAdminPinInput}
+                    onChange={(e) => setSuperAdminPinInput(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-red-500 font-mono min-h-[44px]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Frase de Confirmación (Escriba exactamente: REINICIAR-SISTEMA)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="REINICIAR-SISTEMA"
+                    value={confirmPhraseInput}
+                    onChange={(e) => setConfirmPhraseInput(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-red-500 font-mono min-h-[44px]"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsWipeModalOpen(false)}
+                    className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-lg min-h-[44px]"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-lg shadow-red-950/50 min-h-[44px] flex items-center gap-1.5"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Proceder con el Reinicio
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -11,6 +11,10 @@ import {
   PostPurchaseManualReceipt,
   DraftPurchaseTarget,
   RotationHorizonDays,
+  AuditActionType,
+  AuditLogEntry,
+  PlatformBackupPayload,
+  UserRole,
 } from '../types';
 import {
   toDecimal,
@@ -19,6 +23,12 @@ import {
   calculatePriceFromMargin,
 } from '../lib/decimal';
 import { getCaracasNow } from '../lib/bcv';
+import {
+  createAuditLogEntry,
+  loadStoredAuditLogs,
+  saveAuditLogs,
+} from '../lib/audit-logger';
+import { resolveCompanyProfile } from '../lib/excel-exporter';
 import {
   ReorderAlertItem,
   evaluateReorderAlerts,
@@ -133,6 +143,30 @@ interface InventoryContextType {
     items: Array<{ sku: string; qty: number }>
   ) => { success: boolean; event?: SalesSyncEvent; error?: string };
   recalculateAbcClassification: () => void;
+  auditLogs: AuditLogEntry[];
+  logAuditEvent: (
+    action: AuditActionType,
+    entityType: string,
+    description: string,
+    details?: Record<string, unknown>,
+    entityId?: string
+  ) => AuditLogEntry;
+  updateProductMinStockThreshold: (params: {
+    productId: string;
+    locationId: string;
+    minStock: number;
+    manualRiskMode?: ManualRiskMode;
+    safetyMultiplier?: number;
+  }) => { success: boolean; product?: Product; error?: string };
+  wipePlatformDataToPristine: (superAdminPin: string) => { success: boolean; error?: string };
+  restoreFullPlatformState: (
+    backupData: PlatformBackupPayload
+  ) => {
+    success: boolean;
+    restoredCount?: { products: number; locations: number; orders: number };
+    error?: string;
+  };
+  exportPlatformBackupPayload: () => PlatformBackupPayload;
 }
 
 export const INITIAL_LOCATIONS: LocationNode[] = [
@@ -436,11 +470,19 @@ const STORAGE_KEY_TRANSFERS = 'chrystal_erp_transfers_v1';
 const STORAGE_KEY_PURCHASE_ORDERS = 'chrystal_erp_purchase_orders_v1';
 const STORAGE_KEY_MANUAL_RECEIPTS = 'chrystal_erp_manual_receipts_v1';
 
-const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
+export const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { bcvState, suppliers } = useFinance();
-  const { user, isAuthenticated } = useAuth();
+  const {
+    bcvState,
+    suppliers,
+    invoices,
+    payments,
+    closures,
+    resetFinanceState,
+    restoreFinanceState,
+  } = useFinance();
+  const { user, isAuthenticated, sessionHistory } = useAuth();
 
   const [locations, setLocations] = useState<LocationNode[]>(() => {
     try {
@@ -464,9 +506,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [products, setProducts] = useState<Product[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PRODUCTS);
-      if (saved) {
+      if (saved !== null) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length >= INITIAL_PRODUCTS.length) {
+        if (Array.isArray(parsed)) {
           return parsed;
         }
       }
@@ -474,6 +516,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ignore
     }
     return INITIAL_PRODUCTS;
+  });
+
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
+    return loadStoredAuditLogs();
   });
 
   const [transfers, setTransfers] = useState<StockTransfer[]>(() => {
@@ -533,6 +579,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ignore
     }
   }, [manualReceipts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_PRODUCTS, JSON.stringify(products));
+    } catch {
+      // ignore
+    }
+  }, [products]);
+
+  useEffect(() => {
+    saveAuditLogs(auditLogs);
+  }, [auditLogs]);
 
   // Add new Sede or Depósito with RBAC + PIN verification and automatically sync all product stock maps
   const addLocationOrDepot = (input: CreateLocationNodeInput) => {
@@ -1385,6 +1443,222 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     });
   };
 
+  const logAuditEvent = (
+    action: AuditActionType,
+    entityType: string,
+    description: string,
+    details?: Record<string, unknown>,
+    entityId?: string
+  ): AuditLogEntry => {
+    const entry = createAuditLogEntry(
+      user,
+      action,
+      entityType,
+      description,
+      details,
+      entityId
+    );
+    setAuditLogs((prev) => [entry, ...prev.slice(0, 999)]);
+    return entry;
+  };
+
+  const updateProductMinStockThreshold = ({
+    productId,
+    locationId,
+    minStock,
+    manualRiskMode,
+    safetyMultiplier,
+  }: {
+    productId: string;
+    locationId: string;
+    minStock: number;
+    manualRiskMode?: ManualRiskMode;
+    safetyMultiplier?: number;
+  }): { success: boolean; product?: Product; error?: string } => {
+    const target = products.find((p) => p.id === productId);
+    if (!target) {
+      return { success: false, error: `Producto ID ${productId} no encontrado.` };
+    }
+    if (minStock < 0) {
+      return { success: false, error: 'El stock mínimo no puede ser un valor negativo.' };
+    }
+
+    let updatedProduct: Product | undefined;
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== productId) return p;
+        const newMinStock = { ...(p.minStockByLocation || {}) };
+        newMinStock[locationId] = minStock;
+
+        const newManualRisk = { ...(p.manualRiskByLocation || {}) };
+        if (manualRiskMode) {
+          newManualRisk[locationId] = manualRiskMode;
+        }
+
+        const newMultipliers = { ...(p.safetyMultiplierByLocation || {}) };
+        if (safetyMultiplier !== undefined) {
+          newMultipliers[locationId] = safetyMultiplier;
+        }
+
+        updatedProduct = {
+          ...p,
+          minStockByLocation: newMinStock,
+          manualRiskByLocation: newManualRisk,
+          safetyMultiplierByLocation: newMultipliers,
+          lastUpdatedVet: getCaracasNow().isoTimestamp,
+        };
+        return updatedProduct;
+      })
+    );
+
+    logAuditEvent(
+      'MIN_STOCK_UPDATE',
+      'PRODUCT',
+      `Stock mínimo ajustado para SKU ${target.sku} (${target.name}) en sede ${locationId}: ${minStock} unidades (Modo de riesgo: ${manualRiskMode || 'AUTOMATICO'})`,
+      { productId, sku: target.sku, locationId, minStock, manualRiskMode },
+      productId
+    );
+
+    return { success: true, product: updatedProduct };
+  };
+
+  const wipePlatformDataToPristine = (
+    superAdminPin: string
+  ): { success: boolean; error?: string } => {
+    const isSuperAdminUser = user?.role === UserRole.SUPERADMIN;
+    const isSuperAdminPin = superAdminPin.trim() === '102030';
+
+    if (!isSuperAdminPin && !isSuperAdminUser) {
+      return {
+        success: false,
+        error: 'Acceso Denegado: Se requiere autorización de Superadministrador para el reinicio de fábrica.',
+      };
+    }
+
+    setProducts([]);
+    setTransfers([]);
+    setPurchaseOrders([]);
+    setManualReceipts([]);
+    setSalesEvents([]);
+
+    resetFinanceState();
+
+    try {
+      localStorage.setItem(STORAGE_KEY_PRODUCTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_TRANSFERS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_PURCHASE_ORDERS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_MANUAL_RECEIPTS, JSON.stringify([]));
+    } catch {
+      // ignore
+    }
+
+    logAuditEvent(
+      'PLATFORM_RESET',
+      'SYSTEM',
+      'REINICIO DE FÁBRICA EJECUTADO: Base de datos y registros operativos reseteados a estado virgen por Superadministrador.',
+      {
+        executedBy: user?.email || 'rdrj.mppd@gmail.com',
+        timestamp: getCaracasNow().isoTimestamp,
+      }
+    );
+
+    return { success: true };
+  };
+
+  const restoreFullPlatformState = (
+    backupData: PlatformBackupPayload
+  ): {
+    success: boolean;
+    restoredCount?: { products: number; locations: number; orders: number };
+    error?: string;
+  } => {
+    if (!backupData || !Array.isArray(backupData.products)) {
+      return { success: false, error: 'Formato de respaldo inválido o estructura de datos corrupta.' };
+    }
+
+    if (backupData.products) setProducts(backupData.products);
+    if (backupData.locations && backupData.locations.length > 0) setLocations(backupData.locations);
+    if (backupData.transfers) setTransfers(backupData.transfers);
+    if (backupData.purchaseOrders) setPurchaseOrders(backupData.purchaseOrders);
+    if (backupData.manualReceipts) setManualReceipts(backupData.manualReceipts);
+    if (backupData.salesEvents) setSalesEvents(backupData.salesEvents);
+
+    restoreFinanceState({
+      suppliers: backupData.suppliers,
+      invoices: backupData.invoices,
+      payments: backupData.payments,
+      closures: backupData.closures,
+    });
+
+    if (Array.isArray(backupData.auditLogs) && backupData.auditLogs.length > 0) {
+      setAuditLogs(backupData.auditLogs);
+    }
+
+    logAuditEvent(
+      'BACKUP_RESTORE',
+      'SYSTEM',
+      `Restauración completa de plataforma ejecutada desde respaldo (${backupData.products.length} productos, ${backupData.locations?.length || 0} sedes, ${backupData.purchaseOrders?.length || 0} órdenes)`,
+      {
+        productsCount: backupData.products.length,
+        locationsCount: backupData.locations?.length || 0,
+        ordersCount: backupData.purchaseOrders?.length || 0,
+        backupExportedAtVet: backupData.exportedAtVet,
+      }
+    );
+
+    return {
+      success: true,
+      restoredCount: {
+        products: backupData.products.length,
+        locations: backupData.locations?.length || 0,
+        orders: backupData.purchaseOrders?.length || 0,
+      },
+    };
+  };
+
+  const exportPlatformBackupPayload = (): PlatformBackupPayload => {
+    const now = getCaracasNow();
+    let companyProfile = undefined;
+    try {
+      const rawCfg = localStorage.getItem('chrystal_erp_uiconfig_v1');
+      if (rawCfg) {
+        const parsed = JSON.parse(rawCfg);
+        companyProfile = parsed.companyProfile;
+      }
+    } catch {
+      // fallback
+    }
+
+    const payload: PlatformBackupPayload = {
+      version: '2.0.0',
+      exportedAtVet: `${now.dateFormatted} ${now.timeFormatted}`,
+      exportedBy: user?.displayName || 'Superadministrador',
+      exportedByEmail: user?.email || 'rdrj.mppd@gmail.com',
+      companyProfile: resolveCompanyProfile(companyProfile),
+      products,
+      locations,
+      suppliers,
+      invoices,
+      payments,
+      transfers,
+      purchaseOrders,
+      manualReceipts,
+      salesEvents,
+      closures,
+      auditLogs,
+      sessionHistory,
+    };
+
+    logAuditEvent(
+      'BACKUP_EXPORT',
+      'SYSTEM',
+      `Exportación de respaldo cifrado generada exitosamente (${products.length} productos, ${locations.length} sedes/depósitos)`,
+      { totalProducts: products.length, totalLocations: locations.length }
+    );
+
+    return payload;
+  };
+
   return (
     <InventoryContext.Provider
       value={{
@@ -1424,6 +1698,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         applyChrystalImport,
         simulatePosWebhookSale,
         recalculateAbcClassification,
+        auditLogs,
+        logAuditEvent,
+        updateProductMinStockThreshold,
+        wipePlatformDataToPristine,
+        restoreFullPlatformState,
+        exportPlatformBackupPayload,
       }}
     >
       {children}

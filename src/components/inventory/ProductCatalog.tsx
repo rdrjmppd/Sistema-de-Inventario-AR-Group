@@ -22,12 +22,15 @@ import {
   Download,
   Edit3,
   MapPin,
+  BellRing,
+  SlidersHorizontal,
+  Shield,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
 import { useAuth } from '../../context/AuthContext';
 import { useUIConfig } from '../../context/UIConfigContext';
-import { Product, UserRole } from '../../types';
+import { Product, UserRole, ManualRiskMode } from '../../types';
 import {
   formatUsd,
   formatVes,
@@ -61,11 +64,21 @@ export const ProductCatalog: React.FC = () => {
     selectedLocationId,
     setIsAddLocationModalOpen,
     addOrUpdateProduct,
+    updateProductMinStockThreshold,
   } = useInventory();
   const { bcvState, suppliers } = useFinance();
   const { hasPermission } = useAuth();
   const { config, setIsCompanyModalOpen } = useUIConfig();
   const companyProfile = config.companyProfile || DEFAULT_COMPANY_PROFILE;
+
+  const [minStockModalProduct, setMinStockModalProduct] = useState<Product | null>(null);
+  const [modalTargetLocationId, setModalTargetLocationId] = useState<string>('ALL');
+  const [modalMinStockInput, setModalMinStockInput] = useState<string>('50');
+  const [modalRiskMode, setModalRiskMode] = useState<ManualRiskMode>('AUTOMATICO');
+  const [minStockFeedback, setMinStockFeedback] = useState<string | null>(null);
+
+  const [initialMinStocksByLoc, setInitialMinStocksByLoc] = useState<Record<string, string>>({});
+  const [initialRiskMode, setInitialRiskMode] = useState<ManualRiskMode>('AUTOMATICO');
 
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
@@ -245,10 +258,18 @@ export const ProductCatalog: React.FC = () => {
 
     const stockByLocation: Record<string, number> = {};
     const minStockByLocation: Record<string, number> = {};
+    const manualRiskByLocation: Record<string, ManualRiskMode> = {};
     for (const loc of locations) {
       stockByLocation[loc.id] = Math.max(0, parseFloat(initialStocksByLoc[loc.id] || '0') || 0);
-      minStockByLocation[loc.id] =
-        loc.type === 'DEPOSITO' || loc.type === 'CEDIS' ? 120 : 50;
+      const customMin = initialMinStocksByLoc[loc.id];
+      minStockByLocation[loc.id] = customMin
+        ? Math.max(0, parseInt(customMin, 10) || 0)
+        : loc.type === 'DEPOSITO' || loc.type === 'CEDIS'
+        ? 120
+        : 50;
+      if (initialRiskMode !== 'AUTOMATICO') {
+        manualRiskByLocation[loc.id] = initialRiskMode;
+      }
     }
 
     const newProduct: Product = {
@@ -264,6 +285,7 @@ export const ProductCatalog: React.FC = () => {
       ivaRate,
       stockByLocation,
       minStockByLocation,
+      manualRiskByLocation,
       monthlyUnitsSold: 180,
       abcClass: 'B',
       supplierId: suppliers[0]?.id || 'sup-001',
@@ -275,10 +297,40 @@ export const ProductCatalog: React.FC = () => {
     setSku('');
     setBarcode('');
     setName('');
+    setInitialMinStocksByLoc({});
+    setInitialRiskMode('AUTOMATICO');
     setFeedback(
-      `SKU ${newProduct.sku} incorporado al Catálogo Maestro (${locations.length} Sedes / Depósitos).`
+      `SKU ${newProduct.sku} incorporado al Catálogo Maestro con alarmas de stock mínimo configuradas.`
     );
     setTimeout(() => setFeedback(null), 4000);
+  };
+
+  const handleSaveMinStockAlarm = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!minStockModalProduct) return;
+
+    const minStockNum = Math.max(0, parseInt(modalMinStockInput, 10) || 0);
+    const locsToUpdate =
+      modalTargetLocationId === 'ALL'
+        ? locations.map((l) => l.id)
+        : [modalTargetLocationId];
+
+    for (const locId of locsToUpdate) {
+      updateProductMinStockThreshold({
+        productId: minStockModalProduct.id,
+        locationId: locId,
+        minStock: minStockNum,
+        manualRiskMode: modalRiskMode,
+      });
+    }
+
+    setMinStockFeedback(
+      `Alarma de stock mínimo configurada exitosamente (${minStockNum} unidades, Modo: ${modalRiskMode}).`
+    );
+    setTimeout(() => {
+      setMinStockFeedback(null);
+      setMinStockModalProduct(null);
+    }, 1500);
   };
 
   return (
@@ -645,18 +697,47 @@ export const ProductCatalog: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Touch-Friendly Action Button (>= 44px height) */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedProductForHistory(p);
-                  }}
-                  className="min-h-[44px] w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-sky-600 text-white font-semibold text-xs transition cursor-pointer"
-                >
-                  <History className="w-4 h-4 text-sky-400 shrink-0" />
-                  <span>Historial &amp; Fechas (Rotación / Pedidos)</span>
-                </button>
+                {/* Touch-Friendly Action Buttons (>= 44px height) */}
+                <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMinStockModalProduct(p);
+                      setModalTargetLocationId(
+                        selectedLocationId === 'ALL'
+                          ? locations[0]?.id || 'loc-pzo-01'
+                          : selectedLocationId
+                      );
+                      setModalMinStockInput(String(minStock));
+                      setModalRiskMode(
+                        (selectedLocationId !== 'ALL' &&
+                          p.manualRiskByLocation?.[selectedLocationId]) ||
+                          'AUTOMATICO'
+                      );
+                    }}
+                    className="min-h-[44px] w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs transition cursor-pointer border border-slate-700"
+                    title="Configurar Alarma de Stock Mínimo"
+                  >
+                    <BellRing
+                      className={`w-4 h-4 ${
+                        isLow ? 'text-amber-400 animate-bounce' : 'text-slate-400'
+                      }`}
+                    />
+                    <span>Alarma Stock Mín. ({minStock})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedProductForHistory(p);
+                    }}
+                    className="min-h-[44px] w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-sky-600 text-white font-semibold text-xs transition cursor-pointer"
+                  >
+                    <History className="w-4 h-4 text-sky-400 shrink-0" />
+                    <span>Historial &amp; Fechas</span>
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -686,6 +767,7 @@ export const ProductCatalog: React.FC = () => {
                 <th className="py-2.5 px-3 text-right">PVP USD</th>
                 <th className="py-2.5 px-3 text-right">PVP Bs. (BCV)</th>
                 <th className="py-2.5 px-3 text-center">IVA</th>
+                <th className="py-2.5 px-3 text-center">Alarma Stock Mín.</th>
                 <th className="py-2.5 px-3 text-center">Historial &amp; Fechas</th>
               </tr>
             </thead>
@@ -744,10 +826,9 @@ export const ProductCatalog: React.FC = () => {
                     <td className="py-2.5 px-3 text-right font-mono">
                       <div className="flex items-center justify-end gap-1.5">
                         {isLow && (
-                          <AlertTriangle
-                            className="w-3.5 h-3.5 text-amber-500 shrink-0"
-                            title={`Bajo stock mínimo (${minStock})`}
-                          />
+                          <span title={`Bajo stock mínimo (${minStock})`}>
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          </span>
                         )}
                         <span
                           className={`font-bold ${
@@ -776,6 +857,37 @@ export const ProductCatalog: React.FC = () => {
                       ) : (
                         <span className="text-slate-700">{p.ivaRate}%</span>
                       )}
+                    </td>
+                    <td
+                      className="py-2.5 px-3 text-center"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMinStockModalProduct(p);
+                          setModalTargetLocationId(
+                            selectedLocationId === 'ALL'
+                              ? locations[0]?.id || 'loc-pzo-01'
+                              : selectedLocationId
+                          );
+                          setModalMinStockInput(String(minStock));
+                          setModalRiskMode(
+                            (selectedLocationId !== 'ALL' &&
+                              p.manualRiskByLocation?.[selectedLocationId]) ||
+                              'AUTOMATICO'
+                          );
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-sky-400 hover:text-white border border-slate-700 font-semibold text-[11px] transition cursor-pointer whitespace-nowrap min-h-[36px]"
+                        title="Configurar Límite Mínimo & Alarma de Stock"
+                      >
+                        <BellRing
+                          className={`w-3.5 h-3.5 ${
+                            isLow ? 'text-amber-400 animate-bounce' : 'text-slate-400'
+                          }`}
+                        />
+                        <span>Mín. {minStock}</span>
+                      </button>
                     </td>
                     <td
                       className="py-2.5 px-3 text-center"
@@ -2145,6 +2257,7 @@ export const ProductCatalog: React.FC = () => {
                       </label>
                       <input
                         type="number"
+                        placeholder="Existencia inicial"
                         value={initialStocksByLoc[loc.id] ?? '0'}
                         onChange={(e) =>
                           setInitialStocksByLoc((prev) => ({
@@ -2157,6 +2270,49 @@ export const ProductCatalog: React.FC = () => {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              <div className="pt-1">
+                <label className="block font-semibold text-slate-700 mb-1.5 flex items-center justify-between">
+                  <span>Alarma de Stock Mínimo por Ubicación (Umbral de Quiebre)</span>
+                  <span className="text-[10px] text-amber-600 font-normal">Dispara alerta en torre de control</span>
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                  {locations.map((loc) => (
+                    <div key={loc.id} className="bg-amber-50/60 p-2 rounded border border-amber-200">
+                      <label className="block font-mono text-[10px] font-bold text-amber-900 mb-1 truncate">
+                        Mín. {loc.code}
+                      </label>
+                      <input
+                        type="number"
+                        placeholder={loc.type === 'DEPOSITO' || loc.type === 'CEDIS' ? '120' : '50'}
+                        value={initialMinStocksByLoc[loc.id] ?? (loc.type === 'DEPOSITO' || loc.type === 'CEDIS' ? '120' : '50')}
+                        onChange={(e) =>
+                          setInitialMinStocksByLoc((prev) => ({
+                            ...prev,
+                            [loc.id]: e.target.value,
+                          }))
+                        }
+                        className="w-full px-2 py-1 border border-amber-300 rounded font-mono bg-white text-slate-900"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-1">
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Modo de Alarma de Riesgo Inicial
+                </label>
+                <select
+                  value={initialRiskMode}
+                  onChange={(e) => setInitialRiskMode(e.target.value as ManualRiskMode)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded bg-white text-slate-800"
+                >
+                  <option value="AUTOMATICO">AUTOMÁTICO — Alarma se activa al caer por debajo del mínimo</option>
+                  <option value="CRITICO_MANUAL">CRÍTICO MANUAL — Forzar alarma roja urgente</option>
+                  <option value="PREVENTIVO_MANUAL">PREVENTIVO MANUAL — Alarma preventiva anticipada</option>
+                </select>
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
@@ -2172,6 +2328,167 @@ export const ProductCatalog: React.FC = () => {
                   className="px-4 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white font-semibold"
                 >
                   Guardar Producto
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Dedicated Min Stock Threshold & Alarm Configuration Modal */}
+      {minStockModalProduct && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-5 py-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-950 text-amber-400 border border-amber-800/80 rounded-xl">
+                  <BellRing className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">
+                    Configurar Alarma de Stock Mínimo &amp; Riesgo de Quiebre
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    SKU: <span className="font-mono font-bold text-sky-400">{minStockModalProduct.sku}</span> · {minStockModalProduct.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMinStockModalProduct(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveMinStockAlarm} className="p-5 space-y-4 text-xs">
+              {minStockFeedback && (
+                <div className="p-3 bg-emerald-950/80 border border-emerald-600 text-emerald-300 rounded-xl flex items-center gap-2">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{minStockFeedback}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">
+                  Sede o Depósito Objetivo
+                </label>
+                <select
+                  value={modalTargetLocationId}
+                  onChange={(e) => {
+                    const locId = e.target.value;
+                    setModalTargetLocationId(locId);
+                    if (locId !== 'ALL' && minStockModalProduct.minStockByLocation[locId] !== undefined) {
+                      setModalMinStockInput(String(minStockModalProduct.minStockByLocation[locId]));
+                      setModalRiskMode(minStockModalProduct.manualRiskByLocation?.[locId] || 'AUTOMATICO');
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white min-h-[44px]"
+                >
+                  <option value="ALL">Todas las Sedes y Depósitos ({locations.length} ubicaciones)</option>
+                  {locations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.code} — {loc.name} ({loc.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                <div>
+                  <span className="text-[11px] text-slate-400">Stock Actual en Selección:</span>
+                  <div className="text-base font-bold text-white font-mono mt-0.5">
+                    {modalTargetLocationId === 'ALL'
+                      ? Object.values(minStockModalProduct.stockByLocation).reduce((a, b) => a + b, 0)
+                      : minStockModalProduct.stockByLocation[modalTargetLocationId] ?? 0}{' '}
+                    {minStockModalProduct.unit}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-400">Stock Mínimo Actual:</span>
+                  <div className="text-base font-bold text-amber-400 font-mono mt-0.5">
+                    {modalTargetLocationId === 'ALL'
+                      ? Object.values(minStockModalProduct.minStockByLocation).reduce((a, b) => a + b, 0)
+                      : minStockModalProduct.minStockByLocation[modalTargetLocationId] ?? 50}{' '}
+                    {minStockModalProduct.unit}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">
+                  Nuevo Límite Mínimo para Disparar Alarma (Unidades) *
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  required
+                  value={modalMinStockInput}
+                  onChange={(e) => setModalMinStockInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-lg text-white font-mono text-sm focus:outline-none focus:border-amber-500 min-h-[44px]"
+                />
+                <span className="text-[11px] text-slate-400 mt-1 block">
+                  Cuando la existencia física en la sede o depósito alcance o caiga por debajo de este umbral, el sistema activará automáticamente una alarma de quiebre de inventario.
+                </span>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-300 mb-1">
+                  Modo de Alarma / Nivel de Riesgo
+                </label>
+                <select
+                  value={modalRiskMode}
+                  onChange={(e) => setModalRiskMode(e.target.value as ManualRiskMode)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-white min-h-[44px]"
+                >
+                  <option value="AUTOMATICO">AUTOMÁTICO — Alarma activada al caer por debajo del umbral mínimo</option>
+                  <option value="CRITICO_MANUAL">CRÍTICO MANUAL — Forzar alarma roja de reposición urgente inmediata</option>
+                  <option value="PREVENTIVO_MANUAL">PREVENTIVO MANUAL — Alarma preventiva con factor de seguridad anticipado</option>
+                  <option value="EXENTO_MANUAL">EXENTO MANUAL — Desactivar alarma de quiebre para este producto</option>
+                </select>
+              </div>
+
+              {/* Dynamic Warning Indicator */}
+              {(() => {
+                const curStock =
+                  modalTargetLocationId === 'ALL'
+                    ? Object.values(minStockModalProduct.stockByLocation).reduce((a, b) => a + b, 0)
+                    : minStockModalProduct.stockByLocation[modalTargetLocationId] ?? 0;
+                const proposedMin = parseInt(modalMinStockInput, 10) || 0;
+                const willTriggerAlarm = curStock <= proposedMin || modalRiskMode === 'CRITICO_MANUAL';
+
+                if (willTriggerAlarm && modalRiskMode !== 'EXENTO_MANUAL') {
+                  return (
+                    <div className="p-3 bg-amber-950/80 border border-amber-600/80 rounded-xl text-amber-200 flex items-start gap-2 animate-pulse">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="font-bold">¡ALERTA ACTIVA INMEDIATA!</strong>
+                        <p className="text-[11px] text-amber-300/90 mt-0.5">
+                          El stock actual ({curStock} {minStockModalProduct.unit}) está en o por debajo del límite mínimo propuesto ({proposedMin} {minStockModalProduct.unit}). Al guardar, se encenderá la alarma de quiebre en la torre de control y pedidos sugeridos.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setMinStockModalProduct(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-lg min-h-[44px]"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg shadow-lg shadow-amber-950/40 min-h-[44px] flex items-center gap-1.5"
+                >
+                  <BellRing className="w-4 h-4 text-slate-950" />
+                  Guardar Límite y Activar Alarma
                 </button>
               </div>
             </form>

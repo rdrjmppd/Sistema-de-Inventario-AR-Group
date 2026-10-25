@@ -1,17 +1,26 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, UserRole } from '../types';
+import { UserProfile, UserRole, UserSessionRecord } from '../types';
 import { getCaracasNow } from '../lib/bcv';
+import {
+  loadStoredSessionHistory,
+  recordUserLoginSession,
+  recordUserLogoutSession,
+  saveSessionHistory,
+} from '../lib/audit-logger';
 
 interface AuthContextType {
   user: UserProfile | null;
   users: UserProfile[];
   isAuthenticated: boolean;
+  sessionHistory: UserSessionRecord[];
+  activeSessionId: string | null;
   login: (email: string, pin: string) => { success: boolean; error?: string };
   logout: () => void;
   switchRoleDemo: (role: UserRole) => void;
   createUser: (data: Omit<UserProfile, 'uid' | 'createdAt'>) => void;
   toggleUserActive: (uid: string) => void;
   hasPermission: (allowedRoles: UserRole[]) => boolean;
+  clearSessionHistory: () => void;
 }
 
 const BOOTSTRAP_USERS: UserProfile[] = [
@@ -60,7 +69,7 @@ const BOOTSTRAP_USERS: UserProfile[] = [
 const STORAGE_KEY_USERS = 'chrystal_erp_users_v1';
 const STORAGE_KEY_SESSION = 'chrystal_erp_session_v1';
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<UserProfile[]>(() => {
@@ -93,6 +102,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   });
 
+  const [sessionHistory, setSessionHistory] = useState<UserSessionRecord[]>(() => {
+    return loadStoredSessionHistory();
+  });
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_USERS, JSON.stringify(users));
@@ -105,6 +119,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (user) {
         localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(user));
+        // If not already in session tracking, establish it
+        if (!activeSessionId) {
+          const { session, updatedHistory } = recordUserLoginSession(user, sessionHistory);
+          setActiveSessionId(session.id);
+          setSessionHistory(updatedHistory);
+        }
       } else {
         localStorage.removeItem(STORAGE_KEY_SESSION);
       }
@@ -117,43 +137,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanEmail = email.trim().toLowerCase();
     const cleanPin = pin.trim();
 
+    let targetUser: UserProfile | null = null;
     if (cleanEmail === 'rdrj.mppd@gmail.com' && cleanPin === '102030') {
-      const superUser = users.find((u) => u.email.toLowerCase() === cleanEmail) || BOOTSTRAP_USERS[0];
-      setUser(superUser);
-      return { success: true };
+      targetUser = users.find((u) => u.email.toLowerCase() === cleanEmail) || BOOTSTRAP_USERS[0];
+    } else {
+      const found = users.find(
+        (u) => u.email.toLowerCase() === cleanEmail && u.pin === cleanPin
+      );
+
+      if (!found) {
+        return {
+          success: false,
+          error: 'Credenciales inválidas. El autoregistro público está deshabilitado por política de seguridad RBAC.',
+        };
+      }
+
+      if (!found.active) {
+        return {
+          success: false,
+          error: 'Esta cuenta de usuario se encuentra suspendida por el Superadministrador.',
+        };
+      }
+      targetUser = found;
     }
 
-    const found = users.find(
-      (u) => u.email.toLowerCase() === cleanEmail && u.pin === cleanPin
-    );
-
-    if (!found) {
-      return {
-        success: false,
-        error: 'Credenciales inválidas. El autoregistro público está deshabilitado por política de seguridad RBAC.',
-      };
+    // Close any previous session
+    if (activeSessionId) {
+      setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
     }
 
-    if (!found.active) {
-      return {
-        success: false,
-        error: 'Esta cuenta de usuario se encuentra suspendida por el Superadministrador.',
-      };
-    }
+    const { session, updatedHistory } = recordUserLoginSession(targetUser, sessionHistory);
+    setActiveSessionId(session.id);
+    setSessionHistory(updatedHistory);
+    setUser(targetUser);
 
-    setUser(found);
     return { success: true };
   };
 
   const logout = () => {
+    if (activeSessionId) {
+      setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
+      setActiveSessionId(null);
+    }
     setUser(null);
   };
 
   const switchRoleDemo = (role: UserRole) => {
     const target = users.find((u) => u.role === role);
     if (target) {
+      if (activeSessionId) {
+        setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
+      }
+      const { session, updatedHistory } = recordUserLoginSession(target, sessionHistory);
+      setActiveSessionId(session.id);
+      setSessionHistory(updatedHistory);
       setUser(target);
     }
+  };
+
+  const clearSessionHistory = () => {
+    setSessionHistory([]);
+    saveSessionHistory([]);
+    setActiveSessionId(null);
   };
 
   const createUser = (data: Omit<UserProfile, 'uid' | 'createdAt'>) => {
@@ -187,12 +232,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         users,
         isAuthenticated: !!user,
+        sessionHistory,
+        activeSessionId,
         login,
         logout,
         switchRoleDemo,
         createUser,
         toggleUserActive,
         hasPermission,
+        clearSessionHistory,
       }}
     >
       {children}
