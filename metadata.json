@@ -1,0 +1,6 @@
+{
+  "name": "Chrystal® Enterprise Food Retail ERP Venezuela",
+  "description": "Plataforma ERP Bimonetaria (USD/VES BCV) Multi-Sede para Retail de Alimentos y Distribución en Venezuela con compatibilidad Chrystal®, Lector OCR Forense y Gobernanza Antigravity 2.0.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
