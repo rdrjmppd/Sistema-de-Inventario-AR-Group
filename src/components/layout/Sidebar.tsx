@@ -17,10 +17,12 @@ import {
   Settings,
   X,
   History,
+  PackageMinus,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useUIConfig } from '../../context/UIConfigContext';
+import { useInventory } from '../../context/InventoryContext';
 
 interface SidebarProps {
   activeTab: NavigationTab;
@@ -67,6 +69,13 @@ const NAV_ITEMS: NavItem[] = [
     group: 'OPERACIONES',
     icon: ArrowLeftRight,
     allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
+  },
+  {
+    id: 'INVENTORY_DISCARDS',
+    defaultLabel: 'Descargas & Bajas (Doble Firma)',
+    group: 'OPERACIONES',
+    icon: PackageMinus,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA, UserRole.OBSERVADOR],
   },
   {
     id: 'CHRYSTAL_IMPORT',
@@ -165,6 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { hasPermission } = useAuth();
   const { config } = useUIConfig();
+  const { pendingDiscardsCount } = useInventory();
 
   const groups: Array<NavItem['group']> = [
     'OPERACIONES',
@@ -200,13 +210,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   const label =
                     (item.labelKey && config.customLabels[item.labelKey]) ||
                     item.defaultLabel;
+                  const showDiscardBadge =
+                    item.id === 'INVENTORY_DISCARDS' && pendingDiscardsCount > 0;
 
                   return (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => handleSelect(item.id)}
-                      className={`w-full flex items-center gap-2.5 px-3 ${
+                      className={`w-full flex items-center justify-between gap-2 px-3 ${
                         isMobileDrawer ? 'min-h-[44px] py-2.5 text-xs' : 'py-2 text-xs'
                       } rounded-lg font-medium transition cursor-pointer ${
                         isActive
@@ -214,12 +226,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
                       }`}
                     >
-                      <Icon
-                        className={`w-4 h-4 shrink-0 ${
-                          isActive ? 'text-white' : 'text-slate-400'
-                        }`}
-                      />
-                      <span className="truncate text-left">{label}</span>
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Icon
+                          className={`w-4 h-4 shrink-0 ${
+                            isActive ? 'text-white' : 'text-slate-400'
+                          }`}
+                        />
+                        <span className="truncate text-left">{label}</span>
+                      </span>
+                      {showDiscardBadge && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500 text-slate-950 shrink-0">
+                          {pendingDiscardsCount}
+                        </span>
+                      )}
                     </button>
                   );
                 })}

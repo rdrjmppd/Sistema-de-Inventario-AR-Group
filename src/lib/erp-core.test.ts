@@ -53,6 +53,17 @@ import {
   recordUserLogoutSession,
 } from './audit-logger';
 import {
+  createPendingInventoryDiscard,
+  authorizeInventoryDiscardWithPin,
+  rejectInventoryDiscardWithReason,
+  calculateDiscardLossValuation,
+} from './inventory-discards';
+import {
+  buildExecutiveInventoryPdfAnalytics,
+  generateExecutiveInventoryPdfDocument,
+  LIQUIDITY_STOCKOUT_JUSTIFICATION,
+} from './pdf-exporter';
+import {
   BcvRateState,
   LocationNode,
   Product,
@@ -60,6 +71,7 @@ import {
   UserProfile,
   PlatformBackupPayload,
   ManualRiskMode,
+  InventoryDiscardRecord,
 } from '../types';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
@@ -1236,6 +1248,508 @@ test('20. Platform Reset / Factory Wipe Governance & PIN Authorization', () => {
   assert.equal(platformProducts.length, 0);
   assert.equal(purchaseOrders.length, 0);
 });
+
+test('21. Inventory Discards (Step 1): Analyst Pre-Registration calculates Decimal.js loss and preserves stock', () => {
+  const locations: LocationNode[] = [
+    {
+      id: 'loc-pzo-01',
+      code: 'PZO-01',
+      name: 'Sede Alta Vista',
+      city: 'Puerto Ordaz',
+      type: 'SEDE',
+      manager: 'Ing. Roberto Salazar',
+      active: true,
+    },
+  ];
+
+  const initialProduct: Product = {
+    id: 'prd-dsc-01',
+    sku: 'ACE-MAZ-1LT',
+    barcode: '7591001100303',
+    name: 'Aceite de Maíz Mazeite 1 Litro',
+    category: 'Aceites y Grasas',
+    unit: 'LT',
+    costUsd: 3.15,
+    targetMarginPercent: 28,
+    priceUsd: 4.38,
+    ivaRate: 16,
+    stockByLocation: { 'loc-pzo-01': 100 },
+    minStockByLocation: { 'loc-pzo-01': 30 },
+    monthlyUnitsSold: 420,
+    abcClass: 'A',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+  };
+
+  const analystActor: UserProfile = {
+    uid: 'usr-analista-01',
+    email: 'analista@chrystal.com.ve',
+    displayName: 'Lic. Carlos Mendoza',
+    role: UserRole.ANALISTA,
+    pin: '304050',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const res = createPendingInventoryDiscard(
+    {
+      locationId: 'loc-pzo-01',
+      productId: 'prd-dsc-01',
+      quantityDiscarded: 8,
+      reason: 'VENCIMIENTO_CADUCIDAD',
+      reasonDetails: 'Lote vencido detectado en auditoría de pasillo central.',
+      lotOrGuideNumber: 'LOTE-2025-11',
+    },
+    {
+      products: [initialProduct],
+      locations,
+      existingDiscards: [],
+      activeBcvRate: 44.5,
+      actor: analystActor,
+      timestampVet: '2026-03-24T11:00:00-04:00',
+    }
+  );
+
+  assert.equal(res.success, true);
+  assert.ok(res.discard);
+  assert.equal(res.discard.status, 'PENDIENTE_AUTORIZACION');
+  assert.equal(res.discard.referenceCode, 'BAJA-2026-0001');
+  // 8 * 3.15 = 25.20 USD; 25.20 * 44.5 = 1121.40 VES
+  assert.equal(res.discard.totalCostUsd, 25.2);
+  assert.equal(res.discard.totalCostVes, 1121.4);
+  assert.equal(res.discard.stockBeforeDiscard, 100);
+  assert.equal(res.discard.stockAfterDiscard, undefined);
+  // RED LINE: Physical stock in product catalog remains 100
+  assert.equal(initialProduct.stockByLocation['loc-pzo-01'], 100);
+});
+
+test('22. Inventory Discards (Step 2): Manager RBAC + PIN (203040) Dual-Signature Authorization deducts stock', () => {
+  const initialProduct: Product = {
+    id: 'prd-dsc-02',
+    sku: 'LEC-CAM-1KG',
+    barcode: '7591001100999',
+    name: 'Leche en Polvo La Campiña 1Kg',
+    category: 'Charcutería y Lácteos',
+    unit: 'UND',
+    costUsd: 6.8,
+    targetMarginPercent: 26,
+    priceUsd: 9.19,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 50 },
+    minStockByLocation: { 'loc-pzo-01': 20 },
+    monthlyUnitsSold: 200,
+    abcClass: 'A',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+  };
+
+  const pendingDiscard: InventoryDiscardRecord = {
+    id: 'dsc-test-auth-01',
+    referenceCode: 'BAJA-2026-0009',
+    locationId: 'loc-pzo-01',
+    locationCode: 'PZO-01',
+    locationName: 'Sede Alta Vista',
+    productId: 'prd-dsc-02',
+    sku: 'LEC-CAM-1KG',
+    productName: 'Leche en Polvo La Campiña 1Kg',
+    category: 'Charcutería y Lácteos',
+    unit: 'UND',
+    quantityDiscarded: 5,
+    stockBeforeDiscard: 50,
+    unitCostUsd: 6.8,
+    totalCostUsd: 34.0,
+    totalCostVes: 1513.0,
+    bcvRateAtEvent: 44.5,
+    reason: 'DETERIORO_EMPAQUE_CONTENEDOR',
+    reasonDetails: 'Bolsas perforadas en transporte interno.',
+    status: 'PENDIENTE_AUTORIZACION',
+    createdByUserId: 'usr-analista-01',
+    createdByEmail: 'analista@chrystal.com.ve',
+    createdByDisplayName: 'Lic. Carlos Mendoza',
+    createdByRole: UserRole.ANALISTA,
+    createdAtVet: '2026-03-24T11:15:00-04:00',
+  };
+
+  const analystActor: UserProfile = {
+    uid: 'usr-analista-01',
+    email: 'analista@chrystal.com.ve',
+    displayName: 'Lic. Carlos Mendoza',
+    role: UserRole.ANALISTA,
+    pin: '304050',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const managerActor: UserProfile = {
+    uid: 'usr-gerente-01',
+    email: 'gerencia@chrystal.com.ve',
+    displayName: 'Ing. María Fernanda Gómez',
+    role: UserRole.GERENTE,
+    pin: '203040',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  // 1) Block Analyst from authorizing
+  const unauthorizedRoleAttempt = authorizeInventoryDiscardWithPin({
+    discardId: pendingDiscard.id,
+    managerPin: '203040',
+    discards: [pendingDiscard],
+    products: [initialProduct],
+    actor: analystActor,
+  });
+  assert.equal(unauthorizedRoleAttempt.success, false);
+
+  // 2) Block Manager with wrong PIN
+  const wrongPinAttempt = authorizeInventoryDiscardWithPin({
+    discardId: pendingDiscard.id,
+    managerPin: '000000',
+    discards: [pendingDiscard],
+    products: [initialProduct],
+    actor: managerActor,
+  });
+  assert.equal(wrongPinAttempt.success, false);
+
+  // 3) Authorize with Manager role + valid PIN 203040
+  const authorizedRes = authorizeInventoryDiscardWithPin({
+    discardId: pendingDiscard.id,
+    managerPin: '203040',
+    discards: [pendingDiscard],
+    products: [initialProduct],
+    actor: managerActor,
+    timestampVet: '2026-03-24T11:30:00-04:00',
+  });
+
+  assert.equal(authorizedRes.success, true);
+  assert.ok(authorizedRes.updatedDiscard);
+  assert.ok(authorizedRes.updatedProducts);
+  assert.equal(authorizedRes.updatedDiscard.status, 'AUTORIZADA');
+  assert.equal(authorizedRes.updatedDiscard.stockBeforeDiscard, 50);
+  assert.equal(authorizedRes.updatedDiscard.stockAfterDiscard, 45);
+  assert.equal(authorizedRes.updatedDiscard.managerAuthPinUsed, 'VERIFICADO_RBAC');
+  assert.equal(authorizedRes.updatedProducts[0].stockByLocation['loc-pzo-01'], 45);
+});
+
+test('23. Inventory Discards (Step 3): Manager Rejection preserves physical stock intact', () => {
+  const pendingDiscard: InventoryDiscardRecord = {
+    id: 'dsc-test-rej-01',
+    referenceCode: 'BAJA-2026-0010',
+    locationId: 'loc-ccs-01',
+    locationCode: 'CCS-01',
+    locationName: 'Sede Las Mercedes',
+    productId: 'prd-001',
+    sku: 'HAR-PAN-1KG',
+    productName: 'Harina P.A.N. 1Kg',
+    category: 'Víveres Secos',
+    unit: 'UND',
+    quantityDiscarded: 12,
+    stockBeforeDiscard: 310,
+    unitCostUsd: 0.94,
+    totalCostUsd: 11.28,
+    totalCostVes: 501.96,
+    bcvRateAtEvent: 44.5,
+    reason: 'ERROR_CARGA_SISTEMA',
+    reasonDetails: 'Supuesta diferencia en conteo rápido.',
+    status: 'PENDIENTE_AUTORIZACION',
+    createdByUserId: 'usr-analista-01',
+    createdByEmail: 'analista@chrystal.com.ve',
+    createdByDisplayName: 'Lic. Carlos Mendoza',
+    createdByRole: UserRole.ANALISTA,
+    createdAtVet: '2026-03-24T12:00:00-04:00',
+  };
+
+  const managerActor: UserProfile = {
+    uid: 'usr-gerente-01',
+    email: 'gerencia@chrystal.com.ve',
+    displayName: 'Ing. María Fernanda Gómez',
+    role: UserRole.GERENTE,
+    pin: '203040',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const rejectRes = rejectInventoryDiscardWithReason({
+    discardId: pendingDiscard.id,
+    rejectionReason: 'Reconteo físico en depósito confirmó que las 12 unidades están completas.',
+    discards: [pendingDiscard],
+    actor: managerActor,
+    timestampVet: '2026-03-24T12:20:00-04:00',
+  });
+
+  assert.equal(rejectRes.success, true);
+  assert.ok(rejectRes.updatedDiscard);
+  assert.equal(rejectRes.updatedDiscard.status, 'RECHAZADA');
+  assert.equal(rejectRes.updatedDiscard.stockAfterDiscard, undefined);
+  assert.ok(rejectRes.updatedDiscard.rejectionReason?.includes('Reconteo físico'));
+});
+
+test('24. Stress Test: 500 Concurrent Inventory Discards across 3 Locations with 0.00 Decimal Drift & Zero Negative Stock', () => {
+  const locations: LocationNode[] = [
+    { id: 'loc-pzo-01', code: 'PZO-01', name: 'Puerto Ordaz', city: 'PZO', type: 'SEDE', manager: 'M1', active: true },
+    { id: 'loc-ccs-01', code: 'CCS-01', name: 'Caracas', city: 'CCS', type: 'SEDE', manager: 'M2', active: true },
+    { id: 'loc-val-01', code: 'VAL-01', name: 'Valencia', city: 'VAL', type: 'DEPOSITO', manager: 'M3', active: true },
+  ];
+
+  let products: Product[] = [
+    {
+      id: 'prd-stress-dsc',
+      sku: 'STRESS-DSC-01',
+      barcode: '7590000000001',
+      name: 'Producto Stress Merma Controlada',
+      category: 'Víveres Secos',
+      unit: 'UND',
+      costUsd: 1.37,
+      targetMarginPercent: 28,
+      priceUsd: 1.9,
+      ivaRate: 16,
+      stockByLocation: {
+        'loc-pzo-01': 1000,
+        'loc-ccs-01': 1000,
+        'loc-val-01': 1000,
+      },
+      minStockByLocation: {
+        'loc-pzo-01': 100,
+        'loc-ccs-01': 100,
+        'loc-val-01': 100,
+      },
+      monthlyUnitsSold: 1500,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-03-24T10:00:00-04:00',
+    },
+  ];
+
+  const analyst: UserProfile = {
+    uid: 'usr-analista-01',
+    email: 'analista@chrystal.com.ve',
+    displayName: 'Analista',
+    role: UserRole.ANALISTA,
+    pin: '304050',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  const superAdmin: UserProfile = {
+    uid: 'usr-super-01',
+    email: 'rdrj.mppd@gmail.com',
+    displayName: 'Superadmin',
+    role: UserRole.SUPERADMIN,
+    pin: '102030',
+    locationAccess: ['ALL'],
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+  };
+
+  let discards: InventoryDiscardRecord[] = [];
+  const activeBcvRate = 44.55;
+
+  // Register 500 discard requests across the 3 locations
+  for (let i = 0; i < 500; i++) {
+    const loc = locations[i % 3];
+    const createRes = createPendingInventoryDiscard(
+      {
+        locationId: loc.id,
+        productId: 'prd-stress-dsc',
+        quantityDiscarded: 2,
+        reason: 'MERMA_CADENA_FRIO',
+        reasonDetails: `Incidencia térmica lote #${i + 1}`,
+      },
+      {
+        products,
+        locations,
+        existingDiscards: discards,
+        activeBcvRate,
+        actor: analyst,
+      }
+    );
+    assert.equal(createRes.success, true);
+    if (createRes.discard) {
+      discards.push(createRes.discard);
+    }
+  }
+
+  // While all 500 are PENDIENTE_AUTORIZACION, physical stock must still be 1000 per location
+  assert.equal(products[0].stockByLocation['loc-pzo-01'], 1000);
+  assert.equal(products[0].stockByLocation['loc-ccs-01'], 1000);
+  assert.equal(products[0].stockByLocation['loc-val-01'], 1000);
+
+  // Authorize the first 300 discards (100 per location * 2 units = 200 units deducted per location)
+  // and Reject the remaining 200 discards
+  for (let i = 0; i < 500; i++) {
+    const d = discards[i];
+    if (i < 300) {
+      const authRes = authorizeInventoryDiscardWithPin({
+        discardId: d.id,
+        managerPin: '102030',
+        discards,
+        products,
+        actor: superAdmin,
+      });
+      assert.equal(authRes.success, true);
+      if (authRes.updatedProducts && authRes.updatedDiscard) {
+        products = authRes.updatedProducts;
+        discards[i] = authRes.updatedDiscard;
+      }
+    } else {
+      const rejRes = rejectInventoryDiscardWithReason({
+        discardId: d.id,
+        rejectionReason: 'Merma descartada tras auditoría de control de calidad.',
+        discards,
+        actor: superAdmin,
+      });
+      assert.equal(rejRes.success, true);
+      if (rejRes.updatedDiscard) {
+        discards[i] = rejRes.updatedDiscard;
+      }
+    }
+  }
+
+  // Each location had 100 authorized discards of 2 units = 200 units deducted -> 800 remaining
+  assert.equal(products[0].stockByLocation['loc-pzo-01'], 800);
+  assert.equal(products[0].stockByLocation['loc-ccs-01'], 800);
+  assert.equal(products[0].stockByLocation['loc-val-01'], 800);
+
+  const authorizedCount = discards.filter((d) => d.status === 'AUTORIZADA').length;
+  const rejectedCount = discards.filter((d) => d.status === 'RECHAZADA').length;
+  const pendingCount = discards.filter((d) => d.status === 'PENDIENTE_AUTORIZACION').length;
+
+  assert.equal(authorizedCount, 300);
+  assert.equal(rejectedCount, 200);
+  assert.equal(pendingCount, 0);
+
+  // Verify valuation per discard: 2 * 1.37 = 2.74 USD; 2.74 * 44.55 = 122.07 VES
+  const sampleVal = calculateDiscardLossValuation(2, 1.37, 44.55);
+  assert.equal(sampleVal.totalCostUsd, 2.74);
+  assert.equal(sampleVal.totalCostVes, 122.07);
+});
+
+test('25. Executive PDF Analytics & Generator Stress Test: 0 SKUs, 1 SKU, and 500 SKUs with Liquidity & Stockout Risk Diagnosis', () => {
+  const testLocations: LocationNode[] = [
+    {
+      id: 'loc-pzo-01',
+      code: 'PZO-01',
+      name: 'Sede Alta Vista',
+      city: 'Puerto Ordaz',
+      type: 'SEDE',
+      manager: 'Ing. Roberto Salazar',
+      active: true,
+    },
+    {
+      id: 'loc-ccs-01',
+      code: 'CCS-01',
+      name: 'Sede Las Mercedes',
+      city: 'Caracas',
+      type: 'SEDE',
+      manager: 'Lic. Valentina Morales',
+      active: true,
+    },
+  ];
+
+  const bcvState: BcvRateState = {
+    spotRateToday: 44.5,
+    nextDayRateAfter5Pm: 44.8,
+    activeRate: 44.5,
+    isAfter5PmVet: false,
+    caracasTimeFormatted: '14:30:00',
+    caracasDateFormatted: '25/10/2026',
+    rateSourceLabel: 'BCV Oficial',
+  };
+
+  // Case A: Empty catalog (0 products)
+  const emptyAnalytics = buildExecutiveInventoryPdfAnalytics([], testLocations, bcvState);
+  assert.equal(emptyAnalytics.totalSkus, 0);
+  assert.equal(emptyAnalytics.totalValuationUsd, 0);
+  assert.equal(emptyAnalytics.atRiskSkusCount, 0);
+  assert.equal(emptyAnalytics.financialJustification, LIQUIDITY_STOCKOUT_JUSTIFICATION);
+  const emptyDoc = generateExecutiveInventoryPdfDocument([], testLocations, bcvState);
+  assert.ok(emptyDoc.getNumberOfPages() >= 1);
+
+  // Case B: Single product (1 SKU in stockout risk)
+  const singleProduct: Product = {
+    id: 'prd-pdf-01',
+    sku: 'HAR-PAN-1KG',
+    barcode: '7591001100105',
+    name: 'Harina P.A.N. 1Kg',
+    category: 'Víveres Secos',
+    unit: 'UND',
+    costUsd: 1.0,
+    targetMarginPercent: 30,
+    priceUsd: 1.43,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 20, 'loc-ccs-01': 15 },
+    minStockByLocation: { 'loc-pzo-01': 50, 'loc-ccs-01': 40 },
+    monthlyUnitsSold: 1200,
+    abcClass: 'A',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-10-25T10:00:00-04:00',
+  };
+
+  const singleAnalytics = buildExecutiveInventoryPdfAnalytics(
+    [singleProduct],
+    testLocations,
+    bcvState,
+    {
+      razonSocial: 'INVERSIONES ALIMENTARIAS DEL SUR, C.A.',
+      rif: 'J-40998877-1',
+    }
+  );
+  assert.equal(singleAnalytics.totalSkus, 1);
+  assert.equal(singleAnalytics.totalUnits, 35);
+  assert.equal(singleAnalytics.totalValuationUsd, 35.0);
+  assert.equal(singleAnalytics.totalValuationVes, 1557.5);
+  assert.equal(singleAnalytics.weightedAverageMarginPct, 30);
+  assert.equal(singleAnalytics.atRiskSkusCount, 1);
+  assert.ok(singleAnalytics.classATractorsSummary.includes('HAR-PAN-1KG'));
+  assert.ok(singleAnalytics.atRiskProductsSummary.includes('HAR-PAN-1KG'));
+
+  // Case C: Stress test with 500 SKUs
+  const manyProducts: Product[] = Array.from({ length: 500 }, (_, idx) => ({
+    id: `prd-pdf-stress-${idx + 1}`,
+    sku: `SKU-PDF-${String(idx + 1).padStart(4, '0')}`,
+    barcode: `7598800${String(idx + 1).padStart(6, '0')}`,
+    name: `Producto Catálogo Ejecutivo #${idx + 1}`,
+    category: idx % 2 === 0 ? 'Víveres Secos' : 'Lácteos y Refrigerados',
+    unit: 'UND',
+    costUsd: 2.5,
+    targetMarginPercent: 28,
+    priceUsd: 3.47,
+    ivaRate: 16,
+    stockByLocation: {
+      'loc-pzo-01': idx % 5 === 0 ? 10 : 80,
+      'loc-ccs-01': idx % 5 === 0 ? 5 : 70,
+    },
+    minStockByLocation: {
+      'loc-pzo-01': 25,
+      'loc-ccs-01': 25,
+    },
+    monthlyUnitsSold: 300,
+    abcClass: idx % 3 === 0 ? 'A' : idx % 3 === 1 ? 'B' : 'C',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-10-25T10:00:00-04:00',
+  }));
+
+  const stressAnalytics = buildExecutiveInventoryPdfAnalytics(
+    manyProducts,
+    testLocations,
+    bcvState
+  );
+  assert.equal(stressAnalytics.totalSkus, 500);
+  // Every 5th product (100 products) has stock 10 <= 25, so 100 SKUs are at risk
+  assert.equal(stressAnalytics.atRiskSkusCount, 100);
+  const stressDoc = generateExecutiveInventoryPdfDocument(
+    manyProducts,
+    testLocations,
+    bcvState
+  );
+  assert.ok(stressDoc.getNumberOfPages() >= 5);
+});
+
+
 
 
 

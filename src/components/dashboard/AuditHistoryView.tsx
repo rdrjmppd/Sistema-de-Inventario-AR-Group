@@ -119,6 +119,12 @@ export const AuditHistoryView: React.FC = () => {
         return 'bg-slate-800 text-slate-300 border-slate-700';
       case 'LOCATION_DELETE':
         return 'bg-rose-950/70 text-rose-300 border-rose-600';
+      case 'INVENTORY_DISCARD_CREATE':
+        return 'bg-amber-950/80 text-amber-300 border-amber-600';
+      case 'INVENTORY_DISCARD_AUTHORIZE':
+        return 'bg-emerald-950/80 text-emerald-300 border-emerald-600 font-bold';
+      case 'INVENTORY_DISCARD_REJECT':
+        return 'bg-rose-950/80 text-rose-300 border-rose-600';
       default:
         return 'bg-slate-800 text-slate-300 border-slate-700';
     }
@@ -259,6 +265,9 @@ export const AuditHistoryView: React.FC = () => {
                 <option value="LOGIN">Inicio de Sesión (LOGIN)</option>
                 <option value="LOGOUT">Cierre de Sesión (LOGOUT)</option>
                 <option value="MIN_STOCK_UPDATE">Ajuste de Stock Mínimo</option>
+                <option value="INVENTORY_DISCARD_CREATE">Pre-Registro Descarga (Analista)</option>
+                <option value="INVENTORY_DISCARD_AUTHORIZE">Descarga Autorizada (Gerencia)</option>
+                <option value="INVENTORY_DISCARD_REJECT">Descarga Rechazada (Gerencia)</option>
                 <option value="PRODUCT_CREATE">Alta de Producto</option>
                 <option value="LOCATION_CREATE">Creación de Sede/Depósito</option>
                 <option value="LOCATION_DELETE">Eliminación Autorizada</option>
@@ -493,12 +502,14 @@ export const AuditHistoryView: React.FC = () => {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    PIN de Superadministrador (102030)
+                    PIN de Superadministrador *
                   </label>
                   <input
                     type="password"
+                    autoComplete="off"
+                    inputMode="numeric"
                     maxLength={10}
-                    placeholder="Ingrese su PIN de Superadmin"
+                    placeholder="Ingrese su PIN confidencial"
                     value={superAdminPinInput}
                     onChange={(e) => setSuperAdminPinInput(e.target.value)}
                     required

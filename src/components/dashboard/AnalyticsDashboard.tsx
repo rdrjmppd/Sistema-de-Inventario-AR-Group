@@ -32,7 +32,14 @@ interface AnalyticsDashboardProps {
 }
 
 export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNavigate }) => {
-  const { products, locations, selectedLocationId, reorderAlerts, wipePlatformDataToPristine } = useInventory();
+  const {
+    products,
+    locations,
+    selectedLocationId,
+    reorderAlerts,
+    wipePlatformDataToPristine,
+    pendingDiscardsCount,
+  } = useInventory();
   const { bcvState, invoices } = useFinance();
   const { config, setIsCompanyModalOpen } = useUIConfig();
   const { user } = useAuth();
@@ -174,6 +181,31 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
           </button>
         </div>
       </div>
+
+      {/* Reactive Alert for Pending Inventory Discards (Dual Signature) */}
+      {pendingDiscardsCount > 0 && (
+        <div className="bg-amber-950 text-amber-100 border border-amber-500/50 rounded-xl p-3.5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-xs">
+            <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 animate-pulse" />
+            <div>
+              <span className="font-bold text-white">
+                ALERTA DE GOBERNANZA DUAL (BAJAS Y MERMAS):
+              </span>{' '}
+              Existen <strong>{pendingDiscardsCount} solicitud(es)</strong> de descarga de
+              inventario pre-registradas por Analista esperando verificación y firma con PIN de
+              Gerencia.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('INVENTORY_DISCARDS')}
+            className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>Revisar y Firmar Descargas</span>
+          </button>
+        </div>
+      )}
 
       {/* Top Executive Banner */}
       <div className="bg-slate-900 text-white rounded-xl p-5 border border-slate-800 shadow-sm flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -469,12 +501,14 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    PIN de Superadministrador (102030)
+                    PIN de Superadministrador *
                   </label>
                   <input
                     type="password"
+                    autoComplete="off"
+                    inputMode="numeric"
                     maxLength={10}
-                    placeholder="Ingrese su PIN de Superadmin"
+                    placeholder="Ingrese su PIN confidencial"
                     value={superAdminPinInput}
                     onChange={(e) => setSuperAdminPinInput(e.target.value)}
                     required

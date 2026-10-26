@@ -15,6 +15,8 @@ import {
   AuditLogEntry,
   PlatformBackupPayload,
   UserRole,
+  InventoryDiscardRecord,
+  CreateDiscardInput,
 } from '../types';
 import {
   toDecimal,
@@ -41,6 +43,13 @@ import {
   syncProductStockMapsForLocations,
   removeLocationFromProductStockMaps,
 } from '../lib/catalog-pagination';
+import {
+  INITIAL_INVENTORY_DISCARDS,
+  createPendingInventoryDiscard,
+  authorizeInventoryDiscardWithPin,
+  rejectInventoryDiscardWithReason,
+  getDiscardReasonLabel,
+} from '../lib/inventory-discards';
 import { useFinance } from './FinanceContext';
 import { useAuth } from './AuthContext';
 
@@ -167,6 +176,19 @@ interface InventoryContextType {
     error?: string;
   };
   exportPlatformBackupPayload: () => PlatformBackupPayload;
+  discards: InventoryDiscardRecord[];
+  pendingDiscardsCount: number;
+  registerInventoryDiscard: (
+    input: CreateDiscardInput
+  ) => { success: boolean; discard?: InventoryDiscardRecord; error?: string };
+  authorizeInventoryDiscard: (
+    discardId: string,
+    managerPin: string
+  ) => { success: boolean; discard?: InventoryDiscardRecord; error?: string };
+  rejectInventoryDiscard: (
+    discardId: string,
+    rejectionReason: string
+  ) => { success: boolean; discard?: InventoryDiscardRecord; error?: string };
 }
 
 export const INITIAL_LOCATIONS: LocationNode[] = [
@@ -469,6 +491,7 @@ const STORAGE_KEY_PRODUCTS = 'chrystal_erp_products_v2';
 const STORAGE_KEY_TRANSFERS = 'chrystal_erp_transfers_v1';
 const STORAGE_KEY_PURCHASE_ORDERS = 'chrystal_erp_purchase_orders_v1';
 const STORAGE_KEY_MANUAL_RECEIPTS = 'chrystal_erp_manual_receipts_v1';
+const STORAGE_KEY_DISCARDS = 'chrystal_erp_discards_v1';
 
 export const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
@@ -555,6 +578,25 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [salesEvents, setSalesEvents] = useState<SalesSyncEvent[]>([]);
   const [draftPurchaseTarget, setDraftPurchaseTarget] = useState<DraftPurchaseTarget | null>(null);
 
+  const [discards, setDiscards] = useState<InventoryDiscardRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_DISCARDS);
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_INVENTORY_DISCARDS;
+  });
+
+  const pendingDiscardsCount = useMemo(() => {
+    return discards.filter((d) => d.status === 'PENDIENTE_AUTORIZACION').length;
+  }, [discards]);
+
   // Persist locations
   useEffect(() => {
     try {
@@ -579,6 +621,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ignore
     }
   }, [manualReceipts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_DISCARDS, JSON.stringify(discards));
+    } catch {
+      // ignore
+    }
+  }, [discards]);
 
   useEffect(() => {
     try {
@@ -1522,6 +1572,136 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { success: true, product: updatedProduct };
   };
 
+  const registerInventoryDiscard = (
+    input: CreateDiscardInput
+  ): { success: boolean; discard?: InventoryDiscardRecord; error?: string } => {
+    const result = createPendingInventoryDiscard(input, {
+      products,
+      locations,
+      existingDiscards: discards,
+      activeBcvRate: bcvState.activeRate,
+      actor: user,
+    });
+
+    if (!result.success || !result.discard) {
+      return result;
+    }
+
+    const record = result.discard;
+    setDiscards((prev) => [record, ...prev]);
+
+    logAuditEvent(
+      'INVENTORY_DISCARD_CREATE',
+      'INVENTORY_DISCARD',
+      `Pre-registro de descarga ${record.referenceCode} (${record.quantityDiscarded} ${record.unit} de ${record.sku} en ${record.locationCode}) por causa "${getDiscardReasonLabel(record.reason)}". Estado: PENDIENTE_AUTORIZACION (Sin descuento de stock).`,
+      {
+        referenceCode: record.referenceCode,
+        sku: record.sku,
+        locationCode: record.locationCode,
+        quantityDiscarded: record.quantityDiscarded,
+        totalCostUsd: record.totalCostUsd,
+        totalCostVes: record.totalCostVes,
+        reason: record.reason,
+      },
+      record.id
+    );
+
+    return {
+      success: true,
+      discard: record,
+    };
+  };
+
+  const authorizeInventoryDiscard = (
+    discardId: string,
+    managerPin: string
+  ): { success: boolean; discard?: InventoryDiscardRecord; error?: string } => {
+    const result = authorizeInventoryDiscardWithPin({
+      discardId,
+      managerPin,
+      discards,
+      products,
+      actor: user,
+    });
+
+    if (!result.success || !result.updatedDiscard || !result.updatedProducts) {
+      return {
+        success: false,
+        error: result.error,
+      };
+    }
+
+    const authorizedRecord = result.updatedDiscard;
+    setProducts(result.updatedProducts);
+    setDiscards((prev) =>
+      prev.map((d) => (d.id === authorizedRecord.id ? authorizedRecord : d))
+    );
+
+    logAuditEvent(
+      'INVENTORY_DISCARD_AUTHORIZE',
+      'INVENTORY_DISCARD',
+      `Descarga de inventario ${authorizedRecord.referenceCode} AUTORIZADA con Doble Firma RBAC por ${authorizedRecord.authorizedByDisplayName}. Descontados ${authorizedRecord.quantityDiscarded} ${authorizedRecord.unit} de ${authorizedRecord.sku} en ${authorizedRecord.locationCode} (Stock: ${authorizedRecord.stockBeforeDiscard} -> ${authorizedRecord.stockAfterDiscard}).`,
+      {
+        referenceCode: authorizedRecord.referenceCode,
+        sku: authorizedRecord.sku,
+        locationCode: authorizedRecord.locationCode,
+        quantityDiscarded: authorizedRecord.quantityDiscarded,
+        stockBeforeDiscard: authorizedRecord.stockBeforeDiscard,
+        stockAfterDiscard: authorizedRecord.stockAfterDiscard,
+        totalCostUsd: authorizedRecord.totalCostUsd,
+        authorizedBy: authorizedRecord.authorizedByEmail,
+      },
+      authorizedRecord.id
+    );
+
+    return {
+      success: true,
+      discard: authorizedRecord,
+    };
+  };
+
+  const rejectInventoryDiscard = (
+    discardId: string,
+    rejectionReason: string
+  ): { success: boolean; discard?: InventoryDiscardRecord; error?: string } => {
+    const result = rejectInventoryDiscardWithReason({
+      discardId,
+      rejectionReason,
+      discards,
+      actor: user,
+    });
+
+    if (!result.success || !result.updatedDiscard) {
+      return {
+        success: false,
+        error: result.error,
+      };
+    }
+
+    const rejectedRecord = result.updatedDiscard;
+    setDiscards((prev) =>
+      prev.map((d) => (d.id === rejectedRecord.id ? rejectedRecord : d))
+    );
+
+    logAuditEvent(
+      'INVENTORY_DISCARD_REJECT',
+      'INVENTORY_DISCARD',
+      `Solicitud de descarga ${rejectedRecord.referenceCode} (${rejectedRecord.sku} en ${rejectedRecord.locationCode}) RECHAZADA por ${rejectedRecord.authorizedByDisplayName}. Motivo: "${rejectedRecord.rejectionReason}". Stock físico intacto.`,
+      {
+        referenceCode: rejectedRecord.referenceCode,
+        sku: rejectedRecord.sku,
+        locationCode: rejectedRecord.locationCode,
+        rejectionReason: rejectedRecord.rejectionReason,
+      },
+      rejectedRecord.id
+    );
+
+    return {
+      success: true,
+      discard: rejectedRecord,
+    };
+  };
+
   const wipePlatformDataToPristine = (
     superAdminPin: string
   ): { success: boolean; error?: string } => {
@@ -1540,6 +1720,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setPurchaseOrders([]);
     setManualReceipts([]);
     setSalesEvents([]);
+    setDiscards([]);
 
     resetFinanceState();
 
@@ -1548,6 +1729,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(STORAGE_KEY_TRANSFERS, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_PURCHASE_ORDERS, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_MANUAL_RECEIPTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_DISCARDS, JSON.stringify([]));
     } catch {
       // ignore
     }
@@ -1582,6 +1764,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (backupData.purchaseOrders) setPurchaseOrders(backupData.purchaseOrders);
     if (backupData.manualReceipts) setManualReceipts(backupData.manualReceipts);
     if (backupData.salesEvents) setSalesEvents(backupData.salesEvents);
+    if (Array.isArray(backupData.discards)) setDiscards(backupData.discards);
 
     restoreFinanceState({
       suppliers: backupData.suppliers,
@@ -1647,6 +1830,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       closures,
       auditLogs,
       sessionHistory,
+      discards,
     };
 
     logAuditEvent(
@@ -1704,6 +1888,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         wipePlatformDataToPristine,
         restoreFullPlatformState,
         exportPlatformBackupPayload,
+        discards,
+        pendingDiscardsCount,
+        registerInventoryDiscard,
+        authorizeInventoryDiscard,
+        rejectInventoryDiscard,
       }}
     >
       {children}

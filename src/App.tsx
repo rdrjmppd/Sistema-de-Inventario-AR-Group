@@ -29,6 +29,7 @@ import { AccountsPayable } from './components/finance/AccountsPayable';
 import { MonthlyClosing } from './components/finance/MonthlyClosing';
 import { BusinessSettings } from './components/dashboard/BusinessSettings';
 import { AuditHistoryView } from './components/dashboard/AuditHistoryView';
+import { InventoryDiscardsView } from './components/inventory/InventoryDiscardsView';
 
 const LoginView: React.FC = () => {
   const { login } = useAuth();
@@ -138,6 +139,7 @@ const MainShell: React.FC = () => {
       {activeTab === 'CATALOG' && <ProductCatalog />}
       {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
       {activeTab === 'TRANSFERS' && <StockTransfers />}
+      {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
       {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
       {activeTab === 'PRICING' && <PricingCalculator />}
       {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}

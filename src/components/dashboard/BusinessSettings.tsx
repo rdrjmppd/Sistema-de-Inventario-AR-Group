@@ -87,7 +87,7 @@ export const BusinessSettings: React.FC = () => {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [role, setRole] = useState<UserRole>(UserRole.ANALISTA);
-  const [pin, setPin] = useState('506070');
+  const [pin, setPin] = useState('');
 
   const handleAddUser = (e: React.FormEvent) => {
     e.preventDefault();
@@ -420,9 +420,14 @@ export const BusinessSettings: React.FC = () => {
               </select>
             </div>
             <div>
-              <label className="block font-semibold text-slate-700 mb-1">PIN Acceso</label>
+              <label className="block font-semibold text-slate-700 mb-1">PIN Acceso *</label>
               <input
-                type="text"
+                type="password"
+                autoComplete="off"
+                inputMode="numeric"
+                maxLength={10}
+                required
+                placeholder="••••••"
                 value={pin}
                 onChange={(e) => setPin(e.target.value)}
                 className="w-full px-2.5 py-2 border border-slate-300 rounded-lg font-mono font-bold"

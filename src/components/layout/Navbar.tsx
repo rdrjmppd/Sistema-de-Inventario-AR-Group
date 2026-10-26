@@ -58,6 +58,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     deleteLocationOrDepot,
     reorderAlerts,
     unreadAlertsCount,
+    pendingDiscardsCount,
   } = useInventory();
 
   const [syncPulse, setSyncPulse] = useState(false);
@@ -307,31 +308,33 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             </div>
 
-            {/* Real-Time Reorder Point Notification Bell */}
+            {/* Real-Time Reorder Point & Pending Discards Notification Bell */}
             <button
               type="button"
               onClick={onOpenNotifications}
-              title="Alertas en Tiempo Real de Punto de Pedido"
+              title={`Alertas de Stock (${reorderAlerts.length}) · Bajas Pendientes de Firma (${pendingDiscardsCount})`}
               className={`relative min-h-[40px] flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs font-semibold transition whitespace-nowrap shrink-0 cursor-pointer ${
-                reorderAlerts.length > 0
+                reorderAlerts.length > 0 || pendingDiscardsCount > 0
                   ? 'bg-amber-950/70 hover:bg-amber-900/80 border-amber-500/50 text-amber-200'
                   : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
               }`}
             >
               <BellRing
                 className={`w-4 h-4 shrink-0 ${
-                  unreadAlertsCount > 0 ? 'text-amber-400 animate-bounce' : 'text-slate-300'
+                  unreadAlertsCount > 0 || pendingDiscardsCount > 0
+                    ? 'text-amber-400 animate-bounce'
+                    : 'text-slate-300'
                 }`}
               />
               <span className="hidden sm:inline">Alertas Stock</span>
               <span
                 className={`px-1.5 py-0.5 rounded-full font-mono text-[10px] font-bold ${
-                  unreadAlertsCount > 0
+                  unreadAlertsCount > 0 || pendingDiscardsCount > 0
                     ? 'bg-amber-500 text-slate-950'
                     : 'bg-slate-700 text-slate-200'
                 }`}
               >
-                {reorderAlerts.length}
+                {reorderAlerts.length + pendingDiscardsCount}
               </span>
             </button>
 
@@ -577,8 +580,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </div>
                 <input
                   type="password"
+                  autoComplete="off"
+                  inputMode="numeric"
+                  maxLength={10}
                   required
-                  placeholder="Ingrese nuevamente el PIN / contraseña de su cuenta abierta"
+                  placeholder="Ingrese PIN de Autorización"
                   value={createAuthPin}
                   onChange={(e) => setCreateAuthPin(e.target.value)}
                   className="w-full px-3 py-2 rounded bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-sky-500"
@@ -688,8 +694,11 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </p>
                 <input
                   type="password"
+                  autoComplete="off"
+                  inputMode="numeric"
+                  maxLength={10}
                   required
-                  placeholder="Código de autorización / PIN de la cuenta abierta"
+                  placeholder="Ingrese PIN de Autorización"
                   value={deleteAuthPin}
                   onChange={(e) => setDeleteAuthPin(e.target.value)}
                   className="w-full px-3 py-2 rounded bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-rose-500"

@@ -336,7 +336,65 @@ export type NavigationTab =
   | 'MONTHLY_CLOSING'
   | 'POS_API_SYNC'
   | 'SETTINGS_RBAC'
-  | 'AUDIT_HISTORY';
+  | 'AUDIT_HISTORY'
+  | 'INVENTORY_DISCARDS';
+
+export type DiscardReason =
+  | 'VENCIMIENTO_CADUCIDAD'
+  | 'DETERIORO_EMPAQUE_CONTENEDOR'
+  | 'ACCIDENTE_MALA_MANIPULACION'
+  | 'MERMA_CADENA_FRIO'
+  | 'ERROR_CARGA_SISTEMA'
+  | 'OTRA_CAUSA_JUSTIFICADA';
+
+export type DiscardStatus =
+  | 'PENDIENTE_AUTORIZACION'
+  | 'AUTORIZADA'
+  | 'RECHAZADA';
+
+export interface InventoryDiscardRecord {
+  id: string;
+  referenceCode: string;
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  category: string;
+  unit: Product['unit'];
+  quantityDiscarded: number;
+  stockBeforeDiscard: number;
+  stockAfterDiscard?: number;
+  unitCostUsd: number;
+  totalCostUsd: number;
+  totalCostVes: number;
+  bcvRateAtEvent: number;
+  reason: DiscardReason;
+  reasonDetails: string;
+  lotOrGuideNumber?: string;
+  status: DiscardStatus;
+  createdByUserId: string;
+  createdByEmail: string;
+  createdByDisplayName: string;
+  createdByRole: UserRole;
+  createdAtVet: string;
+  authorizedByUserId?: string;
+  authorizedByEmail?: string;
+  authorizedByDisplayName?: string;
+  authorizedAtVet?: string;
+  managerAuthPinUsed?: string;
+  rejectionReason?: string;
+}
+
+export interface CreateDiscardInput {
+  locationId: string;
+  productId: string;
+  quantityDiscarded: number;
+  reason: DiscardReason;
+  reasonDetails: string;
+  lotOrGuideNumber?: string;
+}
 
 export type AuditActionType =
   | 'LOGIN'
@@ -352,7 +410,10 @@ export type AuditActionType =
   | 'PURCHASE_ORDER_RECEIVE'
   | 'BACKUP_EXPORT'
   | 'BACKUP_RESTORE'
-  | 'PLATFORM_RESET';
+  | 'PLATFORM_RESET'
+  | 'INVENTORY_DISCARD_CREATE'
+  | 'INVENTORY_DISCARD_AUTHORIZE'
+  | 'INVENTORY_DISCARD_REJECT';
 
 export interface AuditLogEntry {
   id: string;
@@ -399,6 +460,7 @@ export interface PlatformBackupPayload {
   closures: MonthlyClosureReport[];
   auditLogs: AuditLogEntry[];
   sessionHistory: UserSessionRecord[];
+  discards?: InventoryDiscardRecord[];
 }
 
 export interface EncryptedBackupEnvelope {
