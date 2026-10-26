@@ -9,6 +9,7 @@ import {
 } from '../types';
 import { toDecimal, round2, convertUsdToVes, formatUsd, formatVes } from './decimal';
 import { COPYRIGHT_NOTICE, resolveCompanyProfile } from './excel-exporter';
+import { BRAND_NAME, BRAND_COLORS, HIPER_ABASTO_POLAR_LOGO_DATA_URI } from './brand-assets';
 
 const JsPdfConstructor: typeof jsPDF =
   (jsPDF as unknown as { jsPDF?: typeof jsPDF }).jsPDF || jsPDF;
@@ -193,37 +194,49 @@ function renderCorporateHeaderLandscape(
 ): void {
   // Primary Midnight Blue Banner [15, 23, 42]
   doc.setFillColor(15, 23, 42);
-  doc.rect(0, 0, 297, 32, 'F');
+  doc.rect(0, 0, 297, 33, 'F');
 
   // Slate Accent Strip [2, 132, 199]
   doc.setFillColor(2, 132, 199);
-  doc.rect(0, 32, 297, 1.8, 'F');
+  doc.rect(0, 33, 297, 1.8, 'F');
 
+  const logoBase64 = company.logoBase64 || HIPER_ABASTO_POLAR_LOGO_DATA_URI;
+  if (logoBase64) {
+    try {
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(12, 3.5, 26, 26, 2, 2, 'F');
+      doc.addImage(logoBase64, 'JPEG', 13, 4.5, 24, 24);
+    } catch {
+      // Graceful fallback
+    }
+  }
+
+  const textStartX = 42;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12.5);
   doc.setTextColor(255, 255, 255);
-  doc.text(`${company.razonSocial.toUpperCase()}  —  RIF: ${company.rif}`, 14, 10);
+  doc.text(`${company.razonSocial.toUpperCase()}  —  RIF: ${company.rif}`, textStartX, 10);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(226, 232, 240);
   doc.text(
     `Dirección Fiscal: ${company.direccionFiscal}  |  Tel: ${company.telefono}  |  Código SADA: ${company.codigoSada}`,
-    14,
+    textStartX,
     16.5
   );
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(186, 230, 253);
-  doc.text(reportSubtitle, 14, 23);
+  doc.text(`${(company.brandingName || BRAND_NAME).toUpperCase()} · ${reportSubtitle}`, textStartX, 23);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.8);
   doc.setTextColor(148, 163, 184);
   doc.text(
     `Representante Legal: ${company.representanteLegal}  |  Emisión Legal VET: ${bcvState.caracasDateFormatted} ${bcvState.caracasTimeFormatted}  |  Tasa Oficial BCV: Bs. ${bcvState.activeRate.toFixed(2)} / USD`,
-    14,
+    textStartX,
     29
   );
 }
@@ -235,10 +248,32 @@ function renderImmutableFooterOnAllPages(
 ): void {
   const pageCount = doc.getNumberOfPages();
   const pageWidth = isLandscape ? 297 : 210;
+  const pageHeight = isLandscape ? 210 : 297;
   const footerY = isLandscape ? 203 : 289;
+  const logoBase64 = company.logoBase64 || HIPER_ABASTO_POLAR_LOGO_DATA_URI;
 
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
+
+    // 1. Institutional Watermark in the background
+    if (logoBase64) {
+      try {
+        doc.saveGraphicsState();
+        if (typeof doc.GState === 'function' && typeof doc.setGState === 'function') {
+          doc.setGState(new (doc as any).GState({ opacity: 0.07 }));
+        }
+        const wmSize = isLandscape ? 120 : 100;
+        const wmX = (pageWidth - wmSize) / 2;
+        const wmY = (pageHeight - wmSize) / 2;
+        doc.addImage(logoBase64, 'JPEG', wmX, wmY, wmSize, wmSize);
+      } catch {
+        // Safe fallback
+      } finally {
+        doc.restoreGraphicsState();
+      }
+    }
+
+    // 2. Divider line and legal notice
     doc.setDrawColor(203, 213, 225);
     doc.setLineWidth(0.2);
     doc.line(14, footerY - 4, pageWidth - 14, footerY - 4);
@@ -482,21 +517,33 @@ export function generateMonthlyClosurePdfDocument(
 
   // Midnight Blue Header [15, 23, 42]
   doc.setFillColor(15, 23, 42);
-  doc.rect(0, 0, 210, 34, 'F');
+  doc.rect(0, 0, 210, 36, 'F');
   doc.setFillColor(2, 132, 199);
-  doc.rect(0, 34, 210, 1.8, 'F');
+  doc.rect(0, 36, 210, 1.8, 'F');
 
+  const logoBase64 = company.logoBase64 || HIPER_ABASTO_POLAR_LOGO_DATA_URI;
+  if (logoBase64) {
+    try {
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(12, 4.5, 26, 26, 2, 2, 'F');
+      doc.addImage(logoBase64, 'JPEG', 13, 5.5, 24, 24);
+    } catch {
+      // Graceful fallback
+    }
+  }
+
+  const textStartX = 42;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(255, 255, 255);
   doc.setFontSize(12);
-  doc.text(`${company.razonSocial.toUpperCase()} — RIF: ${company.rif}`, 14, 11);
+  doc.text(`${company.razonSocial.toUpperCase()} — RIF: ${company.rif}`, textStartX, 11);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.2);
   doc.setTextColor(226, 232, 240);
   doc.text(
     `Dirección Fiscal: ${company.direccionFiscal}  |  Tel: ${company.telefono}  |  SADA: ${company.codigoSada}`,
-    14,
+    textStartX,
     18
   );
 
@@ -504,8 +551,8 @@ export function generateMonthlyClosurePdfDocument(
   doc.setFontSize(8.5);
   doc.setTextColor(186, 230, 253);
   doc.text(
-    `ACTA EJECUTIVA DE CIERRE CONTABLE MENSUAL (${closure.period})  |  Emitido VET: ${closure.closedAtVet}`,
-    14,
+    `${(company.brandingName || BRAND_NAME).toUpperCase()} · ACTA DE CIERRE CONTABLE (${closure.period})  |  VET: ${closure.closedAtVet}`,
+    textStartX,
     25
   );
 
@@ -514,7 +561,7 @@ export function generateMonthlyClosurePdfDocument(
   doc.setTextColor(148, 163, 184);
   doc.text(
     `Representante Legal: ${company.representanteLegal}  |  Auditor Responsable: ${closure.closedBy}`,
-    14,
+    textStartX,
     31
   );
 

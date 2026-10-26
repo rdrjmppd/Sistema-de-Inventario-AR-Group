@@ -24,6 +24,8 @@ import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { LocationNode, UserRole } from '../../types';
 import { formatRate } from '../../lib/decimal';
+import { useUIConfig } from '../../context/UIConfigContext';
+import { BRAND_NAME } from '../../lib/brand-assets';
 
 interface NavbarProps {
   onOpenStudio: () => void;
@@ -39,6 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenMobileMenu,
 }) => {
   const { user, logout, switchRoleDemo } = useAuth();
+  const { config } = useUIConfig();
   const {
     bcvState,
     isSyncingBcv,
@@ -170,16 +173,25 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <Menu className="w-5 h-5" />
                 </button>
               )}
-              <div className="w-9 h-9 rounded-lg bg-sky-600 flex items-center justify-center font-bold text-base tracking-tighter shadow-inner shrink-0">
-                CH®
+              <div className="w-9 h-9 rounded-lg bg-white border border-amber-400/40 p-0.5 flex items-center justify-center shadow-inner shrink-0 overflow-hidden">
+                <img
+                  src={config?.companyProfile?.logoBase64 || "/assets/branding/hiper_abasto_polar_logo.jpg"}
+                  alt={config?.companyProfile?.brandingName || BRAND_NAME}
+                  className="w-full h-full object-contain"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLElement).style.display = 'none';
+                    const parent = e.currentTarget.parentElement;
+                    if (parent) parent.innerText = 'HAP';
+                  }}
+                />
               </div>
               <div>
                 <div className="flex items-center gap-1.5 sm:gap-2">
                   <span className="font-bold tracking-tight text-sm md:text-base text-white whitespace-nowrap">
-                    CHRYSTAL® ERP
+                    {(config?.companyProfile?.brandingName || BRAND_NAME).toUpperCase()}
                   </span>
-                  <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 whitespace-nowrap hidden xs:inline-block sm:inline-block">
-                    VENEZUELA EDITION
+                  <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap hidden xs:inline-block sm:inline-block">
+                    CHRYSTAL® ERP
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 hidden sm:block whitespace-nowrap">

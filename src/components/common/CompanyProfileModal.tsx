@@ -93,7 +93,7 @@ export const CompanyProfileModal: React.FC = () => {
     setRepresentanteLegal(DEFAULT_COMPANY_PROFILE.representanteLegal);
     setActividadEconomica(DEFAULT_COMPANY_PROFILE.actividadEconomica);
     setSavedBanner(
-      'Se restauraron los datos genéricos por defecto (NOMBRE DE EMPRESA, RIF EMPRESA, DIRECCIÓN EMPRESA).'
+      'Se restauraron los datos institucionales por defecto (HIPER ABASTO POLAR, C.A., RIF J-50123456-7).'
     );
   };
 
@@ -108,13 +108,17 @@ export const CompanyProfileModal: React.FC = () => {
         {/* Header */}
         <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-sky-500/20 border border-sky-400/30 text-sky-300 shrink-0">
-              <Building2 className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-white border border-amber-400/50 p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+              <img
+                src={company.logoBase64 || "/assets/branding/hiper_abasto_polar_logo.jpg"}
+                alt="Hiper Abasto Polar"
+                className="w-full h-full object-contain"
+              />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-sm sm:text-base font-bold text-white">
-                  Datos Fiscales de la Empresa &amp; Membrete Oficial (.XLSX / .PDF)
+                  Branding Institucional &amp; Membrete Fiscal — Hiper Abasto Polar
                 </h2>
                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold">
                   SENIAT / SADA

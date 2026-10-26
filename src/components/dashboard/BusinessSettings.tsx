@@ -133,17 +133,20 @@ export const BusinessSettings: React.FC = () => {
       {/* Company Fiscal Profile Form Section */}
       <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-slate-900 text-sky-400">
-              <Building2 className="w-4 h-4" />
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white border border-amber-400/50 p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
+              <img
+                src={company.logoBase64 || "/assets/branding/hiper_abasto_polar_logo.jpg"}
+                alt="Hiper Abasto Polar"
+                className="w-full h-full object-contain"
+              />
             </div>
             <div>
               <h2 className="text-xs sm:text-sm font-bold uppercase tracking-wider text-slate-900">
-                Datos Fiscales de la Empresa (Membrete Oficial en Panel Principal y Documentos .XLSX / .PDF)
+                Datos Fiscales &amp; Branding Institucional — Hiper Abasto Polar
               </h2>
               <p className="text-xs text-slate-500">
-                Mientras no se ingresen datos personalizados, el sistema rellena automáticamente con
-                los marcadores genéricos (NOMBRE DE EMPRESA, RIF EMPRESA, DIRECCIÓN EMPRESA).
+                Configure la Razón Social, RIF y Datos Fiscales para el membrete y marca de agua en reportes .XLSX y PDF.
               </p>
             </div>
           </div>

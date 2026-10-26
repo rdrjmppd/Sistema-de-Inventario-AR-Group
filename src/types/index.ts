@@ -308,6 +308,8 @@ export interface CompanyFiscalProfile {
   actividadEconomica: string;
   isCustomConfigured: boolean;
   updatedAtVet: string;
+  logoBase64?: string;
+  brandingName?: string;
 }
 
 export interface UIConfigState {

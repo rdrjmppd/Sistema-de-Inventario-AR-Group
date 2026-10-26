@@ -251,11 +251,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Bottom Governance Status */}
       <div className="p-3 border-t border-slate-800 bg-slate-950/60 text-[11px]">
         <div className="flex items-center justify-between text-slate-400 font-mono">
-          <span>ESTÁNDAR SDD</span>
-          <span className="text-emerald-400 font-bold">CERTIFICADO</span>
+          <span>BRANDING POLAR</span>
+          <span className="text-amber-400 font-bold">ACTIVO</span>
         </div>
         <div className="text-[10px] text-slate-400 mt-1 leading-tight">
-          4 Candados OCR · Chrystal® Col B/F · BCV 17:00 VET
+          Hiper Abasto Polar · SDD Certificado · 4 Candados OCR
         </div>
       </div>
     </>
@@ -283,13 +283,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <aside className="relative z-10 w-72 max-w-[85vw] bg-slate-900 text-slate-200 border-r border-slate-800 flex flex-col h-full shadow-2xl select-none">
             <div className="px-4 py-3 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-sky-600 flex items-center justify-center font-bold text-xs text-white">
-                  CH®
+                <div className="w-8 h-8 rounded-lg bg-white border border-amber-400/40 p-0.5 flex items-center justify-center shrink-0 overflow-hidden">
+                  <img
+                    src="/assets/branding/hiper_abasto_polar_logo.jpg"
+                    alt="Hiper Abasto Polar"
+                    className="w-full h-full object-contain"
+                  />
                 </div>
                 <div>
-                  <div className="text-xs font-bold text-white">CHRYSTAL® ERP MÓVIL</div>
-                  <div className="text-[10px] font-mono text-sky-400">
-                    Navegación Táctil Multi-Sede
+                  <div className="text-xs font-bold text-white">HIPER ABASTO POLAR</div>
+                  <div className="text-[10px] font-mono text-amber-400">
+                    Chrystal® ERP Móvil
                   </div>
                 </div>
               </div>

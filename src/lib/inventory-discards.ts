@@ -14,6 +14,7 @@ import {
 import { toDecimal, round2, formatUsd, formatVes } from './decimal';
 import { getCaracasNow } from './bcv';
 import { resolveCompanyProfile } from './excel-exporter';
+import { BRAND_NAME, HIPER_ABASTO_POLAR_LOGO_DATA_URI } from './brand-assets';
 
 export interface DiscardReasonCatalogItem {
   code: DiscardReason;
@@ -473,6 +474,7 @@ export function exportInventoryDiscardsToExcel(params: {
   };
 
   const rows: unknown[][] = [
+    [`MARCA INSTITUCIONAL: ${(company.brandingName || BRAND_NAME).toUpperCase()} — ACTA DE DESCARGA AUDITADA`],
     [company.razonSocial.toUpperCase()],
     [
       `RIF: ${company.rif} | SADA: ${company.codigoSada} | Dirección: ${company.direccionFiscal}`,
@@ -621,37 +623,53 @@ export function exportInventoryDiscardsToPdf(params: {
 
   // Corporate Dark Header
   doc.setFillColor(15, 23, 42);
-  doc.rect(0, 0, 297, 30, 'F');
+  doc.rect(0, 0, 297, 33, 'F');
+  doc.setFillColor(2, 132, 199);
+  doc.rect(0, 33, 297, 1.5, 'F');
 
+  const logoBase64 = company.logoBase64 || HIPER_ABASTO_POLAR_LOGO_DATA_URI;
+  if (logoBase64) {
+    try {
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(12, 3.5, 26, 26, 2, 2, 'F');
+      doc.addImage(logoBase64, 'JPEG', 13, 4.5, 24, 24);
+    } catch {
+      // Graceful fallback
+    }
+  }
+
+  const textStartX = 42;
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(13);
+  doc.setFontSize(12.5);
   doc.setFont('helvetica', 'bold');
-  doc.text(company.razonSocial.toUpperCase(), 14, 11);
+  doc.text(company.razonSocial.toUpperCase(), textStartX, 10.5);
 
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(186, 230, 253);
   doc.text(
     `RIF: ${company.rif}  |  Código SADA: ${company.codigoSada}  |  Dirección Fiscal: ${company.direccionFiscal}`,
-    14,
-    17
+    textStartX,
+    16.5
   );
 
   doc.setTextColor(226, 232, 240);
+  doc.setFont('helvetica', 'bold');
   doc.text(
     singleRecord
       ? `ACTA INDIVIDUAL DE DESCARGA DE INVENTARIO REF: ${singleRecord.referenceCode} (${singleRecord.status})`
       : `ACTA EJECUTIVA DE DESCARGAS Y MERMAS DE INVENTARIO — ALCANCE: ${selectedLocationLabel.toUpperCase()}`,
-    14,
-    24
+    textStartX,
+    23
   );
 
-  doc.setFontSize(8);
+  doc.setFontSize(7.8);
+  doc.setFont('helvetica', 'normal');
   doc.setTextColor(56, 189, 248);
   doc.text(
-    `Emisión VET: ${now.dateFormatted} ${now.timeFormatted} | BCV: Bs. ${activeBcvRate.toFixed(2)}/USD`,
-    205,
-    11
+    `Emisión VET: ${now.dateFormatted} ${now.timeFormatted} | Tasa Oficial BCV: Bs. ${activeBcvRate.toFixed(2)}/USD`,
+    textStartX,
+    29
   );
 
   const totalAuthUsd = round2(
@@ -774,6 +792,24 @@ export function exportInventoryDiscardsToPdf(params: {
     14,
     202
   );
+
+  const pageCount = doc.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    if (logoBase64) {
+      try {
+        doc.saveGraphicsState();
+        if (typeof doc.GState === 'function' && typeof doc.setGState === 'function') {
+          doc.setGState(new (doc as any).GState({ opacity: 0.07 }));
+        }
+        doc.addImage(logoBase64, 'JPEG', (297 - 120) / 2, (210 - 120) / 2, 120, 120);
+      } catch {
+        // fail-safe
+      } finally {
+        doc.restoreGraphicsState();
+      }
+    }
+  }
 
   const fileSuffix = singleRecord
     ? singleRecord.referenceCode

@@ -2,6 +2,7 @@ import XLSXStyle from 'xlsx-js-style';
 import type * as XLSXTypes from 'xlsx-js-style';
 import { BcvRateState, CompanyFiscalProfile, LocationNode, Product } from '../types';
 import { toDecimal, round2, convertUsdToVes, calculateGrossMarginPercent } from './decimal';
+import { BRAND_NAME, BRAND_LEGAL_NAME, BRAND_RIF, BRAND_COLORS, HIPER_ABASTO_POLAR_LOGO_DATA_URI } from './brand-assets';
 
 const XLSX: typeof XLSXTypes = ((XLSXStyle as unknown as { default?: typeof XLSXTypes }).default ||
   XLSXStyle) as typeof XLSXTypes;
@@ -10,17 +11,23 @@ export const COPYRIGHT_NOTICE =
   '© 2026 AR Group. Todos los derechos de desarrollo reservados.';
 
 export const DEFAULT_COMPANY_PROFILE: CompanyFiscalProfile = {
-  razonSocial: 'NOMBRE DE EMPRESA, C.A.',
-  rif: 'J-00000000-0 (RIF EMPRESA)',
-  direccionFiscal: 'DIRECCIÓN FISCAL DE LA EMPRESA, CIUDAD, VENEZUELA',
-  telefono: '+58 (000) 000-0000',
-  email: 'administracion@empresa.com.ve',
-  codigoSada: 'SADA-000000',
-  representanteLegal: 'GERENCIA GENERAL / ADMINISTRACIÓN',
-  actividadEconomica: 'DISTRIBUCIÓN Y COMERCIALIZACIÓN DE ALIMENTOS Y VÍVERES',
+  razonSocial: 'HIPER ABASTO POLAR, C.A.',
+  rif: 'J-50123456-7',
+  direccionFiscal: 'AV. INTERCOMUNAL, SECTOR LA MORITA, MARACAY, EDO. ARAGUA, VENEZUELA',
+  telefono: '+58 (243) 234-5678',
+  email: 'administracion@hiperabastopolar.com',
+  codigoSada: 'SADA-049821',
+  representanteLegal: 'DIRECCIÓN GENERAL / ADMINISTRACIÓN',
+  actividadEconomica: 'DISTRIBUCIÓN Y COMERCIALIZACIÓN DE ALIMENTOS, VÍVERES Y PRODUCTOS DE CONSUMO MASIVO',
   isCustomConfigured: false,
   updatedAtVet: '2026-03-19 08:00',
+  brandingName: BRAND_NAME,
+  logoBase64: HIPER_ABASTO_POLAR_LOGO_DATA_URI,
 };
+
+export const EXCEL_INSTITUTIONAL_WATERMARK_ROW: string[] = [
+  `[ MARCA DE AGUA INSTITUCIONAL: ${BRAND_NAME.toUpperCase()} — DOCUMENTO CORPORATIVO AUDITADO CON EXACTITUD DECIMAL.JS — © 2026 AR GROUP ]`,
+];
 
 /**
  * Ensures that if any company profile field is empty or not yet configured,
@@ -371,6 +378,7 @@ export function buildEnterpriseExcelStructuredPayload(
   ]);
 
   resumenSheetAoA.push([]);
+  resumenSheetAoA.push(EXCEL_INSTITUTIONAL_WATERMARK_ROW);
   resumenSheetAoA.push([COPYRIGHT_NOTICE]);
 
   // ============================================================================
@@ -542,6 +550,7 @@ export function buildEnterpriseExcelStructuredPayload(
     totalPotentialProfitUsd,
     generatedAtVet,
   ]);
+  matrizProductoCeldaAoA.push(EXCEL_INSTITUTIONAL_WATERMARK_ROW);
   matrizProductoCeldaAoA.push([COPYRIGHT_NOTICE]);
 
   // ============================================================================
@@ -625,6 +634,7 @@ export function buildEnterpriseExcelStructuredPayload(
       spacerRowZeroBased,
     });
   }
+  fichasProductoCeldaAoA.push(EXCEL_INSTITUTIONAL_WATERMARK_ROW);
   fichasProductoCeldaAoA.push([COPYRIGHT_NOTICE]);
 
   // Compute optimal column widths (!cols) for Sheet 2 so no cell is ever clipped

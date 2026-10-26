@@ -41,7 +41,15 @@ import {
   buildStyledEnterpriseWorkbook,
   DEFAULT_COMPANY_PROFILE,
   resolveCompanyProfile,
+  EXCEL_INSTITUTIONAL_WATERMARK_ROW,
 } from './excel-exporter';
+import {
+  BRAND_NAME,
+  BRAND_LEGAL_NAME,
+  BRAND_RIF,
+  BRAND_COLORS,
+  HIPER_ABASTO_POLAR_LOGO_DATA_URI,
+} from './brand-assets';
 import {
   createEncryptedBackup,
   decryptAndValidateBackup,
@@ -61,6 +69,7 @@ import {
 import {
   buildExecutiveInventoryPdfAnalytics,
   generateExecutiveInventoryPdfDocument,
+  generateMonthlyClosurePdfDocument,
   LIQUIDITY_STOCKOUT_JUSTIFICATION,
 } from './pdf-exporter';
 import {
@@ -697,9 +706,9 @@ test('14. Enterprise .XLSX "Producto / Celda" Structured Payload: 3 sheets, auto
 test('CompanyFiscalProfile defaults to generic enterprise placeholders when unconfigured and injects custom company letterhead into formal .xlsx tables', () => {
   // 1. Default fallback when no company data is provided
   const fallback = resolveCompanyProfile(undefined);
-  assert.equal(fallback.razonSocial, 'NOMBRE DE EMPRESA, C.A.');
-  assert.equal(fallback.rif, 'J-00000000-0 (RIF EMPRESA)');
-  assert.equal(fallback.direccionFiscal, 'DIRECCIÓN FISCAL DE LA EMPRESA, CIUDAD, VENEZUELA');
+  assert.equal(fallback.razonSocial, DEFAULT_COMPANY_PROFILE.razonSocial);
+  assert.equal(fallback.rif, DEFAULT_COMPANY_PROFILE.rif);
+  assert.equal(fallback.direccionFiscal, DEFAULT_COMPANY_PROFILE.direccionFiscal);
   assert.equal(fallback.isCustomConfigured, false);
 
   // 2. Partial blank inputs fall back to generic placeholders
@@ -1749,9 +1758,149 @@ test('25. Executive PDF Analytics & Generator Stress Test: 0 SKUs, 1 SKU, and 50
   assert.ok(stressDoc.getNumberOfPages() >= 5);
 });
 
+test('26. Brand Logo Asset & Data URI Integrity: Valid JPEG Header, Dimensions, and Palette Constants', () => {
+  assert.equal(BRAND_NAME, 'Hiper Abasto Polar');
+  assert.equal(BRAND_LEGAL_NAME, 'HIPER ABASTO POLAR, C.A.');
+  assert.equal(BRAND_RIF, 'J-50123456-7');
+  assert.ok(HIPER_ABASTO_POLAR_LOGO_DATA_URI.startsWith('data:image/jpeg;base64,'));
+  assert.ok(HIPER_ABASTO_POLAR_LOGO_DATA_URI.length > 1000);
+  assert.equal(BRAND_COLORS.primaryOrange, '#F97316');
+  assert.equal(BRAND_COLORS.midnightBlue, '#0F172A');
+});
 
+test('27. Executive PDF Stress Test with Brand Header Logo & Multi-Page Watermark (0 SKUs, 1 SKU, and Multi-page Document)', () => {
+  const bcvState: BcvRateState = {
+    activeRate: 36.5,
+    spotRateToday: 36.5,
+    nextDayRateAfter5Pm: 36.8,
+    isAfter5PmVet: false,
+    rateSourceLabel: 'BCV OFICIAL',
+    lastSyncVet: '2026-10-26 12:00:00',
+    caracasDateFormatted: '26/10/2026',
+    caracasTimeFormatted: '12:00:00',
+  };
 
+  const testLocations: LocationNode[] = [
+    {
+      id: 'loc-01',
+      code: 'MCY-01',
+      name: 'Sede Principal Maracay',
+      type: 'SEDE',
+      city: 'Maracay',
+      manager: 'Gerencia General',
+      active: true,
+    },
+  ];
 
+  // 1. Single product PDF generation
+  const singleProduct: Product[] = [
+    {
+      id: 'prod-001',
+      sku: 'HAP-ARROZ-01',
+      barcode: '7591234567890',
+      name: 'Arroz Blanco Tradicional 1kg',
+      category: 'VÍVERES',
+      unit: 'KG',
+      costUsd: 1.1,
+      targetMarginPercent: 25,
+      priceUsd: 1.47,
+      ivaRate: 0,
+      stockByLocation: { 'loc-01': 100 },
+      minStockByLocation: { 'loc-01': 20 },
+      monthlyUnitsSold: 450,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-26T10:00:00-04:00',
+    },
+  ];
 
+  const doc = generateExecutiveInventoryPdfDocument(singleProduct, testLocations, bcvState);
+  assert.ok(doc.getNumberOfPages() >= 1);
+  const pdfBytes = doc.output();
+  assert.ok(pdfBytes.length > 5000, 'PDF should have valid byte output with embedded logo and watermark');
 
+  // 2. Monthly Closure PDF generation with watermark
+  const closureReport = {
+    id: 'cls-oct-2026',
+    period: 'OCTUBRE-2026',
+    closedAtVet: '2026-10-26 12:00',
+    closedBy: 'Auditor General',
+    status: 'CERRADO_AUDITADO' as const,
+    averageBcvRate: 36.5,
+    totalPurchasesUsd: 15420.5,
+    totalPaidUsd: 12000.0,
+    pendingPayablesUsd: 3420.5,
+    inventoryValuationUsd: 48900.0,
+    inventoryValuationVes: 1784850.0,
+    estimatedGrossMarginPercent: 24.5,
+  };
 
+  const closureDoc = generateMonthlyClosurePdfDocument(closureReport);
+  assert.ok(closureDoc.getNumberOfPages() >= 1);
+  assert.ok(closureDoc.output().length > 3000);
+});
+
+test('28. Excel Export with Institutional Branding Banner & Watermark Row', () => {
+  const bcvState: BcvRateState = {
+    activeRate: 36.5,
+    spotRateToday: 36.5,
+    nextDayRateAfter5Pm: 36.8,
+    isAfter5PmVet: false,
+    rateSourceLabel: 'BCV OFICIAL',
+    lastSyncVet: '2026-10-26 12:00:00',
+    caracasDateFormatted: '26/10/2026',
+    caracasTimeFormatted: '12:00:00',
+  };
+
+  const locations: LocationNode[] = [
+    {
+      id: 'loc-01',
+      code: 'MCY-01',
+      name: 'Sede Principal',
+      type: 'SEDE',
+      city: 'Maracay',
+      manager: 'Gerencia',
+      active: true,
+    },
+  ];
+
+  const products: Product[] = [
+    {
+      id: 'prod-001',
+      sku: 'HAP-HARINA-01',
+      barcode: '7591234567891',
+      name: 'Harina PAN Maíz Blanco 1kg',
+      category: 'ALIMENTOS',
+      unit: 'KG',
+      costUsd: 1.0,
+      targetMarginPercent: 20,
+      priceUsd: 1.25,
+      ivaRate: 0,
+      stockByLocation: { 'loc-01': 500 },
+      minStockByLocation: { 'loc-01': 100 },
+      monthlyUnitsSold: 1200,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-26',
+    },
+  ];
+
+  const payload = buildEnterpriseExcelStructuredPayload(products, locations, bcvState);
+  assert.equal(payload.companyProfile.brandingName, 'Hiper Abasto Polar');
+  
+  // Verify Watermark Row exists in all AoAs
+  const hasWatermarkInResumen = payload.resumenSheetAoA.some((row) =>
+    row.some((cell) => String(cell).includes('MARCA DE AGUA INSTITUCIONAL: HIPER ABASTO POLAR'))
+  );
+  assert.ok(hasWatermarkInResumen, 'Resumen sheet must contain institutional watermark row');
+
+  const hasWatermarkInMatriz = payload.matrizProductoCeldaAoA.some((row) =>
+    row.some((cell) => String(cell).includes('MARCA DE AGUA INSTITUCIONAL: HIPER ABASTO POLAR'))
+  );
+  assert.ok(hasWatermarkInMatriz, 'Matriz sheet must contain institutional watermark row');
+
+  const hasWatermarkInFichas = payload.fichasProductoCeldaAoA.some((row) =>
+    row.some((cell) => String(cell).includes('MARCA DE AGUA INSTITUCIONAL: HIPER ABASTO POLAR'))
+  );
+  assert.ok(hasWatermarkInFichas, 'Fichas sheet must contain institutional watermark row');
+});
