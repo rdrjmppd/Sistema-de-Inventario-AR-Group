@@ -14,6 +14,7 @@ import { DynamicModuleStudio } from '../common/DynamicModuleStudio';
 import { DiagnosticConsole } from '../common/DiagnosticConsole';
 import { ReorderNotificationCenter } from '../common/ReorderNotificationCenter';
 import { CompanyProfileModal } from '../common/CompanyProfileModal';
+import { ChatAssistantWidget } from '../assistant/ChatAssistantWidget';
 import { useUIConfig } from '../../context/UIConfigContext';
 
 interface LayoutProps {
@@ -111,6 +112,8 @@ export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children
       />
 
       <CompanyProfileModal />
+
+      <ChatAssistantWidget onNavigate={onSelectTab} />
 
       {studioOpen && <DynamicModuleStudio onClose={() => setStudioOpen(false)} />}
       {diagnosticsOpen && <DiagnosticConsole onClose={() => setDiagnosticsOpen(false)} />}

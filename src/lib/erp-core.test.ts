@@ -87,6 +87,13 @@ import {
   InventoryDiscardRecord,
   UserSessionRecord,
 } from '../types';
+import {
+  evaluateSecurityGuardrails,
+  buildOutOfScopeResponse,
+  buildLiveErpOperationalContext,
+  formatLiveContextForPrompt,
+  answerQueryWithHeuristicEngine,
+} from '../ai-assistant';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -2094,3 +2101,259 @@ test('32. Concurrencia Optimista Decimal.js: Dos analistas editando existencias 
   assert.ok(mergeResult.collisionSummary?.includes('HAR-PAN-1KG'));
 });
 
+
+test('33. PolarBot RBAC & Anti-Escalation Guardrails: Consultas destructivas o de reinicio de fábrica son bloqueadas para Analistas y Observadores', () => {
+  const analistaContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-an-01',
+      displayName: 'Carlos Mendoza',
+      email: 'carlos@hiperpollar.com',
+      role: UserRole.ANALISTA,
+      locationAccess: [],
+      active: true,
+      pin: '1234',
+      createdAt: '2026-01-01',
+    },
+    bcvState: {
+      activeRate: 46.5,
+      spotRateToday: 46.5,
+      nextDayRateAfter5Pm: 46.8,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'Oficial BCV',
+      caracasTimeFormatted: '14:30:00',
+      caracasDateFormatted: '26/10/2026',
+    },
+    products: [],
+    locations: [],
+  });
+
+  // 1. Analista requesting Factory Wipe / DB wipe must be blocked
+  const wipeCheck = evaluateSecurityGuardrails('¿Cómo hago un reinicio de fábrica del sistema?', analistaContext);
+  assert.equal(wipeCheck.isBlocked, true);
+  assert.equal(wipeCheck.blockReason, 'RBAC_PRIVILEGE_VIOLATION');
+  assert.ok(wipeCheck.responseMessage?.includes('SUPERADMINISTRADOR'));
+
+  // 2. Analista attempting to approve discards must be redirected to Gerente
+  const authDiscardCheck = evaluateSecurityGuardrails('Quiero autorizar baja de mercancía sin gerente', analistaContext);
+  assert.equal(authDiscardCheck.isBlocked, true);
+  assert.equal(authDiscardCheck.blockReason, 'RBAC_PRIVILEGE_VIOLATION');
+  assert.ok(authDiscardCheck.responseMessage?.includes('GERENTE'));
+
+  // 3. Any user attempting direct database write is blocked under read-only rule
+  const writeCheck = evaluateSecurityGuardrails('Por favor modifica el producto y cambia el stock a 500', analistaContext);
+  assert.equal(writeCheck.isBlocked, true);
+  assert.equal(writeCheck.blockReason, 'UNAUTHORIZED_DATA_MODIFICATION');
+  assert.ok(writeCheck.responseMessage?.includes('solo lectura'));
+
+  // 4. Superadmin requesting factory wipe information is not blocked by RBAC
+  const superadminContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-sa-01',
+      displayName: 'Rubén Darío',
+      email: 'rdrj.mppd@gmail.com',
+      role: UserRole.SUPERADMIN,
+      locationAccess: [],
+      active: true,
+      pin: '102030',
+      createdAt: '2026-01-01',
+    },
+    bcvState: analistaContext.bcvState,
+    products: [],
+    locations: [],
+  });
+  const saCheck = evaluateSecurityGuardrails('¿Cuál es el procedimiento de reinicio de fábrica?', superadminContext);
+  assert.equal(saCheck.isBlocked, false);
+});
+
+test('34. PolarBot Live Operational Context: Extracción precisa de métricas en vivo, quiebres críticos y valorización contable', () => {
+  const mockProducts: Product[] = [
+    {
+      id: 'prd-01',
+      sku: 'HAR-PAN-1KG',
+      barcode: '7591001100105',
+      name: 'Harina de Maíz Precocida P.A.N. 1Kg',
+      category: 'Víveres Secos',
+      unit: 'UND',
+      costUsd: 1.0,
+      targetMarginPercent: 20, // PVP = 1.0 / (1 - 0.2) = 1.25
+      priceUsd: 1.25,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 30, 'loc-ccs-01': 20 }, // Total 50 units
+      minStockByLocation: { 'loc-pzo-01': 60, 'loc-ccs-01': 40 }, // Min 100 units -> Deficit = 50
+      monthlyUnitsSold: 500,
+      abcClass: 'A',
+      supplierId: 'sup-01',
+      lastUpdatedVet: '2026-10-26T10:00:00-04:00',
+    },
+    {
+      id: 'prd-02',
+      sku: 'ARR-PRI-1KG',
+      barcode: '7591001100112',
+      name: 'Arroz Blanco Primor 1Kg',
+      category: 'Víveres Secos',
+      unit: 'UND',
+      costUsd: 1.2,
+      targetMarginPercent: 25, // PVP = 1.2 / (1 - 0.25) = 1.60
+      priceUsd: 1.6,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 200, 'loc-ccs-01': 100 }, // Total 300 units
+      minStockByLocation: { 'loc-pzo-01': 50, 'loc-ccs-01': 50 }, // Min 100 units -> Stock OK
+      monthlyUnitsSold: 400,
+      abcClass: 'A',
+      supplierId: 'sup-01',
+      lastUpdatedVet: '2026-10-26T10:00:00-04:00',
+    },
+  ];
+
+  const mockLocations: LocationNode[] = [
+    { id: 'loc-pzo-01', code: 'PZO-01', name: 'Sede Principal Alta Vista', city: 'Puerto Ordaz', type: 'SEDE', manager: 'Ing. Roberto Salazar', active: true },
+    { id: 'loc-ccs-01', code: 'CCS-01', name: 'Sede Las Mercedes', city: 'Caracas', type: 'SEDE', manager: 'Lic. Valentina Morales', active: true },
+  ];
+
+  const mockDiscards: InventoryDiscardRecord[] = [
+    {
+      id: 'disc-01',
+      referenceCode: 'BAJA-2026-0001',
+      locationId: 'loc-pzo-01',
+      locationCode: 'PZO-01',
+      locationName: 'Sede Principal Alta Vista',
+      productId: 'prd-01',
+      sku: 'HAR-PAN-1KG',
+      productName: 'Harina P.A.N. 1Kg',
+      category: 'Víveres Secos',
+      unit: 'UND',
+      quantityDiscarded: 10,
+      stockBeforeDiscard: 50,
+      stockAfterDiscard: 40,
+      unitCostUsd: 1.0,
+      totalCostUsd: 10.0,
+      totalCostVes: 465.0,
+      bcvRateAtEvent: 46.5,
+      reason: 'DETERIORO_EMPAQUE_CONTENEDOR',
+      reasonDetails: 'Bulto rasgado durante descarga de gandola',
+      status: 'PENDIENTE_AUTORIZACION',
+      createdByUserId: 'usr-an-01',
+      createdByEmail: 'carlos@hiperpollar.com',
+      createdByDisplayName: 'Carlos Mendoza',
+      createdByRole: UserRole.ANALISTA,
+      createdAtVet: '26/10/2026 09:30:00',
+    },
+  ];
+
+  const context = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-sa-01',
+      displayName: 'Rubén Darío',
+      email: 'rdrj.mppd@gmail.com',
+      role: UserRole.SUPERADMIN,
+      locationAccess: [],
+      active: true,
+      pin: '102030',
+      createdAt: '2026-01-01',
+    },
+    bcvState: {
+      activeRate: 46.5,
+      spotRateToday: 46.5,
+      nextDayRateAfter5Pm: 46.8,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'Oficial BCV',
+      caracasTimeFormatted: '11:15:00',
+      caracasDateFormatted: '26/10/2026',
+    },
+    products: mockProducts,
+    locations: mockLocations,
+    discards: mockDiscards,
+  });
+
+  // Verify metric calculations
+  assert.equal(context.metrics.totalSkus, 2);
+  assert.equal(context.metrics.totalLocations, 2);
+  // Total units = 50 + 300 = 350
+  assert.equal(context.metrics.totalUnitsAll, 350);
+  // Total cost valuation = (50 * 1.0) + (300 * 1.2) = 50 + 360 = 410.00 USD
+  assert.equal(context.metrics.totalValuationCostUsd, 410);
+  // Total retail valuation = (50 * 1.25) + (300 * 1.6) = 62.5 + 480 = 542.50 USD
+  assert.equal(context.metrics.totalValuationRetailUsd, 542.5);
+  // Retail valuation in VES = 542.5 * 46.5 = 25226.25 VES
+  assert.equal(context.metrics.totalValuationRetailVes, 25226.25);
+  // At risk SKUs = HAR-PAN-1KG is in deficit (50 < 100) -> 1 SKU at risk
+  assert.equal(context.metrics.atRiskSkusCount, 1);
+  assert.equal(context.criticalStockoutSkus.length, 1);
+  assert.equal(context.criticalStockoutSkus[0].sku, 'HAR-PAN-1KG');
+  assert.equal(context.criticalStockoutSkus[0].deficit, 50);
+
+  // Pending discards = 1 record ($10 USD cost loss)
+  assert.equal(context.metrics.pendingDiscardsCount, 1);
+  assert.equal(context.metrics.pendingDiscardsTotalUsd, 10);
+
+  // Prompt formatting contains live block
+  const promptBlock = formatLiveContextForPrompt(context);
+  assert.ok(promptBlock.includes('46.5000'));
+  assert.ok(promptBlock.includes('HAR-PAN-1KG'));
+  assert.ok(promptBlock.includes('BAJA-2026-0001'));
+});
+
+test('35. PolarBot Dual Engine & Heuristic Fallback: Respuestas deterministas exactas de tasa BCV, inventario crítico, paso a paso y desvío de consultas fuera de alcance', () => {
+  const context = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-an-01',
+      displayName: 'Ana Silva',
+      email: 'ana@hiperpollar.com',
+      role: UserRole.ANALISTA,
+      locationAccess: [],
+      active: true,
+      pin: '4321',
+      createdAt: '2026-01-01',
+    },
+    bcvState: {
+      activeRate: 46.5,
+      spotRateToday: 46.5,
+      nextDayRateAfter5Pm: 46.85,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'Oficial BCV',
+      caracasTimeFormatted: '15:20:00',
+      caracasDateFormatted: '26/10/2026',
+    },
+    products: [
+      {
+        id: 'prd-01',
+        sku: 'HAR-PAN-1KG',
+        barcode: '7591001100105',
+        name: 'Harina P.A.N. 1Kg',
+        category: 'Víveres Secos',
+        unit: 'UND',
+        costUsd: 1.0,
+        targetMarginPercent: 25,
+        priceUsd: 1.33,
+        ivaRate: 0,
+        stockByLocation: { 'loc-pzo-01': 10 },
+        minStockByLocation: { 'loc-pzo-01': 50 },
+        monthlyUnitsSold: 100,
+        abcClass: 'A',
+        supplierId: 'sup-01',
+        lastUpdatedVet: '2026-10-26T10:00:00-04:00',
+      },
+    ],
+    locations: [{ id: 'loc-pzo-01', code: 'PZO-01', name: 'Sede Principal Alta Vista', city: 'Puerto Ordaz', type: 'SEDE', manager: 'Ing. Supervisor', active: true }],
+  });
+
+  // 1. BCV query gives exact rate
+  const bcvResponse = answerQueryWithHeuristicEngine('¿Cuál es la tasa oficial del bcv?', context);
+  assert.ok(bcvResponse.answer.includes('46.5000 VES/USD'));
+  assert.ok(bcvResponse.answer.includes('Decimal.js'));
+
+  // 2. Stockout query gives critical items
+  const stockoutResponse = answerQueryWithHeuristicEngine('¿Qué productos están en quiebre de stock crítico?', context);
+  assert.ok(stockoutResponse.answer.includes('HAR-PAN-1KG'));
+  assert.ok(stockoutResponse.answer.includes('-40 unidades'));
+
+  // 3. SKU catalog creation gives step-by-step
+  const skuResponse = answerQueryWithHeuristicEngine('¿Cómo dar de alta un nuevo producto o sku?', context);
+  assert.ok(skuResponse.answer.includes('Catálogo Maestro SKU'));
+  assert.ok(skuResponse.answer.includes('PVP = Costo / (1 - Margen / 100)'));
+
+  // 4. Out of scope query gives polite refusal and reminds available capabilities
+  const oosResponse = answerQueryWithHeuristicEngine('¿Quién ganará el mundial de fútbol?', context);
+  assert.ok(oosResponse.answer.includes('no forma parte de la información operativa'));
+  assert.ok(oosResponse.answer.includes('Chrystal® Enterprise Food Retail ERP'));
+});
