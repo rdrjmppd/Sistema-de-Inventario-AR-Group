@@ -2,16 +2,47 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Chrystal® Enterprise Food Retail ERP Venezuela</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+    <title>Hiper Abasto Polar — Chrystal® ERP Venezuela</title>
     <meta name="description" content="Plataforma ERP Bimonetaria (USD/VES BCV) Multi-Sede para Retail de Alimentos y Distribución en Venezuela con compatibilidad Chrystal®, Lector OCR Forense y Gobernanza Antigravity 2.0." />
-    <meta property="og:title" content="Chrystal® Enterprise Food Retail ERP Venezuela" />
-    <meta property="og:description" content="Plataforma ERP Bimonetaria (USD/VES BCV) Multi-Sede para Retail de Alimentos y Distribución en Venezuela con compatibilidad Chrystal®, Lector OCR Forense y Gobernanza Antigravity 2.0." />
+    
+    <!-- Branding Favicon & Apple Touch Icons -->
+    <link rel="icon" type="image/jpeg" href="/assets/branding/hiper_abasto_polar_logo.jpg" />
+    <link rel="apple-touch-icon" href="/assets/branding/hiper_abasto_polar_logo.jpg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/branding/hiper_abasto_polar_logo.jpg" />
+
+    <!-- Web App Manifest (PWA) -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Mobile Web App & Theme Color (AR Group / Hiper Abasto Polar) -->
+    <meta name="theme-color" content="#0F172A" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Hiper Abasto Polar" />
+    <meta name="application-name" content="Hiper Abasto Polar" />
+    <meta name="msapplication-TileColor" content="#0F172A" />
+
+    <meta property="og:title" content="Hiper Abasto Polar — Chrystal® ERP Venezuela" />
+    <meta property="og:description" content="Plataforma ERP Bimonetaria (USD/VES BCV) Multi-Sede para Retail de Alimentos y Distribución en Venezuela." />
+    <meta property="og:image" content="/assets/branding/hiper_abasto_polar_logo.jpg" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Resilient Service Worker Registration -->
+    <script>
+      if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('/sw.js').catch(function (err) {
+            console.warn('[PWA] Service worker registration non-blocking notice:', err);
+          });
+        });
+      }
+    </script>
   </head>
   <body class="bg-slate-50 text-slate-800 antialiased selection:bg-blue-900 selection:text-white">
     <div id="root"></div>

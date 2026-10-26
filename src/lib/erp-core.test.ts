@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -2356,4 +2357,33 @@ test('35. PolarBot Dual Engine & Heuristic Fallback: Respuestas deterministas ex
   const oosResponse = answerQueryWithHeuristicEngine('¿Quién ganará el mundial de fútbol?', context);
   assert.ok(oosResponse.answer.includes('no forma parte de la información operativa'));
   assert.ok(oosResponse.answer.includes('Chrystal® Enterprise Food Retail ERP'));
+});
+
+test('36. PWA Mobile A2HS & Branding Assets: Manifiesto web, Service Worker e inyección de logotipo oficial en index.html para descarga directa en móvil', () => {
+  // 1. Verify manifest.webmanifest exists and is valid JSON
+  assert.ok(fs.existsSync('public/manifest.webmanifest'), 'public/manifest.webmanifest must exist');
+  const manifestRaw = fs.readFileSync('public/manifest.webmanifest', 'utf8');
+  const manifest = JSON.parse(manifestRaw);
+
+  assert.equal(manifest.short_name, 'Hiper Abasto');
+  assert.equal(manifest.display, 'standalone');
+  assert.equal(manifest.background_color, '#0F172A');
+  assert.equal(manifest.theme_color, '#0F172A');
+  assert.ok(manifest.icons && manifest.icons.length > 0, 'Manifest must declare at least 1 icon');
+  assert.equal(manifest.icons[0].src, '/assets/branding/hiper_abasto_polar_logo.jpg');
+  assert.equal(manifest.icons[0].type, 'image/jpeg');
+
+  // 2. Verify index.html links to manifest and branding icons
+  const indexHtml = fs.readFileSync('index.html', 'utf8');
+  assert.ok(indexHtml.includes('rel="manifest" href="/manifest.webmanifest"'), 'index.html must link to webmanifest');
+  assert.ok(indexHtml.includes('rel="icon" type="image/jpeg" href="/assets/branding/hiper_abasto_polar_logo.jpg"'), 'index.html must link to favicon logo');
+  assert.ok(indexHtml.includes('rel="apple-touch-icon" href="/assets/branding/hiper_abasto_polar_logo.jpg"'), 'index.html must link to apple-touch-icon');
+  assert.ok(indexHtml.includes('apple-mobile-web-app-capable'), 'index.html must declare apple-mobile-web-app-capable');
+  assert.ok(indexHtml.includes('navigator.serviceWorker.register'), 'index.html must register service worker');
+
+  // 3. Verify Service Worker shell script
+  assert.ok(fs.existsSync('public/sw.js'), 'public/sw.js must exist');
+  const swCode = fs.readFileSync('public/sw.js', 'utf8');
+  assert.ok(swCode.includes('/assets/branding/hiper_abasto_polar_logo.jpg'), 'Service worker must cache brand logo');
+  assert.ok(swCode.includes('chrystal-erp-shell'), 'Service worker must declare shell cache');
 });

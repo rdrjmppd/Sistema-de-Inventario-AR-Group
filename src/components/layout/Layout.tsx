@@ -14,6 +14,7 @@ import { DynamicModuleStudio } from '../common/DynamicModuleStudio';
 import { DiagnosticConsole } from '../common/DiagnosticConsole';
 import { ReorderNotificationCenter } from '../common/ReorderNotificationCenter';
 import { CompanyProfileModal } from '../common/CompanyProfileModal';
+import { MobileInstallBanner } from '../common/MobileInstallBanner';
 import { ChatAssistantWidget } from '../assistant/ChatAssistantWidget';
 import { useUIConfig } from '../../context/UIConfigContext';
 
@@ -112,6 +113,8 @@ export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children
       />
 
       <CompanyProfileModal />
+
+      <MobileInstallBanner />
 
       <ChatAssistantWidget onNavigate={onSelectTab} />
 

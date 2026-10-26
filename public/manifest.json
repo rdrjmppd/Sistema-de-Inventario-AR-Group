@@ -1,0 +1,22 @@
+{
+  "name": "Hiper Abasto Polar — Chrystal ERP",
+  "short_name": "Hiper Abasto",
+  "description": "Sistema ERP Retail Bimonetario de Alimentos y Control de Inventario Multi-Sede",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "scope": "/",
+  "lang": "es-VE",
+  "icons": [
+    {
+      "src": "/assets/branding/hiper_abasto_polar_logo.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["business", "productivity", "finance"]
+}
