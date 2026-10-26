@@ -74,9 +74,12 @@ export const AuditHistoryView: React.FC = () => {
     const criticalOps = auditLogs.filter(
       (l) => l.action === 'PLATFORM_RESET' || l.action === 'LOCATION_DELETE' || l.action === 'BACKUP_RESTORE'
     ).length;
-    const activeSessions = sessionHistory.filter((s) => s.isActive).length;
+    const activeSessions = sessionHistory.filter((s) =>
+      s.status ? s.status === 'ACTIVA' : s.isActive
+    ).length;
+    const suspendedSessions = sessionHistory.filter((s) => s.status === 'SUSPENDIDA').length;
 
-    return { totalLogs, logins, stockUpdates, criticalOps, activeSessions };
+    return { totalLogs, logins, stockUpdates, criticalOps, activeSessions, suspendedSessions };
   }, [auditLogs, sessionHistory]);
 
   const handleExecuteWipe = (e: React.FormEvent) => {
@@ -145,17 +148,17 @@ export const AuditHistoryView: React.FC = () => {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-sky-950/70 text-sky-400 border border-sky-800/80 rounded-xl">
+            <div className="p-2.5 bg-slate-900 text-sky-400 border border-slate-800 rounded-xl shadow-xs">
               <History className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white tracking-tight">
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
                 Histórico de Auditoría & Trazabilidad
               </h1>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-600">
                 Gobernanza corporativa, registro cronológico inmutable y control de sesiones activas (VET America/Caracas).
               </p>
             </div>
@@ -217,7 +220,11 @@ export const AuditHistoryView: React.FC = () => {
             <UserCheck className="w-4 h-4 text-emerald-400" />
           </div>
           <p className="text-2xl font-bold text-emerald-400 tabular-nums">{stats.activeSessions}</p>
-          <span className="text-[11px] text-slate-500">{stats.logins} accesos totales</span>
+          <span className="text-[11px] text-slate-500">
+            {stats.suspendedSessions > 0
+              ? `${stats.suspendedSessions} en pausa · ${sessionHistory.length} historial`
+              : `${sessionHistory.length} sesiones registradas`}
+          </span>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 p-4 rounded-xl">
@@ -354,10 +361,10 @@ export const AuditHistoryView: React.FC = () => {
               <div>
                 <h3 className="text-base font-bold text-white flex items-center gap-2">
                   <UserCheck className="w-5 h-5 text-emerald-400" />
-                  Historial de Conexiones & Tiempos de Sesión
+                  Historial de Conexiones & Protocolo de Continuidad (30m)
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Registro cronológico de entradas y salidas de usuarios con cálculo de permanencia.
+                  Registro cronológico de entradas, latido activo (Heartbeat 60s), suspensión por inactividad (&gt; 30m) y salidas selladas en hora oficial VET.
                 </p>
               </div>
             </div>
@@ -368,48 +375,79 @@ export const AuditHistoryView: React.FC = () => {
                     <th className="py-3 px-4">Usuario</th>
                     <th className="py-3 px-4">Rol</th>
                     <th className="py-3 px-4">Entrada (VET)</th>
-                    <th className="py-3 px-4">Salida (VET)</th>
+                    <th className="py-3 px-4">Último Latido (VET)</th>
+                    <th className="py-3 px-4">Salida / Permanencia</th>
                     <th className="py-3 px-4">Estado</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {sessionHistory.length === 0 ? (
                     <tr>
-                      <td colSpan={5} className="py-12 text-center text-slate-500">
+                      <td colSpan={6} className="py-12 text-center text-slate-500">
                         <Users className="w-8 h-8 mx-auto mb-2 opacity-40" />
                         No hay sesiones registradas en el historial local.
                       </td>
                     </tr>
                   ) : (
-                    sessionHistory.map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
-                        <td className="py-3 px-4">
-                          <div className="font-semibold text-white">{s.userDisplayName}</div>
-                          <div className="text-[11px] text-slate-400">{s.userEmail}</div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-sky-400 font-mono">
-                            {s.userRole}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 font-mono text-slate-300">{s.loginAtVet}</td>
-                        <td className="py-3 px-4 font-mono text-slate-400">
-                          {s.logoutAtVet || '—'}
-                        </td>
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          {s.isActive ? (
-                            <span className="px-2.5 py-1 rounded-full text-[10px] bg-emerald-950/80 text-emerald-400 border border-emerald-600 font-semibold inline-flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                              Sesión Activa
+                    sessionHistory.map((s) => {
+                      const effectiveStatus = s.status
+                        ? s.status
+                        : s.isActive
+                          ? 'ACTIVA'
+                          : 'FINALIZADA';
+
+                      return (
+                        <tr key={s.id} className="hover:bg-slate-800/40 transition-colors">
+                          <td className="py-3 px-4">
+                            <div className="font-semibold text-white">{s.userDisplayName}</div>
+                            <div className="text-[11px] text-slate-400">{s.userEmail}</div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="px-2 py-0.5 rounded text-[11px] bg-slate-800 text-sky-400 font-mono">
+                              {s.userRole}
                             </span>
-                          ) : (
-                            <span className="px-2.5 py-1 rounded-full text-[10px] bg-slate-800 text-slate-400 border border-slate-700">
-                              Cerrada
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-300 whitespace-nowrap">
+                            {s.loginAtVet}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-300 whitespace-nowrap">
+                            {s.lastHeartbeatVet || s.loginAtVet}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-400 whitespace-nowrap">
+                            {effectiveStatus === 'FINALIZADA' ? (
+                              <div>
+                                <div className="text-slate-300">{s.logoutAtVet || s.lastHeartbeatVet || '—'}</div>
+                                {s.durationMinutes !== undefined && (
+                                  <div className="text-[10px] text-slate-400">
+                                    Permanencia: {s.durationMinutes} min
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-500">En curso</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {effectiveStatus === 'ACTIVA' ? (
+                              <span className="px-2.5 py-1 rounded-full text-[10px] bg-emerald-950/80 text-emerald-400 border border-emerald-600 font-semibold inline-flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                                Sesión Activa
+                              </span>
+                            ) : effectiveStatus === 'SUSPENDIDA' ? (
+                              <span className="px-2.5 py-1 rounded-full text-[10px] bg-amber-950/80 text-amber-300 border border-amber-600 font-semibold inline-flex items-center gap-1.5">
+                                <Clock className="w-3 h-3 text-amber-400" />
+                                En Pausa / Inactiva &gt; 30m
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-full text-[10px] bg-slate-800 text-slate-300 border border-slate-700 inline-flex items-center gap-1">
+                                Finalizada
+                                {s.durationMinutes !== undefined ? ` · ${s.durationMinutes}m` : ''}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -427,20 +465,20 @@ export const AuditHistoryView: React.FC = () => {
 
       {/* Superadmin Factory Wipe Security Zone */}
       {isSuperAdmin && (
-        <div className="mt-8 border border-red-900/60 bg-red-950/20 p-5 rounded-2xl">
+        <div className="mt-8 border border-red-800/80 bg-slate-900 p-5 rounded-2xl shadow-lg">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-start gap-3">
-              <div className="p-2.5 bg-red-950/80 border border-red-700 text-red-400 rounded-xl shrink-0 mt-0.5">
+              <div className="p-2.5 bg-red-950/90 border border-red-700 text-red-400 rounded-xl shrink-0 mt-0.5">
                 <ShieldAlert className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-red-200">
+                <h3 className="text-base font-bold text-red-300">
                   Zona de Alta Seguridad — Reinicio de Fábrica de la Plataforma
                 </h3>
-                <p className="text-xs text-red-300/80 mt-0.5 max-w-2xl">
+                <p className="text-xs text-slate-300 mt-0.5 max-w-2xl">
                   Permite borrar de manera absoluta la base de datos operativa (productos, existencias, órdenes de compra y movimientos) dejando la plataforma en estado virgen para inicializar datos desde cero o restaurar un respaldo cifrado.
                 </p>
-                <div className="mt-2 text-[11px] text-red-400/90 font-mono flex items-center gap-2">
+                <div className="mt-2 text-[11px] text-amber-300 font-mono flex items-center gap-2">
                   <Lock className="w-3.5 h-3.5" />
                   <span>Requiere Código de Autorización de Superadministrador (PIN) y frase de confirmación.</span>
                 </div>

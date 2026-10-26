@@ -58,8 +58,12 @@ import {
 import {
   createAuditLogEntry,
   recordUserLoginSession,
+  recordOrResumeUserSession,
+  evaluateSessionHeartbeat,
+  sanitizeZombieSessions,
   recordUserLogoutSession,
 } from './audit-logger';
+import { mergeConcurrentProductStock } from '../config/firebase';
 import {
   createPendingInventoryDiscard,
   authorizeInventoryDiscardWithPin,
@@ -81,6 +85,7 @@ import {
   PlatformBackupPayload,
   ManualRiskMode,
   InventoryDiscardRecord,
+  UserSessionRecord,
 } from '../types';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
@@ -1904,3 +1909,188 @@ test('28. Excel Export with Institutional Branding Banner & Watermark Row', () =
   );
   assert.ok(hasWatermarkInFichas, 'Fichas sheet must contain institutional watermark row');
 });
+
+test('29. Continuidad de Sesión: Recargar la sesión 10 veces consecutivas retoma el mismo sessionId y mantiene exactamente 1 sesión activa', () => {
+  const superAdmin: UserProfile = {
+    uid: 'usr-superadmin-001',
+    email: 'rdrj.mppd@gmail.com',
+    displayName: 'Rubén Darío R. (Superadmin)',
+    role: UserRole.SUPERADMIN,
+    pin: '102030',
+    locationAccess: ['loc-pzo-01', 'loc-ccs-01', 'loc-val-01'],
+    active: true,
+    createdAt: '2026-01-01T08:00:00-04:00',
+  };
+
+  let history: UserSessionRecord[] = [];
+  let initialSessionId = '';
+
+  for (let i = 0; i < 10; i++) {
+    const simulatedTime = `26/10/2026 10:${String(10 + i).padStart(2, '0')}:00`;
+    const { session, updatedHistory, resumed } = recordOrResumeUserSession(
+      superAdmin,
+      history,
+      simulatedTime
+    );
+    history = updatedHistory;
+
+    if (i === 0) {
+      initialSessionId = session.id;
+      assert.equal(resumed, false);
+    } else {
+      assert.equal(resumed, true, `Iteration ${i + 1} must resume existing session`);
+      assert.equal(session.id, initialSessionId, 'Must preserve exact same sessionId across reloads');
+    }
+
+    const activeCount = history.filter((s) => s.status === 'ACTIVA').length;
+    assert.equal(activeCount, 1, 'Must maintain strictly 1 active session');
+    assert.equal(history.length, 1, 'Must not append new rows on reload');
+    assert.equal(history[0].lastHeartbeatVet, simulatedTime);
+  }
+});
+
+test('30. Suspensión por Inactividad (> 30m): Lapso de 31 minutos sin latido transiciona a SUSPENDIDA y reconexión reanuda a ACTIVA', () => {
+  const managerUser: UserProfile = {
+    uid: 'usr-gerente-002',
+    email: 'gerencia@chrystal.com.ve',
+    displayName: 'María Fernanda Gómez (Gerente)',
+    role: UserRole.GERENTE,
+    pin: '203040',
+    locationAccess: ['loc-pzo-01'],
+    active: true,
+    createdAt: '2026-01-10T08:00:00-04:00',
+  };
+
+  // 1. Login at 09:00:00 VET
+  const { session, updatedHistory } = recordOrResumeUserSession(
+    managerUser,
+    [],
+    '26/10/2026 09:00:00'
+  );
+  assert.equal(session.status, 'ACTIVA');
+  assert.equal(session.isActive, true);
+
+  // 2. Simulate 31 minutes without heartbeat (09:31:00 VET)
+  const after31Min = evaluateSessionHeartbeat(session.id, updatedHistory, {
+    nowVet: '26/10/2026 09:31:00',
+  });
+  assert.equal(after31Min.statusChangedTo, 'SUSPENDIDA');
+  assert.equal(after31Min.session?.status, 'SUSPENDIDA');
+  assert.equal(after31Min.session?.isActive, false);
+  assert.equal(
+    after31Min.updatedHistory.filter((s) => s.status === 'ACTIVA').length,
+    0,
+    'Suspended session must not count as ACTIVA'
+  );
+
+  // 3. User returns and reconnects at 09:35:00 VET -> Resumes same session ID without creating a new row
+  const reconnected = recordOrResumeUserSession(
+    managerUser,
+    after31Min.updatedHistory,
+    '26/10/2026 09:35:00'
+  );
+  assert.equal(reconnected.resumed, true);
+  assert.equal(reconnected.session.id, session.id);
+  assert.equal(reconnected.session.status, 'ACTIVA');
+  assert.equal(reconnected.session.isActive, true);
+  assert.equal(reconnected.session.lastHeartbeatVet, '26/10/2026 09:35:00');
+  assert.equal(reconnected.updatedHistory.length, 1);
+
+  // 4. Formal Logout at 09:50:00 VET -> Calculates exact duration (50 minutes from 09:00 to 09:50)
+  const finalHistory = recordUserLogoutSession(
+    session.id,
+    reconnected.updatedHistory,
+    '26/10/2026 09:50:00'
+  );
+  assert.equal(finalHistory[0].status, 'FINALIZADA');
+  assert.equal(finalHistory[0].isActive, false);
+  assert.equal(finalHistory[0].logoutAtVet, '26/10/2026 09:50:00');
+  assert.equal(finalHistory[0].durationMinutes, 50);
+});
+
+test('31. Saneamiento de Zombies: Lista con 6 sesiones zombies del mismo usuario se depura automáticamente dejando 1 sola sesión legítima activa', () => {
+  const zombieHistory: UserSessionRecord[] = Array.from({ length: 6 }, (_, idx) => ({
+    id: `ses-zombie-${idx + 1}`,
+    userId: 'usr-superadmin-001',
+    userEmail: 'rdrj.mppd@gmail.com',
+    userDisplayName: 'Rubén Darío R. (Superadmin)',
+    userRole: UserRole.SUPERADMIN,
+    loginAtVet: `26/10/2026 08:0${idx}:00`,
+    lastHeartbeatVet: `26/10/2026 08:0${idx}:00`,
+    status: 'ACTIVA',
+    isActive: true,
+  }));
+
+  // Verify raw anomaly has 6 active sessions
+  assert.equal(zombieHistory.filter((s) => s.isActive).length, 6);
+
+  // Sanitize at 08:10:00 VET
+  const sanitized = sanitizeZombieSessions(zombieHistory, '26/10/2026 08:10:00');
+  const activeRemaining = sanitized.filter((s) => s.status === 'ACTIVA');
+  const finalizedZombies = sanitized.filter((s) => s.status === 'FINALIZADA');
+
+  assert.equal(
+    activeRemaining.length,
+    1,
+    'Exactly 1 legitimate active session must remain for the user'
+  );
+  assert.equal(activeRemaining[0].id, 'ses-zombie-1');
+  assert.equal(
+    finalizedZombies.length,
+    5,
+    'The other 5 duplicate zombie sessions must be sealed as FINALIZADA'
+  );
+  for (const closed of finalizedZombies) {
+    assert.equal(closed.isActive, false);
+    assert.ok(closed.logoutAtVet, 'Sealed zombie must have logoutAtVet assigned');
+  }
+});
+
+test('32. Concurrencia Optimista Decimal.js: Dos analistas editando existencias sobre el mismo SKU fusionan sus deltas sin sobreescritura ciega', () => {
+  const baseSnapshot: Product = {
+    id: 'prd-conc-01',
+    sku: 'HAR-PAN-1KG',
+    barcode: '7591001100105',
+    name: 'Harina de Maíz Precocida P.A.N. 1Kg',
+    category: 'Víveres Secos',
+    unit: 'UND',
+    costUsd: 0.92,
+    targetMarginPercent: 26,
+    priceUsd: 1.24,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 500, 'loc-ccs-01': 300 },
+    minStockByLocation: { 'loc-pzo-01': 150, 'loc-ccs-01': 150 },
+    monthlyUnitsSold: 2500,
+    abcClass: 'A',
+    supplierId: 'sup-001',
+    lastUpdatedVet: '2026-10-26T10:00:00-04:00',
+  };
+
+  // Analyst A adds +50 units in loc-pzo-01 milliseconds earlier (already stored)
+  const storedAfterAnalystA: Product = {
+    ...baseSnapshot,
+    stockByLocation: { 'loc-pzo-01': 550, 'loc-ccs-01': 300 },
+    lastUpdatedVet: '2026-10-26T10:00:02-04:00',
+  };
+
+  // Analyst B (working off baseSnapshot) deducts -20 units in loc-pzo-01 and adds +40 in loc-ccs-01
+  const incomingFromAnalystB: Product = {
+    ...baseSnapshot,
+    stockByLocation: { 'loc-pzo-01': 480, 'loc-ccs-01': 340 },
+    lastUpdatedVet: '2026-10-26T10:00:03-04:00',
+  };
+
+  const mergeResult = mergeConcurrentProductStock(
+    storedAfterAnalystA,
+    incomingFromAnalystB,
+    baseSnapshot
+  );
+
+  assert.equal(mergeResult.collisionDetected, true);
+  // loc-pzo-01: 500 (base) + 50 (Analyst A) - 20 (Analyst B) = 530
+  assert.equal(mergeResult.mergedProduct.stockByLocation['loc-pzo-01'], 530);
+  // loc-ccs-01: 300 (base) + 0 (Analyst A) + 40 (Analyst B) = 340
+  assert.equal(mergeResult.mergedProduct.stockByLocation['loc-ccs-01'], 340);
+  assert.ok(mergeResult.collisionSummary?.includes('HAR-PAN-1KG'));
+});
+

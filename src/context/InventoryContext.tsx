@@ -52,6 +52,18 @@ import {
 } from '../lib/inventory-discards';
 import { useFinance } from './FinanceContext';
 import { useAuth } from './AuthContext';
+import {
+  isFirebaseConfigured,
+  db,
+  collection,
+  query,
+  limit,
+  onSnapshot,
+  mockFirestore,
+  mergeConcurrentProductStock,
+  FIRESTORE_BATCH_DEBOUNCE_MS,
+  FIRESTORE_QUERY_LIMIT,
+} from '../config/firebase';
 
 export interface ManualReceiptInput {
   isNewProduct: boolean;
@@ -189,6 +201,8 @@ interface InventoryContextType {
     discardId: string,
     rejectionReason: string
   ) => { success: boolean; discard?: InventoryDiscardRecord; error?: string };
+  concurrencyNotice: string | null;
+  dismissConcurrencyNotice: () => void;
 }
 
 export const INITIAL_LOCATIONS: LocationNode[] = [
@@ -597,10 +611,61 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return discards.filter((d) => d.status === 'PENDIENTE_AUTORIZACION').length;
   }, [discards]);
 
-  // Persist locations
+  const [concurrencyNotice, setConcurrencyNotice] = useState<string | null>(null);
+  const dismissConcurrencyNotice = () => setConcurrencyNotice(null);
+
+  // Defensive Real-Time Firestore Listener with Limit(100) and Mandatory Unsubscribe Cleanup
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+    const q = query(collection(db, 'products'), limit(FIRESTORE_QUERY_LIMIT));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (snapshot.empty) return;
+        const remoteProducts: Product[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data() as Product;
+          if (data && data.id && data.sku) {
+            remoteProducts.push(data);
+          }
+        });
+        if (remoteProducts.length === 0) return;
+
+        setProducts((prev) => {
+          let collisionMsg: string | null = null;
+          const prevMap = new Map(prev.map((p) => [p.id, p]));
+          const next = [...prev];
+
+          for (const remoteProd of remoteProducts) {
+            const existing = prevMap.get(remoteProd.id);
+            if (!existing) {
+              next.push(remoteProd);
+            } else if (existing.lastUpdatedVet !== remoteProd.lastUpdatedVet) {
+              const mergeRes = mergeConcurrentProductStock(existing, remoteProd, existing);
+              if (mergeRes.collisionDetected && mergeRes.collisionSummary) {
+                collisionMsg = mergeRes.collisionSummary;
+              }
+              const idx = next.findIndex((item) => item.id === remoteProd.id);
+              if (idx >= 0) next[idx] = mergeRes.mergedProduct;
+            }
+          }
+
+          if (collisionMsg) {
+            setConcurrencyNotice(collisionMsg);
+          }
+          return next;
+        });
+      },
+      (err) => console.warn('[Firestore Listener Fallback]:', err)
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Persist locations (Cache-First + 800ms Debounced WriteBatch)
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_LOCATIONS, JSON.stringify(locations));
+      mockFirestore.queueDebouncedBatchSync('locations', locations, FIRESTORE_BATCH_DEBOUNCE_MS);
     } catch {
       // ignore
     }
@@ -630,9 +695,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [discards]);
 
+  // Persist products (Cache-First + 800ms Debounced WriteBatch)
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_PRODUCTS, JSON.stringify(products));
+      mockFirestore.queueDebouncedBatchSync('products', products, FIRESTORE_BATCH_DEBOUNCE_MS);
     } catch {
       // ignore
     }
@@ -1206,13 +1273,21 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     createReplenishmentOrderFromAlert(alertId);
   };
 
-  const addOrUpdateProduct = (product: Product) => {
+  const addOrUpdateProduct = (product: Product, baseSnapshot?: Product) => {
     const syncedProduct = syncProductStockMapsForLocations([product], locations, 40)[0];
     setProducts((prev) => {
-      const exists = prev.some((p) => p.id === syncedProduct.id || p.sku === syncedProduct.sku);
-      if (exists) {
+      const existing = prev.find((p) => p.id === syncedProduct.id || p.sku === syncedProduct.sku);
+      if (existing) {
+        const { mergedProduct, collisionDetected, collisionSummary } = mergeConcurrentProductStock(
+          existing,
+          syncedProduct,
+          baseSnapshot
+        );
+        if (collisionDetected && collisionSummary) {
+          setConcurrencyNotice(collisionSummary);
+        }
         return prev.map((p) =>
-          p.id === syncedProduct.id || p.sku === syncedProduct.sku ? syncedProduct : p
+          p.id === syncedProduct.id || p.sku === syncedProduct.sku ? mergedProduct : p
         );
       }
       return [syncedProduct, ...prev];
@@ -1893,6 +1968,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         registerInventoryDiscard,
         authorizeInventoryDiscard,
         rejectInventoryDiscard,
+        concurrencyNotice,
+        dismissConcurrencyNotice,
       }}
     >
       {children}

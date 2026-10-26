@@ -432,6 +432,8 @@ export interface AuditLogEntry {
   timestampVet: string;
 }
 
+export type SessionStatus = 'ACTIVA' | 'SUSPENDIDA' | 'FINALIZADA';
+
 export interface UserSessionRecord {
   id: string;
   userId: string;
@@ -439,9 +441,11 @@ export interface UserSessionRecord {
   userDisplayName: string;
   userRole: UserRole;
   loginAtVet: string;
+  lastHeartbeatVet: string;
   logoutAtVet?: string;
   durationMinutes?: number;
-  isActive: boolean;
+  status: SessionStatus;
+  isActive: boolean; // Preservar por compatibilidad hacia atrás
 }
 
 export interface PlatformBackupPayload {

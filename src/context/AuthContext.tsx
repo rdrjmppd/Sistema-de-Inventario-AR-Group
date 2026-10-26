@@ -1,11 +1,15 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { UserProfile, UserRole, UserSessionRecord } from '../types';
 import { getCaracasNow } from '../lib/bcv';
 import {
+  evaluateSessionHeartbeat,
   loadStoredSessionHistory,
-  recordUserLoginSession,
+  recordOrResumeUserSession,
   recordUserLogoutSession,
+  sanitizeZombieSessions,
   saveSessionHistory,
+  SESSION_HEARTBEAT_INTERVAL_MS,
+  SESSION_INACTIVITY_TIMEOUT_MINUTES,
 } from '../lib/audit-logger';
 
 interface AuthContextType {
@@ -103,9 +107,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   const [sessionHistory, setSessionHistory] = useState<UserSessionRecord[]>(() => {
-    return loadStoredSessionHistory();
+    return sanitizeZombieSessions(loadStoredSessionHistory());
   });
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const lastActivityEpochRef = useRef<number>(Date.now());
 
   useEffect(() => {
     try {
@@ -119,11 +124,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (user) {
         localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(user));
-        // If not already in session tracking, establish it
         if (!activeSessionId) {
-          const { session, updatedHistory } = recordUserLoginSession(user, sessionHistory);
+          const { session, updatedHistory } = recordOrResumeUserSession(user, sessionHistory);
           setActiveSessionId(session.id);
           setSessionHistory(updatedHistory);
+          lastActivityEpochRef.current = Date.now();
         }
       } else {
         localStorage.removeItem(STORAGE_KEY_SESSION);
@@ -132,6 +137,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // ignore
     }
   }, [user]);
+
+  // 30-Minute Inactivity & 60-Second Heartbeat Continuity Protocol
+  useEffect(() => {
+    if (!user || !activeSessionId) return;
+
+    const handleUserActivity = () => {
+      const nowEpoch = Date.now();
+      lastActivityEpochRef.current = nowEpoch;
+
+      // If session was SUSPENDIDA due to >30m inactivity, resume the same session immediately
+      setSessionHistory((prev) => {
+        const current = prev.find((s) => s.id === activeSessionId);
+        if (current && current.status === 'SUSPENDIDA') {
+          const { updatedHistory } = recordOrResumeUserSession(user, prev);
+          return updatedHistory;
+        }
+        return prev;
+      });
+    };
+
+    window.addEventListener('pointerdown', handleUserActivity, { passive: true });
+    window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('focus', handleUserActivity, { passive: true });
+
+    const intervalId = window.setInterval(() => {
+      const idleMinutes = (Date.now() - lastActivityEpochRef.current) / 60_000;
+      setSessionHistory((prev) => {
+        const { updatedHistory } = evaluateSessionHeartbeat(activeSessionId, prev, {
+          elapsedMinutesOverride:
+            idleMinutes > SESSION_INACTIVITY_TIMEOUT_MINUTES ? idleMinutes : 0,
+          resumeOnActivity: idleMinutes <= SESSION_INACTIVITY_TIMEOUT_MINUTES,
+        });
+        return updatedHistory;
+      });
+    }, SESSION_HEARTBEAT_INTERVAL_MS);
+
+    return () => {
+      window.removeEventListener('pointerdown', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('focus', handleUserActivity);
+      window.clearInterval(intervalId);
+    };
+  }, [user, activeSessionId]);
 
   const login = (email: string, pin: string) => {
     const cleanEmail = email.trim().toLowerCase();
@@ -161,12 +209,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       targetUser = found;
     }
 
-    // Close any previous session
+    let baseHistory = sessionHistory;
+    // Close any previous session belonging to a different user
     if (activeSessionId) {
-      setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
+      const currentActive = baseHistory.find((s) => s.id === activeSessionId);
+      if (currentActive && currentActive.userId !== targetUser.uid) {
+        baseHistory = recordUserLogoutSession(activeSessionId, baseHistory);
+      }
     }
 
-    const { session, updatedHistory } = recordUserLoginSession(targetUser, sessionHistory);
+    const { session, updatedHistory } = recordOrResumeUserSession(targetUser, baseHistory);
+    lastActivityEpochRef.current = Date.now();
     setActiveSessionId(session.id);
     setSessionHistory(updatedHistory);
     setUser(targetUser);
@@ -185,10 +238,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const switchRoleDemo = (role: UserRole) => {
     const target = users.find((u) => u.role === role);
     if (target) {
+      let baseHistory = sessionHistory;
       if (activeSessionId) {
-        setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
+        const currentActive = baseHistory.find((s) => s.id === activeSessionId);
+        if (currentActive && currentActive.userId !== target.uid) {
+          baseHistory = recordUserLogoutSession(activeSessionId, baseHistory);
+        }
       }
-      const { session, updatedHistory } = recordUserLoginSession(target, sessionHistory);
+      const { session, updatedHistory } = recordOrResumeUserSession(target, baseHistory);
+      lastActivityEpochRef.current = Date.now();
       setActiveSessionId(session.id);
       setSessionHistory(updatedHistory);
       setUser(target);
