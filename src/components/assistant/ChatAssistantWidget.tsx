@@ -86,6 +86,121 @@ export function loadStoredPolarbotMessages(): ChatMessage[] {
   return [];
 }
 
+export interface InlineMarkdownToken {
+  type: 'text' | 'bold' | 'code' | 'italic';
+  content: string;
+}
+
+/**
+ * Deterministic Inline Markdown Tokenizer (O(N), Zero-Duplication Guarantee)
+ * Tokenizes bold (**text**), inline code (`code`), and italic (*text*) cleanly
+ * without greedy overlapping or post-loop trailing duplicate text insertion.
+ */
+export function tokenizeInlineMarkdown(str: string): InlineMarkdownToken[] {
+  if (!str) return [];
+  // Tokenize bold (**text**), inline code (`code`), or italic (*text*) deterministically
+  const tokenRegex = /(\*\*(?:[^*]+|\*(?!\*))+\*\*|`[^`]+`|(?<!\*)\*(?!\*)(?:[^\s*][^*]*?)(?<!\*)\*(?!\*))/g;
+  const rawParts = str.split(tokenRegex);
+  const tokens: InlineMarkdownToken[] = [];
+
+  for (const part of rawParts) {
+    if (!part) continue;
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      tokens.push({ type: 'bold', content: part.slice(2, -2) });
+    } else if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      tokens.push({ type: 'code', content: part.slice(1, -1) });
+    } else if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+      tokens.push({ type: 'italic', content: part.slice(1, -1) });
+    } else {
+      tokens.push({ type: 'text', content: part });
+    }
+  }
+
+  return tokens.length > 0 ? tokens : [{ type: 'text', content: str }];
+}
+
+export function formatInline(str: string): React.ReactNode[] {
+  try {
+    const tokens = tokenizeInlineMarkdown(str);
+    return tokens.map((token, idx) => {
+      if (token.type === 'bold') {
+        return (
+          <strong key={idx} className="font-semibold text-slate-900 dark:text-slate-100">
+            {token.content}
+          </strong>
+        );
+      }
+      if (token.type === 'code') {
+        return (
+          <code
+            key={idx}
+            className="px-1.5 py-0.5 bg-slate-200 text-slate-800 rounded text-[11px] font-mono"
+          >
+            {token.content}
+          </code>
+        );
+      }
+      if (token.type === 'italic') {
+        return (
+          <em key={idx} className="text-slate-600 italic">
+            {token.content}
+          </em>
+        );
+      }
+      return <span key={idx}>{token.content}</span>;
+    });
+  } catch {
+    return [<span key="fallback">{str}</span>];
+  }
+}
+
+// Render markdown text cleanly with full defensive error containment and zero duplication
+export function renderFormattedText(text: string): React.ReactNode {
+  try {
+    const lines = text.split('\n');
+    return lines.map((line, idx) => {
+      // Empty lines
+      if (!line.trim()) {
+        return <div key={idx} className="h-2" />;
+      }
+
+      const trimmed = line.trimStart();
+      const indentSpaces = line.length - trimmed.length;
+      const indentClass = indentSpaces >= 3 ? 'pl-4' : 'pl-1';
+
+      // Bullet points
+      if (trimmed.startsWith('* ') || trimmed.startsWith('- ')) {
+        const content = trimmed.substring(2);
+        return (
+          <div key={idx} className={`flex items-start gap-1.5 my-0.5 ${indentClass}`}>
+            <span className="text-emerald-500 font-bold">•</span>
+            <div className="flex-1">{formatInline(content)}</div>
+          </div>
+        );
+      }
+
+      // Numbered items
+      const numMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+      if (numMatch) {
+        return (
+          <div key={idx} className={`flex items-start gap-1.5 my-0.5 ${indentClass}`}>
+            <span className="text-emerald-600 font-semibold">{numMatch[1]}.</span>
+            <div className="flex-1">{formatInline(numMatch[2])}</div>
+          </div>
+        );
+      }
+
+      return (
+        <div key={idx} className="my-0.5">
+          {formatInline(line)}
+        </div>
+      );
+    });
+  } catch {
+    return <div className="my-0.5 whitespace-pre-wrap">{text}</div>;
+  }
+}
+
 interface ChatAssistantWidgetProps {
   onNavigate?: (tab: NavigationTab) => void;
 }
@@ -151,6 +266,7 @@ export const ChatAssistantWidget: React.FC<ChatAssistantWidgetProps> = ({ onNavi
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef(false);
 
   // Build live operational context memoized
   const liveContext = useMemo(() => {
@@ -202,9 +318,11 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
   }, [isOpen, isMinimized]);
 
   const handleSendMessage = async (textToSend?: string) => {
+    if (isSubmittingRef.current) return;
     const query = (textToSend || inputText).trim();
     if (!query || isProcessing) return;
 
+    isSubmittingRef.current = true;
     setInputText('');
 
     const userMsg: ChatMessage = {
@@ -247,6 +365,7 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
       setMessages(prev => [...prev, errorMsg]);
     } finally {
       setIsProcessing(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -282,126 +401,6 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
     else if (module.includes('ocr') || module.includes('forense')) onNavigate('INVOICES_OCR');
     else if (module.includes('sede') || module.includes('deposito')) onNavigate('MULTILOCATION');
     else if (module.includes('pareto') || module.includes('abc')) onNavigate('ABC_ROTATION');
-  };
-
-  // Render markdown text cleanly with full defensive error containment
-  const renderFormattedText = (text: string) => {
-    try {
-      const lines = text.split('\n');
-      return lines.map((line, idx) => {
-        // Empty lines
-        if (!line.trim()) {
-          return <div key={idx} className="h-2" />;
-        }
-
-        // Bullet points
-        if (line.startsWith('* ') || line.startsWith('- ')) {
-          const content = line.substring(2);
-          return (
-            <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
-              <span className="text-emerald-500 font-bold">•</span>
-              <div className="flex-1">{formatInline(content)}</div>
-            </div>
-          );
-        }
-
-        // Numbered items
-        const numMatch = line.match(/^(\d+)\.\s+(.+)$/);
-        if (numMatch) {
-          return (
-            <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
-              <span className="text-emerald-600 font-semibold">{numMatch[1]}.</span>
-              <div className="flex-1">{formatInline(numMatch[2])}</div>
-            </div>
-          );
-        }
-
-        return (
-          <div key={idx} className="my-0.5">
-            {formatInline(line)}
-          </div>
-        );
-      });
-    } catch {
-      return <div className="my-0.5 whitespace-pre-wrap">{text}</div>;
-    }
-  };
-
-  const formatInline = (str: string) => {
-    try {
-      // Basic regex parser for bold, italics, code with loop counter shield
-      const parts: React.ReactNode[] = [];
-      let remaining = str;
-      let keyIdx = 0;
-      let loopCounter = 0;
-      const MAX_LOOPS = 60;
-
-      while (remaining.length > 0 && loopCounter++ < MAX_LOOPS) {
-        // Bold **text**
-        const boldMatch = remaining.match(/^([\s\S]*?)\*\*(.+?)\*\*([\s\S]*)$/);
-        // Code `code`
-        const codeMatch = remaining.match(/^([\s\S]*?)`([^`]+)`([\s\S]*)$/);
-        // Italic *italic*
-        const italicMatch = remaining.match(/^([\s\S]*?)\*([^*]+)\*([\s\S]*)$/);
-
-        // Prioritize the match that starts earlier
-        let firstMatch: { type: 'bold' | 'code' | 'italic'; index: number; match: RegExpMatchArray } | null = null;
-
-        if (boldMatch) {
-          firstMatch = { type: 'bold', index: boldMatch[1].length, match: boldMatch };
-        }
-        if (codeMatch && (!firstMatch || codeMatch[1].length < firstMatch.index)) {
-          firstMatch = { type: 'code', index: codeMatch[1].length, match: codeMatch };
-        }
-        if (italicMatch && (!firstMatch || italicMatch[1].length < firstMatch.index)) {
-          firstMatch = { type: 'italic', index: italicMatch[1].length, match: italicMatch };
-        }
-
-        if (!firstMatch) {
-          parts.push(<span key={keyIdx++}>{remaining}</span>);
-          break;
-        }
-
-        const preText = firstMatch.match[1];
-        const matchText = firstMatch.match[2];
-        const postText = firstMatch.match[3];
-
-        if (preText) parts.push(<span key={keyIdx++}>{preText}</span>);
-
-        if (firstMatch.type === 'bold') {
-          parts.push(
-            <strong key={keyIdx++} className="font-semibold text-slate-900 dark:text-slate-100">
-              {matchText}
-            </strong>
-          );
-        } else if (firstMatch.type === 'code') {
-          parts.push(
-            <code
-              key={keyIdx++}
-              className="px-1.5 py-0.5 bg-slate-200 text-slate-800 rounded text-[11px] font-mono"
-            >
-              {matchText}
-            </code>
-          );
-        } else if (firstMatch.type === 'italic') {
-          parts.push(
-            <em key={keyIdx++} className="text-slate-600 italic">
-              {matchText}
-            </em>
-          );
-        }
-
-        remaining = postText;
-      }
-
-      if (remaining.length > 0) {
-        parts.push(<span key={keyIdx++}>{remaining}</span>);
-      }
-
-      return parts;
-    } catch {
-      return [<span key="fallback">{str}</span>];
-    }
   };
 
   return (

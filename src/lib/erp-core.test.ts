@@ -129,6 +129,7 @@ import {
   loadStoredPolarbotOpen,
   loadStoredPolarbotDraft,
   loadStoredPolarbotMessages,
+  tokenizeInlineMarkdown,
 } from '../components/assistant/ChatAssistantWidget';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
@@ -2747,5 +2748,91 @@ test('42. PolarBot Conversational State Continuity: SessionStorage Hydration, Dr
   assert.equal(loadStoredPolarbotOpen(), false);
   assert.equal(loadStoredPolarbotDraft(), '');
   assert.deepEqual(loadStoredPolarbotMessages(), []);
+});
+
+test('43. PolarBot Zero-Duplication Parser & Inline Markdown Tokenizer Invariant Integrity', () => {
+  // 1. Plain text query (e.g. user question in chat bubble) must never duplicate
+  const userQuery = 'Como hago la carga y desglose de cerdo en el sistema?';
+  const tokensUser = tokenizeInlineMarkdown(userQuery);
+  assert.equal(tokensUser.length, 1);
+  assert.equal(tokensUser[0].type, 'text');
+  assert.equal(tokensUser[0].content, userQuery);
+
+  // 2. Line with multiple bold segments (Header and product list)
+  const lineMultiBold = 'El módulo **"Operaciones > Rendimiento Cárnico"** gestiona la transformación y desglose de canales completas de **Res, Cerdo y Pollo** en cortes primarios, secundarios y mermas técnicas:';
+  const tokensMulti = tokenizeInlineMarkdown(lineMultiBold);
+  assert.equal(tokensMulti.length, 5);
+  assert.equal(tokensMulti[0].type, 'text');
+  assert.equal(tokensMulti[0].content, 'El módulo ');
+  assert.equal(tokensMulti[1].type, 'bold');
+  assert.equal(tokensMulti[1].content, '"Operaciones > Rendimiento Cárnico"');
+  assert.equal(tokensMulti[2].type, 'text');
+  assert.equal(tokensMulti[2].content, ' gestiona la transformación y desglose de canales completas de ');
+  assert.equal(tokensMulti[3].type, 'bold');
+  assert.equal(tokensMulti[3].content, 'Res, Cerdo y Pollo');
+  assert.equal(tokensMulti[4].type, 'text');
+  assert.equal(tokensMulti[4].content, ' en cortes primarios, secundarios y mermas técnicas:');
+
+  // Verify zero trailing duplicate in multi bold line
+  const reconstructedMulti = tokensMulti
+    .map(t => (t.type === 'bold' ? `**${t.content}**` : t.content))
+    .join('');
+  assert.equal(reconstructedMulti, lineMultiBold);
+
+  // 3. Bullet line with leading bold title (must not duplicate text after colon)
+  const lineBulletBold = '**Ingreso de Canal**: Se registra el peso bruto de la canal en kg y el costo total de adquisición en USD.';
+  const tokensBullet = tokenizeInlineMarkdown(lineBulletBold);
+  assert.equal(tokensBullet.length, 2);
+  assert.equal(tokensBullet[0].type, 'bold');
+  assert.equal(tokensBullet[0].content, 'Ingreso de Canal');
+  assert.equal(tokensBullet[1].type, 'text');
+  assert.equal(tokensBullet[1].content, ': Se registra el peso bruto de la canal en kg y el costo total de adquisición en USD.');
+
+  // 4. Combined Bold and Inline Code (Supervisor de Carnicería + email)
+  const lineCodeBold = 'El usuario **Supervisor de Carnicería** (`carniceria@hiperabastopolar.com`) puede registrar pesajes y despostes.';
+  const tokensCode = tokenizeInlineMarkdown(lineCodeBold);
+  assert.equal(tokensCode.length, 5);
+  assert.equal(tokensCode[0].content, 'El usuario ');
+  assert.equal(tokensCode[1].type, 'bold');
+  assert.equal(tokensCode[1].content, 'Supervisor de Carnicería');
+  assert.equal(tokensCode[2].content, ' (');
+  assert.equal(tokensCode[3].type, 'code');
+  assert.equal(tokensCode[3].content, 'carniceria@hiperabastopolar.com');
+  assert.equal(tokensCode[4].content, ') puede registrar pesajes y despostes.');
+
+  // 5. Plain explanatory paragraph (e.g. Calculadora Proyectiva de Compra)
+  const linePlain = 'Permite ingresar los kilos de demanda esperada de cortes premium (ej. 150 kg de Solomo) y el sistema proyecta automáticamente cuántas canales de res o cerdos enteros deben solicitarse al proveedor para cubrir dicho requerimiento.';
+  const tokensPlain = tokenizeInlineMarkdown(linePlain);
+  assert.equal(tokensPlain.length, 1);
+  assert.equal(tokensPlain[0].content, linePlain);
+
+  // 6. Stress Test: 1,000 iterations over complex markdown preserving exact text identity
+  const sampleCorpus = [
+    userQuery,
+    lineMultiBold,
+    lineBulletBold,
+    lineCodeBold,
+    linePlain,
+    'Texto normal con *cursiva elegante* y más texto.',
+    'Código con acentos: `Hueso Blanco/Rojo` y `Aserrín de Sierra`.',
+    'Cadena sin markdown alguno con números 123.45 y símbolos $ # @ % !',
+  ];
+
+  const startTime = Date.now();
+  for (let i = 0; i < 1000; i++) {
+    const sample = sampleCorpus[i % sampleCorpus.length];
+    const parsed = tokenizeInlineMarkdown(sample);
+    const reconstructed = parsed
+      .map(t => {
+        if (t.type === 'bold') return `**${t.content}**`;
+        if (t.type === 'code') return `\`${t.content}\``;
+        if (t.type === 'italic') return `*${t.content}*`;
+        return t.content;
+      })
+      .join('');
+    assert.equal(reconstructed, sample, `Failed text reconstruction identity on sample #${i}`);
+  }
+  const elapsed = Date.now() - startTime;
+  assert.ok(elapsed < 100, `Stress tokenization took ${elapsed}ms for 1000 items, must be < 100ms`);
 });
 
