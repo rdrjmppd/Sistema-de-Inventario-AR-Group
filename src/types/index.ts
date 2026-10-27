@@ -3,9 +3,19 @@ export enum UserRole {
   GERENTE = 'GERENTE',
   ANALISTA = 'ANALISTA',
   OBSERVADOR = 'OBSERVADOR',
+  SUPERVISOR_CARNICERIA = 'SUPERVISOR_CARNICERIA',
+  SUPERVISOR_FRUVER = 'SUPERVISOR_FRUVER',
+  SUPERVISOR_PASILLO = 'SUPERVISOR_PASILLO',
 }
 
-export type RoleType = 'SUPERADMIN' | 'GERENTE' | 'ANALISTA' | 'OBSERVADOR';
+export type RoleType =
+  | 'SUPERADMIN'
+  | 'GERENTE'
+  | 'ANALISTA'
+  | 'OBSERVADOR'
+  | 'SUPERVISOR_CARNICERIA'
+  | 'SUPERVISOR_FRUVER'
+  | 'SUPERVISOR_PASILLO';
 
 export interface UserProfile {
   uid: string;
@@ -339,7 +349,9 @@ export type NavigationTab =
   | 'POS_API_SYNC'
   | 'SETTINGS_RBAC'
   | 'AUDIT_HISTORY'
-  | 'INVENTORY_DISCARDS';
+  | 'INVENTORY_DISCARDS'
+  | 'MEAT_YIELD'
+  | 'FRUVER_YIELD';
 
 export type DiscardReason =
   | 'VENCIMIENTO_CADUCIDAD'
@@ -415,7 +427,9 @@ export type AuditActionType =
   | 'PLATFORM_RESET'
   | 'INVENTORY_DISCARD_CREATE'
   | 'INVENTORY_DISCARD_AUTHORIZE'
-  | 'INVENTORY_DISCARD_REJECT';
+  | 'INVENTORY_DISCARD_REJECT'
+  | 'MEAT_YIELD_BATCH_CREATE'
+  | 'FRUVER_YIELD_BATCH_CREATE';
 
 export interface AuditLogEntry {
   id: string;
@@ -485,3 +499,177 @@ export interface EncryptedBackupEnvelope {
     companyRazonSocial: string;
   };
 }
+
+// ==========================================
+// RENDIMIENTO CÁRNICO (DESPOSTE RES, CERDO, POLLO)
+// ==========================================
+
+export type MeatAnimalType = 'RES' | 'CERDO' | 'POLLO';
+
+export type MeatCarcassPresentation =
+  | 'CANAL_COMPLETA'
+  | 'MEDIA_CANAL'
+  | 'CUARTO_DELANTERO'
+  | 'CUARTO_TRASERO'
+  | 'CERDO_CANAL'
+  | 'POLLO_BENEFICIADO_BULTO';
+
+export type MeatCutTier =
+  | 'PRIMERA_ALTO_VALOR'
+  | 'SEGUNDA_CORTE_GUISO'
+  | 'TERCERA_SOPA_HUESO'
+  | 'SUBPRODUCTO_GRASA'
+  | 'MERMA_DESECHO';
+
+export interface MeatCutItem {
+  id: string;
+  cutName: string;
+  tier: MeatCutTier;
+  weightKg: number;
+  yieldPercent: number;
+  relativeValueFactor: number;
+  allocatedCostPerKgUsd: number;
+  targetMarginPercent: number;
+  retailPriceUsdPerKg: number;
+  retailPriceVesPerKg: number;
+  projectedRevenueUsd: number;
+}
+
+export type MeatWasteType =
+  | 'HUESO_BLANCO_DESECHO'
+  | 'GRASA_SEBO_DESECHO'
+  | 'MERMA_EVAPORACION_LIQUIDOS'
+  | 'ASERRIN_CORTE_SIERRA'
+  | 'OTRA_MERMA_DESPOSTE';
+
+export interface MeatWasteItem {
+  id: string;
+  wasteType: MeatWasteType;
+  label: string;
+  weightKg: number;
+  wastePercent: number;
+  lossCostUsd: number;
+}
+
+export interface MeatYieldBatch {
+  id: string;
+  batchCode: string;
+  animalType: MeatAnimalType;
+  presentation: MeatCarcassPresentation;
+  locationId: string;
+  locationName: string;
+  carcassWeightKg: number;
+  carcassCostPerKgUsd: number;
+  totalCarcassCostUsd: number;
+  cuts: MeatCutItem[];
+  totalCutsWeightKg: number;
+  cutsYieldPercent: number;
+  wastes: MeatWasteItem[];
+  totalWasteWeightKg: number;
+  wastePercent: number;
+  unaccountedWeightKg: number;
+  projectedTotalRevenueUsd: number;
+  projectedGrossProfitUsd: number;
+  projectedMarginPercent: number;
+  bcvRateAtBatch: number;
+  supervisorUserId: string;
+  supervisorName: string;
+  supervisorRole: UserRole;
+  createdAtVet: string;
+  status: 'REGISTRADO' | 'CONFIRMADO_INVENTARIO';
+}
+
+export interface CreateMeatYieldBatchInput {
+  animalType: MeatAnimalType;
+  presentation: MeatCarcassPresentation;
+  locationId: string;
+  carcassWeightKg: number;
+  carcassCostPerKgUsd: number;
+  cuts: Array<{
+    cutName: string;
+    tier: MeatCutTier;
+    weightKg: number;
+    relativeValueFactor: number;
+    targetMarginPercent: number;
+  }>;
+  wastes: Array<{
+    wasteType: MeatWasteType;
+    label: string;
+    weightKg: number;
+  }>;
+}
+
+// ==========================================
+// RENDIMIENTO FRUTAS Y VERDURAS (FRUVER)
+// ==========================================
+
+export type FruverCategory =
+  | 'FRUTAS'
+  | 'VERDURAS_HORTALIZAS'
+  | 'TUBERCULOS_RAICES'
+  | 'LEGUMBRES_GRANOS';
+
+export type FruverLossCause =
+  | 'DESHIDRATACION_PERDIDA_PESO'
+  | 'DANO_EXCESO_FRIO'
+  | 'DANO_EXCESO_CALOR'
+  | 'DANO_MECANICO_MANIPULACION'
+  | 'EXCESO_DIAS_EXPOSICION_ROTACION';
+
+export interface FruverWasteRecord {
+  id: string;
+  cause: FruverLossCause;
+  causeLabel: string;
+  weightKg: number;
+  percentOfBatch: number;
+  lossCostUsd: number;
+  lossCostVes: number;
+  notes: string;
+}
+
+export interface FruverBatchRecord {
+  id: string;
+  batchCode: string;
+  productId: string;
+  productSku: string;
+  productName: string;
+  category: FruverCategory;
+  locationId: string;
+  locationName: string;
+  initialWeightKg: number;
+  initialCostPerKgUsd: number;
+  totalBatchCostUsd: number;
+  wastes: FruverWasteRecord[];
+  totalWasteKg: number;
+  wastePercent: number;
+  totalWasteLossUsd: number;
+  totalWasteLossVes: number;
+  netSalableWeightKg: number;
+  netYieldPercent: number;
+  effectiveCostPerSalableKgUsd: number;
+  suggestedPvpPerKgUsd: number;
+  suggestedPvpPerKgVes: number;
+  bcvRateAtBatch: number;
+  supervisorUserId: string;
+  supervisorName: string;
+  supervisorRole: UserRole;
+  createdAtVet: string;
+  status: 'REGISTRADO' | 'AUDITADO';
+}
+
+export interface CreateFruverBatchInput {
+  productId: string;
+  productSku: string;
+  productName: string;
+  category: FruverCategory;
+  locationId: string;
+  initialWeightKg: number;
+  initialCostPerKgUsd: number;
+  targetMarginPercent?: number;
+  wastes: Array<{
+    cause: FruverLossCause;
+    weightKg: number;
+    notes?: string;
+  }>;
+}
+

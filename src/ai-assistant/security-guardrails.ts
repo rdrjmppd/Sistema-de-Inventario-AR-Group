@@ -1,5 +1,5 @@
 /**
- * Security Guardrails & RBAC Enforcement Engine for Chrystal AI Assistant
+ * Security Guardrails & RBAC Enforcement Engine for Chrystal AI Assistant (PolarBot)
  * Protects operational boundaries, prevents privilege escalation and enforces zero-hallucination.
  * Official Copyright: © 2026 AR Group. Todos los derechos de desarrollo reservados.
  */
@@ -28,10 +28,14 @@ const SUPERADMIN_RESTRICTED_KEYWORDS = [
 const GERENTE_RESTRICTED_KEYWORDS = [
   'autorizar baja',
   'autorizar descarga',
+  'aprobar baja',
+  'aprobar bajas',
   'aprobar merma',
   'firmar baja',
   'eliminar sede',
+  'eliminar sedes',
   'eliminar deposito',
+  'eliminar depositos',
   'crear sede',
   'crear deposito',
   'cerrar mes contable',
@@ -62,40 +66,42 @@ export function evaluateSecurityGuardrails(
 ): GuardrailCheckResult {
   const q = normalizeText(query);
   const role = liveContext.activeUser.role;
-  const userName = liveContext.activeUser.displayName;
 
-  // 1. Guardrail against direct database mutation requests
+  // 1. Guardrail against direct database mutation requests (Read-Only Mode)
   for (const kw of WRITE_ATTEMPT_KEYWORDS) {
     if (q.includes(normalizeText(kw))) {
       return {
         isBlocked: true,
         blockReason: 'UNAUTHORIZED_DATA_MODIFICATION',
-        responseMessage: `Hola ${userName}. Como asistente de inteligencia artificial opero bajo perfil estrictamente consultivo (solo lectura); no tengo potestad técnica para modificar, insertar o borrar registros directamente en la base de datos. Para realizar esa modificación, por favor ingresa al módulo correspondiente en el menú lateral y utiliza los formularios oficiales.`,
+        responseMessage:
+          'Opero exclusivamente en modo consultivo (solo lectura). No tengo permisos técnicos para modificar, crear ni borrar registros directamente en la base de datos. Para realizar ese ajuste, ingresa al módulo correspondiente en el menú lateral y utiliza los formularios oficiales del sistema.',
       };
     }
   }
 
-  // 2. Guardrail for Superadmin-only operations
+  // 2. Guardrail for Superadmin-only operations (Factory Wipe / DB Reset)
   if (role !== UserRole.SUPERADMIN) {
     for (const kw of SUPERADMIN_RESTRICTED_KEYWORDS) {
       if (q.includes(normalizeText(kw))) {
         return {
           isBlocked: true,
           blockReason: 'RBAC_PRIVILEGE_VIOLATION',
-          responseMessage: `Estimado ${userName}, la operación consultada (Reinicio Total de Fábrica / Restauración Maestra) está reservada exclusivamente para el rol de **SUPERADMINISTRADOR**. Como tu cuenta posee nivel de seguridad **${role}**, por estrictas directrices de gobernanza RBAC y prevención de riesgos operacionales no puedo proporcionarte instrucciones de ejecución. Te sugiero canalizar este requerimiento con la Dirección General o el Administrador de Sistemas de la empresa.`,
+          responseMessage:
+            'Por directrices de seguridad RBAC de la empresa, esa operación está reservada exclusivamente para el rol SUPERADMINISTRADOR o GERENTE. Como tu cuenta posee nivel operativo, debes canalizar esta solicitud formalmente con la Gerencia de Operaciones o Dirección General.',
         };
       }
     }
   }
 
-  // 3. Guardrail for Gerente + Superadmin operations
+  // 3. Guardrail for Gerente + Superadmin operations (Approve Discards / Delete Locations)
   if (role !== UserRole.SUPERADMIN && role !== UserRole.GERENTE) {
     for (const kw of GERENTE_RESTRICTED_KEYWORDS) {
       if (q.includes(normalizeText(kw))) {
         return {
           isBlocked: true,
           blockReason: 'RBAC_PRIVILEGE_VIOLATION',
-          responseMessage: `Hola ${userName}. Las funciones de **Autorización Definitiva de Bajas/Descargas de Inventario**, creación/eliminación de Sedes y Cierre Contable Mensual requieren nivel de autorización **GERENTE** o **SUPERADMIN**. Como tu rol actual es **${role}**, tienes habilitado el pre-registro de solicitudes de descarga, pero la firma y confirmación final debe ser ejecutada por la Gerencia de Operaciones mediante su PIN personal confidencial.`,
+          responseMessage:
+            'Por directrices de seguridad RBAC de la empresa, esa operación está reservada exclusivamente para el rol SUPERADMINISTRADOR o GERENTE. Como tu cuenta posee nivel operativo, debes canalizar esta solicitud formalmente con la Gerencia de Operaciones o Dirección General.',
         };
       }
     }
@@ -104,14 +110,6 @@ export function evaluateSecurityGuardrails(
   return { isBlocked: false };
 }
 
-export function buildOutOfScopeResponse(query: string, userName: string): string {
-  return `Comprendo tu inquietud, ${userName}, pero esa consulta no forma parte de la información operativa ni de las funciones de **Chrystal® Enterprise Food Retail ERP**. No dispongo de una fuente confirmable dentro de la plataforma para darte una respuesta certera.
-
-Te recomiendo consultar la fuente especializada correspondiente o el departamento administrativo pertinente. 
-
-Dentro del sistema, con total certeza y en tiempo real puedo asistirte en:
-* Consultar existencias físicas de productos por sede y alertas de quiebre de stock.
-* Conocer la tasa oficial activa del BCV y su valor tras el corte de las 5:00 PM.
-* Guiarte paso a paso para dar de alta productos (SKUs), cargar comprobantes OCR o solicitar bajas de mercancía.
-* Revisar el estado de compras y pedidos sugeridos a proveedores.`;
+export function buildOutOfScopeResponse(_query: string, _userName: string): string {
+  return `Esa consulta no forma parte de la información operativa de Chrystal® ERP (Chrystal® Enterprise Food Retail ERP) y no dispongo de una fuente confirmable para responderte. Te sugiero consultar el departamento o fuente externa correspondiente. Dentro del sistema puedo orientarte en existencias de productos, tasa oficial BCV, solicitud de bajas y registro de mercancía.`;
 }

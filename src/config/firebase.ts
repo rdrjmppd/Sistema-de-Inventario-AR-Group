@@ -14,39 +14,64 @@ import { Product } from '../types';
 import { toDecimal, round2 } from '../lib/decimal';
 import { getCaracasNow } from '../lib/bcv';
 
-const envMeta = (import.meta as unknown as { env?: Record<string, string> }).env || {};
-
-const firebaseConfig = {
-  apiKey: envMeta.VITE_FIREBASE_API_KEY || '',
-  authDomain: envMeta.VITE_FIREBASE_AUTH_DOMAIN || '',
-  projectId: envMeta.VITE_FIREBASE_PROJECT_ID || '',
-  storageBucket: envMeta.VITE_FIREBASE_STORAGE_BUCKET || '',
-  messagingSenderId: envMeta.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
-  appId: envMeta.VITE_FIREBASE_APP_ID || '',
+let firebaseConfig = {
+  apiKey: '',
+  authDomain: '',
+  projectId: '',
+  storageBucket: '',
+  messagingSenderId: '',
+  appId: '',
 };
 
-export const isFirebaseConfigured = Boolean(
-  firebaseConfig.apiKey &&
-    firebaseConfig.apiKey.length > 10 &&
-    firebaseConfig.projectId
-);
-
-export const FIRESTORE_BATCH_DEBOUNCE_MS = 800;
-export const FIRESTORE_QUERY_LIMIT = 100;
-
+let isFirebaseConfigured = false;
 let app: FirebaseApp | null = null;
 let db: Firestore | null = null;
 let auth: Auth | null = null;
 
-if (isFirebaseConfigured) {
-  try {
+try {
+  const envMeta =
+    typeof import.meta !== 'undefined' &&
+    (import.meta as unknown as { env?: Record<string, string> }).env
+      ? (import.meta as unknown as { env: Record<string, string> }).env
+      : typeof process !== 'undefined' && process.env
+        ? (process.env as Record<string, string>)
+        : {};
+
+  firebaseConfig = {
+    apiKey: envMeta.VITE_FIREBASE_API_KEY || '',
+    authDomain: envMeta.VITE_FIREBASE_AUTH_DOMAIN || '',
+    projectId: envMeta.VITE_FIREBASE_PROJECT_ID || '',
+    storageBucket: envMeta.VITE_FIREBASE_STORAGE_BUCKET || '',
+    messagingSenderId: envMeta.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+    appId: envMeta.VITE_FIREBASE_APP_ID || '',
+  };
+
+  isFirebaseConfigured = Boolean(
+    firebaseConfig.apiKey &&
+      firebaseConfig.apiKey.length > 10 &&
+      firebaseConfig.projectId
+  );
+
+  if (isFirebaseConfigured) {
     app = initializeApp(firebaseConfig);
     db = getFirestore(app);
     auth = getAuth(app);
-  } catch (err) {
-    console.warn('Conmutando a In-Memory Mock Firestore Provider por contingencia:', err);
   }
+} catch (err) {
+  isFirebaseConfigured = false;
+  app = null;
+  db = null;
+  auth = null;
+  console.warn(
+    '[Chrystal ERP] Firebase en modo de respaldo controlado (LocalStorage / In-Memory Resiliente):',
+    err
+  );
 }
+
+export { isFirebaseConfigured };
+
+export const FIRESTORE_BATCH_DEBOUNCE_MS = 800;
+export const FIRESTORE_QUERY_LIMIT = 100;
 
 export interface OptimisticMergeResult {
   mergedProduct: Product;

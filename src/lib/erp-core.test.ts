@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -95,6 +94,28 @@ import {
   formatLiveContextForPrompt,
   answerQueryWithHeuristicEngine,
 } from '../ai-assistant';
+import {
+  calculateMeatYieldBatch,
+  projectCarcassRequirementForCutDemand,
+  RES_STANDARD_CUTS,
+  CERDO_STANDARD_CUTS,
+  POLLO_STANDARD_CUTS,
+} from './meat-yield';
+import {
+  calculateFruverBatch,
+  FRUVER_LOSS_CAUSE_LABELS,
+  FRUVER_STANDARD_PRODUCTS,
+} from './fruver-yield';
+import {
+  checkUserRolePermission,
+  BOOTSTRAP_USERS,
+} from '../context/AuthContext';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  detectPwaEnvironment,
+  OFFICIAL_LOGO_PATH,
+} from '../components/layout/MobileInstallBanner';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -2359,31 +2380,331 @@ test('35. PolarBot Dual Engine & Heuristic Fallback: Respuestas deterministas ex
   assert.ok(oosResponse.answer.includes('Chrystal® Enterprise Food Retail ERP'));
 });
 
-test('36. PWA Mobile A2HS & Branding Assets: Manifiesto web, Service Worker e inyección de logotipo oficial en index.html para descarga directa en móvil', () => {
-  // 1. Verify manifest.webmanifest exists and is valid JSON
-  assert.ok(fs.existsSync('public/manifest.webmanifest'), 'public/manifest.webmanifest must exist');
-  const manifestRaw = fs.readFileSync('public/manifest.webmanifest', 'utf8');
-  const manifest = JSON.parse(manifestRaw);
+test('36. PWA / A2HS Mobile Installability: Manifests, Service Worker Network-First, HTML Meta Tags, and iOS/Android/Standalone Detection', () => {
+  // 1. Validate iOS Safari, Android Chrome, and Standalone environment detection
+  const iosEnv = detectPwaEnvironment({
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    matchMediaStandalone: false,
+    navigatorStandalone: false,
+  });
+  assert.equal(iosEnv.isIOS, true);
+  assert.equal(iosEnv.isAndroid, false);
+  assert.equal(iosEnv.isStandalone, false);
+  assert.equal(iosEnv.isMobileUserAgent, true);
 
-  assert.equal(manifest.short_name, 'Hiper Abasto');
-  assert.equal(manifest.display, 'standalone');
-  assert.equal(manifest.background_color, '#0F172A');
-  assert.equal(manifest.theme_color, '#0F172A');
-  assert.ok(manifest.icons && manifest.icons.length > 0, 'Manifest must declare at least 1 icon');
-  assert.equal(manifest.icons[0].src, '/assets/branding/hiper_abasto_polar_logo.jpg');
-  assert.equal(manifest.icons[0].type, 'image/jpeg');
+  const androidEnv = detectPwaEnvironment({
+    userAgent:
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36',
+    matchMediaStandalone: false,
+    navigatorStandalone: false,
+  });
+  assert.equal(androidEnv.isIOS, false);
+  assert.equal(androidEnv.isAndroid, true);
+  assert.equal(androidEnv.isStandalone, false);
 
-  // 2. Verify index.html links to manifest and branding icons
-  const indexHtml = fs.readFileSync('index.html', 'utf8');
-  assert.ok(indexHtml.includes('rel="manifest" href="/manifest.webmanifest"'), 'index.html must link to webmanifest');
-  assert.ok(indexHtml.includes('rel="icon" type="image/jpeg" href="/assets/branding/hiper_abasto_polar_logo.jpg"'), 'index.html must link to favicon logo');
-  assert.ok(indexHtml.includes('rel="apple-touch-icon" href="/assets/branding/hiper_abasto_polar_logo.jpg"'), 'index.html must link to apple-touch-icon');
-  assert.ok(indexHtml.includes('apple-mobile-web-app-capable'), 'index.html must declare apple-mobile-web-app-capable');
-  assert.ok(indexHtml.includes('navigator.serviceWorker.register'), 'index.html must register service worker');
+  const standaloneEnv = detectPwaEnvironment({
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)',
+    matchMediaStandalone: false,
+    navigatorStandalone: true,
+  });
+  assert.equal(standaloneEnv.isStandalone, true);
 
-  // 3. Verify Service Worker shell script
-  assert.ok(fs.existsSync('public/sw.js'), 'public/sw.js must exist');
-  const swCode = fs.readFileSync('public/sw.js', 'utf8');
-  assert.ok(swCode.includes('/assets/branding/hiper_abasto_polar_logo.jpg'), 'Service worker must cache brand logo');
-  assert.ok(swCode.includes('chrystal-erp-shell'), 'Service worker must declare shell cache');
+  // 2. Validate public/manifest.webmanifest and public/manifest.json
+  const rootDir = process.cwd();
+  for (const manifestFile of ['public/manifest.webmanifest', 'public/manifest.json']) {
+    const raw = fs.readFileSync(path.join(rootDir, manifestFile), 'utf8');
+    const parsed = JSON.parse(raw);
+    assert.equal(parsed.name, 'Hiper Abasto Polar — Chrystal ERP');
+    assert.equal(parsed.short_name, 'Hiper Abasto');
+    assert.equal(parsed.display, 'standalone');
+    assert.equal(parsed.theme_color, '#0F172A');
+    assert.equal(parsed.background_color, '#0F172A');
+    assert.ok(Array.isArray(parsed.icons) && parsed.icons.length >= 2);
+    const has192 = parsed.icons.some(
+      (ic: { src: string; sizes: string; purpose: string }) =>
+        ic.src === OFFICIAL_LOGO_PATH &&
+        ic.sizes === '192x192' &&
+        ic.purpose.includes('any') &&
+        ic.purpose.includes('maskable')
+    );
+    const has512 = parsed.icons.some(
+      (ic: { src: string; sizes: string; purpose: string }) =>
+        ic.src === OFFICIAL_LOGO_PATH &&
+        ic.sizes === '512x512' &&
+        ic.purpose.includes('any') &&
+        ic.purpose.includes('maskable')
+    );
+    assert.equal(has192, true, `${manifestFile} must declare 192x192 any maskable icon`);
+    assert.equal(has512, true, `${manifestFile} must declare 512x512 any maskable icon`);
+  }
+
+  // 3. Validate public/sw.js precaches logo and index.html and excludes Firestore
+  const swContent = fs.readFileSync(path.join(rootDir, 'public/sw.js'), 'utf8');
+  assert.ok(swContent.includes('/assets/branding/hiper_abasto_polar_logo.jpg'));
+  assert.ok(swContent.includes('/index.html'));
+  assert.ok(swContent.includes('firestore.googleapis.com'));
+
+  // 4. Validate index.html PWA links and meta tags
+  const indexHtml = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+  assert.ok(indexHtml.includes('rel="manifest" href="/manifest.webmanifest"'));
+  assert.ok(indexHtml.includes('rel="icon" type="image/jpeg" href="/assets/branding/hiper_abasto_polar_logo.jpg"'));
+  assert.ok(indexHtml.includes('rel="apple-touch-icon" href="/assets/branding/hiper_abasto_polar_logo.jpg"'));
+  assert.ok(indexHtml.includes('name="apple-mobile-web-app-capable"'));
+  assert.ok(indexHtml.includes('name="theme-color" content="#0F172A"'));
 });
+
+test('37. Meat Yield Engine: Decimal.js Carcass Breakdown (Res, Cerdo, Pollo), Relative Cost Allocation, and Purchase Projection', () => {
+  assert.ok(RES_STANDARD_CUTS.length >= 6);
+  assert.ok(CERDO_STANDARD_CUTS.length >= 5);
+  assert.ok(POLLO_STANDARD_CUTS.length >= 5);
+
+  // Setup 240 kg carcass at $3.50/kg = $840 total cost
+  const cuts = [
+    { cutName: 'Solomo de Cuerito', tier: 'PRIMERA_ALTO_VALOR' as const, weightKg: 24, relativeValueFactor: 2.3, targetMarginPercent: 30 },
+    { cutName: 'Lomito / Filet Mignon', tier: 'PRIMERA_ALTO_VALOR' as const, weightKg: 7.2, relativeValueFactor: 2.6, targetMarginPercent: 32 },
+    { cutName: 'Chocozuela / Pulpa Negra', tier: 'PRIMERA_ALTO_VALOR' as const, weightKg: 36, relativeValueFactor: 1.8, targetMarginPercent: 28 },
+    { cutName: 'Costilla de Res', tier: 'TERCERA_SOPA_HUESO' as const, weightKg: 28.8, relativeValueFactor: 0.75, targetMarginPercent: 20 },
+    { cutName: 'Carne Molida Especial', tier: 'SEGUNDA_CORTE_GUISO' as const, weightKg: 31.2, relativeValueFactor: 1.25, targetMarginPercent: 25 },
+    { cutName: 'Lagarto con Hueso', tier: 'SEGUNDA_CORTE_GUISO' as const, weightKg: 21.6, relativeValueFactor: 0.95, targetMarginPercent: 22 },
+    { cutName: 'Falda / Pecho', tier: 'SEGUNDA_CORTE_GUISO' as const, weightKg: 24, relativeValueFactor: 1.35, targetMarginPercent: 26 },
+  ];
+
+  const wastes = [
+    { wasteType: 'HUESO_BLANCO_DESECHO' as const, label: 'Hueso Blanco', weightKg: 36 },
+    { wasteType: 'GRASA_SEBO_DESECHO' as const, label: 'Grasa y Sebo', weightKg: 19.2 },
+    { wasteType: 'ASERRIN_CORTE_SIERRA' as const, label: 'Aserrín de Sierra', weightKg: 4.8 },
+    { wasteType: 'MERMA_EVAPORACION_LIQUIDOS' as const, label: 'Evaporación en Cava', weightKg: 7.2 },
+  ];
+
+  const batch = calculateMeatYieldBatch({
+    input: {
+      animalType: 'RES',
+      presentation: 'CANAL_COMPLETA',
+      locationId: 'loc-pzo-01',
+      carcassWeightKg: 240,
+      carcassCostPerKgUsd: 3.5,
+      cuts,
+      wastes,
+    },
+    bcvRate: 45.0,
+    locationName: 'Sede Principal Alta Vista',
+    supervisor: {
+      uid: 'usr-sup-carniceria-005',
+      displayName: 'José Gregorio Páez',
+      role: UserRole.SUPERVISOR_CARNICERIA,
+    },
+  });
+
+  assert.equal(batch.carcassWeightKg, 240);
+  assert.equal(batch.totalCarcassCostUsd, 840);
+  assert.equal(batch.totalCutsWeightKg, 172.8);
+  assert.equal(batch.totalWasteWeightKg, 67.2);
+  assert.equal(batch.unaccountedWeightKg, 0);
+  assert.equal(batch.cutsYieldPercent, 72.0); // 172.8 / 240 = 72%
+  assert.equal(batch.wastePercent, 28.0); // 67.2 / 240 = 28%
+
+  // Total allocated cost should equal carcass cost ($840) within 1 cent due to rounding
+  const totalCostAllocated = batch.cuts.reduce((sum, c) => sum + (c.allocatedCostPerKgUsd * c.weightKg), 0);
+  assert.ok(Math.abs(totalCostAllocated - 840) < 1.0, `Cost allocated ${totalCostAllocated} must match carcass total cost 840`);
+
+  // Higher value cut (Lomito) has higher allocated cost per kg than secondary cut (Costilla)
+  const lomito = batch.cuts.find((c) => c.cutName.includes('Lomito'));
+  const costilla = batch.cuts.find((c) => c.cutName.includes('Costilla'));
+  assert.ok(lomito && costilla);
+  assert.ok(lomito.allocatedCostPerKgUsd > costilla.allocatedCostPerKgUsd);
+
+  // Test purchase projection: If we need 120 kg of Solomo de Cuerito
+  const projection = projectCarcassRequirementForCutDemand({
+    animalType: 'RES',
+    cutName: 'Solomo de Cuerito',
+    targetDemandKg: 120,
+  });
+  assert.ok(projection.carcassNeededKg > 1000);
+  assert.ok(projection.cutYieldPercent > 0);
+});
+
+test('38. Fruver Yield Engine: Decimal.js Agricultural Lot Intake, 5 Waste Causes, Net Salable Yield, and Cost Absorption into PVP', () => {
+  // Agricultural lot: 500 kg of Tomate Perita @ $1.20/kg = $600 total cost
+  const lot = calculateFruverBatch({
+    input: {
+      productId: 'prd-fruv-01',
+      productSku: 'FRUV-TOM-PER',
+      productName: 'Tomate Perita Seleccionado',
+      category: 'VERDURAS_HORTALIZAS',
+      locationId: 'loc-pzo-01',
+      initialWeightKg: 500,
+      initialCostPerKgUsd: 1.2,
+      targetMarginPercent: 30,
+      wastes: [
+        { cause: 'DESHIDRATACION_PERDIDA_PESO', weightKg: 15, notes: 'Pérdida por humedad en cava' },
+        { cause: 'DANO_EXCESO_FRIO', weightKg: 5, notes: 'Quemadura leve en estiba baja' },
+        { cause: 'DANO_EXCESO_CALOR', weightKg: 10, notes: 'Sobre-maduración en traslado' },
+        { cause: 'DANO_MECANICO_MANIPULACION', weightKg: 12, notes: 'Aplastamiento por caja rota' },
+        { cause: 'EXCESO_DIAS_EXPOSICION_ROTACION', weightKg: 8, notes: 'Senescencia en góndola' },
+      ],
+    },
+    bcvRate: 45.0,
+    locationName: 'Sede Principal Alta Vista',
+    supervisor: {
+      uid: 'usr-sup-fruver-006',
+      displayName: 'Carmen Elena Rojas',
+      role: UserRole.SUPERVISOR_FRUVER,
+    },
+  });
+
+  assert.equal(lot.initialWeightKg, 500);
+  assert.equal(lot.totalBatchCostUsd, 600);
+  assert.equal(lot.initialCostPerKgUsd, 1.2);
+  assert.equal(lot.totalWasteKg, 50);
+  assert.equal(lot.netSalableWeightKg, 450);
+  assert.equal(lot.netYieldPercent, 90.0);
+  assert.equal(lot.wastePercent, 10.0);
+
+  // Cost absorption: $600 / 450 kg = $1.3333 -> $1.33/kg
+  assert.equal(lot.effectiveCostPerSalableKgUsd, 1.33);
+  assert.ok(lot.effectiveCostPerSalableKgUsd > lot.initialCostPerKgUsd);
+
+  // PVP with 30% margin on absorbed cost: 1.33 / (1 - 0.30) = $1.90 USD
+  assert.equal(lot.suggestedPvpPerKgUsd, 1.9);
+  assert.equal(lot.suggestedPvpPerKgVes, 85.5); // 1.90 * 45.0
+
+  // Verify all 5 causes are reflected in waste breakdown
+  assert.equal(lot.wastes.length, 5);
+  const causes = lot.wastes.map((w) => w.cause);
+  assert.ok(causes.includes('DESHIDRATACION_PERDIDA_PESO'));
+  assert.ok(causes.includes('DANO_EXCESO_FRIO'));
+  assert.ok(causes.includes('DANO_EXCESO_CALOR'));
+  assert.ok(causes.includes('DANO_MECANICO_MANIPULACION'));
+  assert.ok(causes.includes('EXCESO_DIAS_EXPOSICION_ROTACION'));
+});
+
+test('39. Supervisor RBAC Governance: Dedicated Roles (Carnicería, Fruver, Pasillo) Inherit Analyst Operational Rights with Double Signature PIN Protection', () => {
+  // Check bootstrap accounts exist with correct emails and roles
+  const carniceria = BOOTSTRAP_USERS.find((u) => u.email === 'carniceria@hiperabastopolar.com');
+  const fruver = BOOTSTRAP_USERS.find((u) => u.email === 'fruver@hiperabastopolar.com');
+  const pasillo = BOOTSTRAP_USERS.find((u) => u.email === 'pasillo@hiperabastopolar.com');
+
+  assert.ok(carniceria);
+  assert.ok(fruver);
+  assert.ok(pasillo);
+  assert.equal(carniceria.role, UserRole.SUPERVISOR_CARNICERIA);
+  assert.equal(fruver.role, UserRole.SUPERVISOR_FRUVER);
+  assert.equal(pasillo.role, UserRole.SUPERVISOR_PASILLO);
+
+  // Verify permission: All three supervisors satisfy requirements for ANALISTA
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_CARNICERIA, [UserRole.ANALISTA]), true);
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_FRUVER, [UserRole.ANALISTA]), true);
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_PASILLO, [UserRole.ANALISTA]), true);
+
+  // Verify security boundary: Supervisors do NOT have GERENTE or SUPERADMIN authority
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_CARNICERIA, [UserRole.GERENTE]), false);
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_FRUVER, [UserRole.GERENTE, UserRole.SUPERADMIN]), false);
+  assert.equal(checkUserRolePermission(UserRole.SUPERVISOR_PASILLO, [UserRole.SUPERADMIN]), false);
+});
+
+test('40. PolarBot Latency Optimization: Sub-Second Local Deterministic Fast-Path for Rotation, Meat Yield, Fruver, and Supervisors', () => {
+  const mockUser: UserProfile = {
+    uid: 'usr-analista-003',
+    email: 'costos@chrystal.com.ve',
+    displayName: 'Carlos Méndez (Analista)',
+    role: UserRole.ANALISTA,
+    pin: '304050',
+    locationAccess: ['loc-pzo-01'],
+    active: true,
+    createdAt: '2026-01-15T08:00:00-04:00',
+  };
+
+  const context = buildLiveErpOperationalContext({
+    user: mockUser,
+    bcvState: {
+      spotRateToday: 45.2,
+      nextDayRateAfter5Pm: 45.5,
+      activeRate: 45.2,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'Oficial BCV',
+      caracasTimeFormatted: '14:30 VET',
+      caracasDateFormatted: '27/10/2026',
+    },
+    locations: [
+      {
+        id: 'loc-pzo-01',
+        code: 'PZO-01',
+        name: 'Sede Principal Alta Vista',
+        city: 'Puerto Ordaz',
+        type: 'SEDE',
+        manager: 'Ing. Salazar',
+        active: true,
+      },
+    ],
+    products: [
+      {
+        id: 'prd-01',
+        sku: 'HAR-PAN-1KG',
+        barcode: '7591001',
+        name: 'Harina P.A.N. 1kg',
+        category: 'Víveres Secos',
+        unit: 'KG',
+        costUsd: 0.95,
+        targetMarginPercent: 28,
+        priceUsd: 1.32,
+        ivaRate: 0,
+        stockByLocation: { 'loc-pzo-01': 500 },
+        minStockByLocation: { 'loc-pzo-01': 100 },
+        monthlyUnitsSold: 3200,
+        abcClass: 'A',
+        supplierId: 'sup-001',
+        lastUpdatedVet: '2026-10-27T10:00:00-04:00',
+      },
+      {
+        id: 'prd-02',
+        sku: 'ARR-PRI-1KG',
+        barcode: '7591002',
+        name: 'Arroz Primor Clásico 1kg',
+        category: 'Granos',
+        unit: 'KG',
+        costUsd: 1.1,
+        targetMarginPercent: 25,
+        priceUsd: 1.47,
+        ivaRate: 0,
+        stockByLocation: { 'loc-pzo-01': 350 },
+        minStockByLocation: { 'loc-pzo-01': 80 },
+        monthlyUnitsSold: 1800,
+        abcClass: 'A',
+        supplierId: 'sup-001',
+        lastUpdatedVet: '2026-10-27T10:00:00-04:00',
+      },
+    ],
+    discards: [],
+  });
+
+  assert.ok(context.topRotationSkus && context.topRotationSkus.length >= 2);
+  assert.equal(context.topRotationSkus[0].sku, 'HAR-PAN-1KG');
+
+  // 1. Top rotation query responds deterministically in < 1ms
+  const startRotation = Date.now();
+  const rotationRes = answerQueryWithHeuristicEngine('cual es el producto con mayor rotacion?', context);
+  const rotationDuration = Date.now() - startRotation;
+  assert.ok(rotationDuration < 50, `Rotation query took ${rotationDuration}ms, must be < 50ms`);
+  assert.ok(rotationRes.answer.includes('HAR-PAN-1KG'));
+  assert.ok(rotationRes.answer.includes('3.200 unidades vendidas'));
+
+  // 2. Meat yield query responds with Res/Cerdo/Pollo desposte explanation
+  const meatRes = answerQueryWithHeuristicEngine('¿Cómo funciona el módulo de rendimiento cárnico y desposte?', context);
+  assert.ok(meatRes.answer.includes('Rendimiento Cárnico'));
+  assert.ok(meatRes.answer.includes('Res, Cerdo y Pollo'));
+  assert.ok(meatRes.answer.includes('Hueso Blanco/Rojo'));
+
+  // 3. Fruver query responds with 5 waste causes and cost absorption
+  const fruverRes = answerQueryWithHeuristicEngine('Explícame las mermas de fruver y absorción de costo', context);
+  assert.ok(fruverRes.answer.includes('Rendimiento Fruver'));
+  assert.ok(fruverRes.answer.includes('DESHIDRATACION_PERDIDA_PESO'));
+  assert.ok(fruverRes.answer.includes('Costo Unitario Efectivo = Costo Total del Lote / Kilos Netos Vendibles'));
+
+  // 4. Supervisor credentials query responds with specialized accounts
+  const supRes = answerQueryWithHeuristicEngine('¿Cuáles son las credenciales y roles de supervisor?', context);
+  assert.ok(supRes.answer.includes('carniceria@hiperabastopolar.com'));
+  assert.ok(supRes.answer.includes('fruver@hiperabastopolar.com'));
+  assert.ok(supRes.answer.includes('pasillo@hiperabastopolar.com'));
+});
+

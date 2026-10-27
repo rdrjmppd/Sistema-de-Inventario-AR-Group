@@ -72,10 +72,10 @@ export const ERP_KNOWLEDGE_BASE: KnowledgeTopic[] = [
     summary:
       'Protocolo anti-fraude para desincorporar mercancía por vencimiento, rotura, merma o siniestro con autorización obligatoria por PIN.',
     stepByStep: [
-      'Paso 1 (Analista): En "Descargas & Bajas", pulsar "+ Nueva Solicitud". Seleccionar sede, SKU, cantidad dañada, causa (VENCIMIENTO, ROTURA, ACCIDENTE, MERMA, ERROR) y justificación. Queda en PENDIENTE_AUTORIZACION sin tocar stock físico.',
-      'Paso 2 (Gerente/Superadmin): Abrir la solicitud pendiente, revisar la pérdida valorizada en USD y VES, ingresar el PIN confidencial y pulsar "Firmar y Autorizar Baja Definitiva".',
+      'Paso 1 (Analista): En "Inteligencia y Gobierno > Descargas & Bajas", pulsar "+ Nueva Solicitud de Descarga". Seleccionar sede, SKU, cantidad dañada, causa oficial (VENCIMIENTO_CADUCIDAD, DETERIORO_EMPAQUE_CONTENEDOR, ACCIDENTE_MALA_MANIPULACION, MERMA_CADENA_FRIO, ERROR_CARGA_SISTEMA) y justificación detallada. Queda en PENDIENTE_AUTORIZACION sin tocar stock físico.',
+      'Paso 2 (Gerente/Superadmin): Abrir la solicitud pendiente, revisar la pérdida valorizada en USD y VES, ingresar el PIN confidencial de 4 a 6 dígitos y pulsar "Firmar y Autorizar Baja Definitiva".',
       'Paso 3 (Resultado): El stock se descuenta en la sede y se descarga el Acta Oficial en PDF/Excel con logotipo y marca de agua.',
-      'Paso 4 (Rechazo): Si el gerente rechaza la solicitud, el stock se mantiene intacto.',
+      'Paso 4 (Rechazo): Si el gerente rechaza la solicitud indicando el motivo, el stock se mantiene intacto.',
     ],
     rules: [
       'El analista NO puede descontar stock por sí solo.',
@@ -129,7 +129,7 @@ export const ERP_KNOWLEDGE_BASE: KnowledgeTopic[] = [
       'Borrado destructivo total de la base de datos para restaurar el sistema a estado virgen.',
     rules: [
       'RESTRINGIDO EXCLUSIVAMENTE AL ROL SUPERADMIN.',
-      'Requiere PIN de Superadministrador (102030) y escribir textualmente "REINICIAR-SISTEMA".',
+      'Requiere PIN de Superadministrador y escribir textualmente "REINICIAR-SISTEMA".',
       'Analistas, Gerentes u Observadores tienen estrictamente prohibido y bloqueado este procedimiento.',
     ],
     requiredRole: 'SUPERADMIN',
@@ -153,16 +153,75 @@ export const ERP_KNOWLEDGE_BASE: KnowledgeTopic[] = [
     juniorExplanation:
       'Puedes bajar las listas de comida en Excel con sus tablas bien marcadas o en PDF con el logo del carrito de Hiper Abasto Polar y su marca de agua de fondo.',
   },
+  {
+    id: 'rendimiento-carnico-desposte',
+    title: 'Rendimiento Cárnico y Desglose de Desposte (Res, Cerdo y Pollo)',
+    category: 'OPERACIONES',
+    summary:
+      'Protocolo de transformación cárnica para desglosar canales enteras o medias canales de vacuno (res), porcino (cerdo) y avícola (pollo) en cortes comerciales con costeo por valor relativo y control de mermas.',
+    stepByStep: [
+      '1. Ingresar a "Operaciones > Rendimiento Cárnico (Desposte)" en el menú lateral.',
+      '2. Seleccionar la especie animal: Vacuno (Res), Porcino (Cerdo) o Avícola (Pollo).',
+      '3. Indicar la Sede/Frigorífico, la presentación de entrada (Canal Completa, Media Canal, Cuarto Trasero/Delantero, Bulto de Pollo) y registrar el peso bruto inicial en Kg y el costo unitario de compra ($/Kg).',
+      '4. Carga de Subproductos / Cortes: A medida que los carniceros realizan el despiece, registrar los Kg obtenidos de cada corte (ej. Res: Solomo, Lomito, Punta Trasera, Pulpa Negra, Chocozuela, Carne Molida, Costilla; Cerdo: Pernil, Chuleta, Costilla, Lomo, Tocino; Pollo: Pechuga, Milanesa, Muslo/Contramuslo, Alas).',
+      '5. Costeo por Valor Comercial Relativo: El sistema calcula automáticamente el % de rendimiento de cada corte sobre el total de la canal y le asigna un costo proporcional a su valor en el mercado, calculando el PVP sugerido en USD y Bolívares con margen objetivo.',
+      '6. Registro de Mermas de Desposte: Pesar y desglosar el desperdicio en las 4 categorías: Hueso Blanco de desecho, Grasa/Sebo excedente, Merma por evaporación/líquidos en cava y Aserrín de corte en sierra.',
+      '7. Proyección de Compras Futuras: Utilizar la calculadora inteligente integrada indicando cuántos Kg de un corte específico se necesitan para que el sistema calcule exactamente cuántos Kg de canal entera se deben pedir al matadero o proveedor sin generar sobrestock de huesos ni grasas.',
+    ],
+    rules: [
+      'Los pesajes de cortes más mermas deben cuadrar con el peso total de la canal (tolerancia máxima de pesaje: ±0.5%).',
+      'El Supervisor de Carnicería realiza la carga y pesaje de cortes, requiriendo doble firma gerencial para confirmación definitiva en Kardex.',
+      'El costo de la canal se distribuye de forma ponderada según el valor relativo de cada corte (el lomito absorbe más costo que la costilla o el hueso).',
+    ],
+    requiredRole: 'SUPERVISOR_CARNICERIA / ANALISTA / GERENTE',
+    juniorExplanation:
+      'Cuando la empresa compra una vaca, un cochino o bultos de pollo enteros, los carniceros los pican en partes (bisteck, molida, chuletas, pechugas). El sistema anota cuánto pesó cada corte, calcula cuánto costó producirlo, a qué precio venderlo en dólares y bolívares, y anota los huesos y pellejos que se botan como merma.',
+  },
+  {
+    id: 'rendimiento-frutas-verduras-mermas',
+    title: 'Rendimiento y Control de Mermas de Frutas y Verduras (Fruver)',
+    category: 'OPERACIONES',
+    summary:
+      'Control de lotes agrícolas, absorción de costos y registro de mermas clasificadas bajo 5 causas específicas de descomposición y deterioro físico.',
+    stepByStep: [
+      '1. Ingresar a "Operaciones > Rendimiento Frutas y Verduras" en el menú lateral.',
+      '2. Seleccionar el rubro agrícola (Tomate Perita, Papa Criolla, Cebolla, Plátano Verde/Maduro, Piña, etc.) y la Sede de recepción.',
+      '3. Ingresar el peso bruto recibido del lote en Kg y el costo unitario de factura ($/Kg).',
+      '4. Desglose de Merma por 5 Causas Específicas: Pesar los descartes diarios e ingresarlos en la causa correspondiente:',
+      '   - Deshidratación y Pérdida Natural de Peso (humedad evaporada por calor/ambiente).',
+      '   - Quemadura por Exceso de Frío en Cava (daño por congelación accidental o frío excesivo).',
+      '   - Descomposición / Fermentación por Exceso de Calor (maduración acelerada y pudrición).',
+      '   - Daño Mecánico por Estiba y Manipulación (golpes, magulladuras o aplastamiento en cestas).',
+      '   - Exceso de Días en Piso de Venta (fruta o verdura sobremadurada sin rotación oportuna).',
+      '5. Rendimiento Neto Vendible: El sistema resta la merma acumulada del peso inicial para obtener los Kg reales listos para venta en mostrador.',
+      '6. Costo Efectivo Absorbido: El costo de los kilos perdidos se absorbe automáticamente en los kilos vendibles restantes, recalculando el PVP por Kg para no comprometer la rentabilidad de la empresa.',
+    ],
+    rules: [
+      'La merma total nunca puede superar el 100% del lote recibido.',
+      'El Supervisor de Frutas y Verduras registra los descartes diarios clasificados por causa exacta para auditoría de calidad.',
+    ],
+    requiredRole: 'SUPERVISOR_FRUVER / ANALISTA / GERENTE',
+    juniorExplanation:
+      'Las frutas y verduras se van dañando o perdiendo agua con los días. El supervisor anota cuántos kilos se dañaron y por qué (si fue por calor, por frío, porque se aplastaron o porque pasaron muchos días en el mostrador). El sistema calcula cuánta plata se perdió y a cómo hay que vender los tomates sanos que quedaron.',
+  },
 ];
 
 export const JUNIOR_GLOSSARY: Record<string, string> = {
-  SKU: 'El código único de cada producto (como la cédula de identidad de cada artículo).',
-  PVP: 'Precio de Venta al Público (lo que paga el cliente en la caja).',
-  Merma: 'Comida que se venció, rompió o dañó y que hay que dar de baja en el sistema.',
-  'Quiebre de Stock': 'Quedarse en cero en el anaquel; no tener comida para venderle al cliente.',
-  'Punto de Reorden': 'El aviso de alerta cuando quedan poquitas unidades para pedir más al proveedor.',
-  'Pareto ABC': 'Regla donde los productos Clase A son los que dejan casi toda la plata del negocio.',
-  'Doble Firma': 'Seguridad donde el analista pide la baja y el gerente la autoriza con su clave.',
-  OCR: 'El lector automático que saca los datos de fotos de facturas o transferencias.',
-  'Marca de Agua': 'El logo transparente de fondo que tienen las hojas para que nadie las falsifique.',
+  SKU: 'código único que identifica a cada producto para no confundir marcas ni presentaciones.',
+  PVP: 'precio de venta al público en anaquel con margen de ganancia e impuestos incluidos.',
+  Merma: 'pérdida de mercancía que se daña, vence o rompe y ya no se puede vender.',
+  'Quiebre de Stock': 'quedarse en cero en el anaquel; no tener mercancía disponible para la venta.',
+  'Punto de Reorden':
+    'la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor.',
+  'Pareto ABC': 'clasificación donde los productos Clase A generan el 80% de los ingresos del negocio.',
+  'Doble Firma':
+    'medida de seguridad donde una persona solicita la operación y un gerente la aprueba con su clave confidencial.',
+  OCR: 'lector inteligente que extrae automáticamente los datos de fotos de facturas o comprobantes de pago.',
+  'Marca de Agua': 'sello institucional al 7% de opacidad en el centro de los reportes PDF para certificar autenticidad.',
+  Desposte: 'proceso de picar y deshuesar una canal de carne entera (res, cerdo, pollo) en cortes listos para la venta.',
+  'Rendimiento Cárnico': 'el porcentaje de carne limpia y aprovechable que sale de un animal entero después de quitarle los huesos y el sebo.',
+  Canal: 'el cuerpo del animal entero (res o cerdo) sacrificado y limpio sin vísceras, listo para ser despiezado.',
+  'Corte Primario': 'los cortes de carne de mayor valor y calidad, como el lomito, el solomo o la pechuga de pollo.',
+  'Merma por Deshidratación': 'los kilos que pierde una fruta o verdura porque se le evapora el agua natural con el calor.',
+  Fruver: 'área del supermercado dedicada a la venta de frutas, verduras, hortalizas y tubérculos.',
 };

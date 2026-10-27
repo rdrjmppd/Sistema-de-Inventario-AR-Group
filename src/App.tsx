@@ -30,6 +30,9 @@ import { MonthlyClosing } from './components/finance/MonthlyClosing';
 import { BusinessSettings } from './components/dashboard/BusinessSettings';
 import { AuditHistoryView } from './components/dashboard/AuditHistoryView';
 import { InventoryDiscardsView } from './components/inventory/InventoryDiscardsView';
+import { MeatYieldView } from './components/operations/MeatYieldView';
+import { FruverYieldView } from './components/operations/FruverYieldView';
+import { BRAND_ASSETS, BRAND_NAME, BRAND_LEGAL_NAME, BRAND_RIF } from './lib/brand-assets';
 
 const LoginView: React.FC = () => {
   const { login } = useAuth();
@@ -50,15 +53,25 @@ const LoginView: React.FC = () => {
       <div className="flex-1 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-sky-600 flex items-center justify-center font-bold text-lg tracking-tighter shadow-inner">
-              CH®
+            <div className="w-14 h-14 rounded-2xl bg-white p-1 flex items-center justify-center shadow-lg border border-white/20 shrink-0 overflow-hidden">
+              <img
+                src={BRAND_ASSETS.logoPublicPath}
+                alt={BRAND_NAME}
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = BRAND_ASSETS.logoDataUri;
+                }}
+              />
             </div>
             <div>
-              <h1 className="text-base font-bold text-white">
-                CHRYSTAL® ENTERPRISE ERP
+              <h1 className="text-base font-bold text-white tracking-tight">
+                {BRAND_NAME}
               </h1>
-              <p className="text-xs text-slate-400">
-                Retail Alimentario Multi-Sede · Venezuela Edition
+              <p className="text-[11px] text-emerald-400 font-semibold">
+                {BRAND_LEGAL_NAME}
+              </p>
+              <p className="text-[10px] text-slate-400">
+                Chrystal® Enterprise ERP · RIF: {BRAND_RIF}
               </p>
             </div>
           </div>
@@ -140,6 +153,8 @@ const MainShell: React.FC = () => {
       {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
       {activeTab === 'TRANSFERS' && <StockTransfers />}
       {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
+      {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
+      {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
       {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
       {activeTab === 'PRICING' && <PricingCalculator />}
       {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}

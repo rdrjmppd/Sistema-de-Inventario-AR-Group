@@ -27,7 +27,21 @@ interface AuthContextType {
   clearSessionHistory: () => void;
 }
 
-const BOOTSTRAP_USERS: UserProfile[] = [
+export function checkUserRolePermission(role: UserRole, allowedRoles: UserRole[]): boolean {
+  if (allowedRoles.includes(role)) return true;
+  // Supervisors possess operational Analyst-level authority
+  if (
+    allowedRoles.includes(UserRole.ANALISTA) &&
+    (role === UserRole.SUPERVISOR_CARNICERIA ||
+      role === UserRole.SUPERVISOR_FRUVER ||
+      role === UserRole.SUPERVISOR_PASILLO)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export const BOOTSTRAP_USERS: UserProfile[] = [
   {
     uid: 'usr-superadmin-001',
     email: 'rdrj.mppd@gmail.com',
@@ -67,6 +81,36 @@ const BOOTSTRAP_USERS: UserProfile[] = [
     locationAccess: ['loc-pzo-01'],
     active: true,
     createdAt: '2026-02-01T08:00:00-04:00',
+  },
+  {
+    uid: 'usr-sup-carniceria-005',
+    email: 'carniceria@hiperabastopolar.com',
+    displayName: 'José Gregorio Páez (Sup. Carnicería)',
+    role: UserRole.SUPERVISOR_CARNICERIA,
+    pin: '506070',
+    locationAccess: ['loc-pzo-01', 'loc-ccs-01', 'loc-val-01'],
+    active: true,
+    createdAt: '2026-02-15T08:00:00-04:00',
+  },
+  {
+    uid: 'usr-sup-fruver-006',
+    email: 'fruver@hiperabastopolar.com',
+    displayName: 'Carmen Elena Rojas (Sup. Frutas y Verduras)',
+    role: UserRole.SUPERVISOR_FRUVER,
+    pin: '607080',
+    locationAccess: ['loc-pzo-01', 'loc-ccs-01', 'loc-val-01'],
+    active: true,
+    createdAt: '2026-02-15T08:00:00-04:00',
+  },
+  {
+    uid: 'usr-sup-pasillo-007',
+    email: 'pasillo@hiperabastopolar.com',
+    displayName: 'Andrés Eloy Blanco (Sup. Pasillo)',
+    role: UserRole.SUPERVISOR_PASILLO,
+    pin: '708090',
+    locationAccess: ['loc-pzo-01', 'loc-ccs-01', 'loc-val-01'],
+    active: true,
+    createdAt: '2026-02-15T08:00:00-04:00',
   },
 ];
 
@@ -281,7 +325,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const hasPermission = (allowedRoles: UserRole[]) => {
     if (!user) return false;
-    return allowedRoles.includes(user.role);
+    return checkUserRolePermission(user.role, allowedRoles);
   };
 
   return (

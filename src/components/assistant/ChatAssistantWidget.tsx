@@ -289,13 +289,13 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
 
   return (
     <>
-      {/* Floating Trigger Button (Bottom-Right, does not overlap mobile bottom nav) */}
+      {/* Floating Trigger Button (Bottom-Right, positioned above mobile bottom nav and install banner) */}
       {!isOpen && (
         <button
           type="button"
           onClick={() => setIsOpen(true)}
           aria-label="Abrir Asistente PolarBot"
-          className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-40 flex items-center gap-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-700 text-white px-3.5 py-2.5 rounded-full shadow-2xl hover:shadow-emerald-500/30 hover:scale-105 active:scale-95 transition duration-200 cursor-pointer min-h-[48px] min-w-[48px] border border-white/20 group"
+          className="fixed bottom-36 right-4 lg:bottom-6 lg:right-6 z-40 flex items-center gap-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-sky-700 text-white px-3.5 py-2.5 rounded-full shadow-2xl hover:shadow-emerald-500/30 hover:scale-105 active:scale-95 transition duration-200 cursor-pointer min-h-[48px] min-w-[48px] border border-white/20 group"
         >
           <div className="relative flex items-center justify-center">
             <Bot className="w-5 h-5 text-white" />

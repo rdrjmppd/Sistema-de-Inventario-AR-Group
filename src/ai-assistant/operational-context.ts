@@ -97,6 +97,17 @@ export function buildLiveErpOperationalContext(params: {
     city: l.city,
   }));
 
+  const topRotationSkus = [...products]
+    .sort((a, b) => (b.monthlyUnitsSold || 0) - (a.monthlyUnitsSold || 0))
+    .slice(0, 5)
+    .map((p) => ({
+      sku: p.sku,
+      name: p.name,
+      monthlyUnitsSold: p.monthlyUnitsSold || 0,
+      abcClass: p.abcClass,
+      category: p.category,
+    }));
+
   return {
     activeUser: {
       uid: user?.uid || 'anon',
@@ -128,6 +139,7 @@ export function buildLiveErpOperationalContext(params: {
     criticalStockoutSkus,
     pendingDiscardsSummary,
     locationsList,
+    topRotationSkus,
   };
 }
 
@@ -153,6 +165,16 @@ export function formatLiveContextForPrompt(ctx: LiveErpOperationalContext): stri
           .join('\n')
       : 'No hay solicitudes de baja pendientes por autorizar.';
 
+  const rotationText =
+    ctx.topRotationSkus && ctx.topRotationSkus.length > 0
+      ? ctx.topRotationSkus
+          .map(
+            (r, i) =>
+              `${i + 1}. [${r.sku}] ${r.name} (${r.category}) — ${r.monthlyUnitsSold} und/mes (Clase ${r.abcClass})`
+          )
+          .join('\n')
+      : 'Sin datos históricos de rotación.';
+
   return `
 ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
 - Usuario Activo en Sesión: ${ctx.activeUser.displayName} (${ctx.activeUser.email}) — Rol RBAC: ${ctx.activeUser.role}
@@ -167,6 +189,8 @@ ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
   * Valorización a Precio de Venta: ${formatUsd(ctx.metrics.totalValuationRetailUsd)} (Bs. ${formatVes(ctx.metrics.totalValuationRetailVes)})
   * Margen Bruto Promedio: ${ctx.metrics.weightedGrossMarginPercent}%
   * SKUs en Alarma Crítica de Quiebre: ${ctx.metrics.atRiskSkusCount}
+- Top Productos de Mayor Rotación (Demanda Mensual):
+${rotationText}
 - Detalle de SKUs en Riesgo Crítico:
 ${stockoutText}
 - Solicitudes de Bajas / Mermas Pendientes por Firma Gerencial (${ctx.metrics.pendingDiscardsCount} solicitudes — Total: ${formatUsd(ctx.metrics.pendingDiscardsTotalUsd)}):

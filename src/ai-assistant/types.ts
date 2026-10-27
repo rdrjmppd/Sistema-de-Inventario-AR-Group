@@ -65,6 +65,13 @@ export interface LiveErpOperationalContext {
     type: string;
     city: string;
   }>;
+  topRotationSkus: Array<{
+    sku: string;
+    name: string;
+    monthlyUnitsSold: number;
+    abcClass: string;
+    category: string;
+  }>;
 }
 
 export interface AssistantQueryRequest {

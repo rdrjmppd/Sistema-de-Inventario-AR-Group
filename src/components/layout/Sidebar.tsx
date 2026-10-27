@@ -18,6 +18,8 @@ import {
   X,
   History,
   PackageMinus,
+  Layers,
+  Apple,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -75,7 +77,39 @@ const NAV_ITEMS: NavItem[] = [
     defaultLabel: 'Descargas & Bajas (Doble Firma)',
     group: 'OPERACIONES',
     icon: PackageMinus,
-    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA, UserRole.OBSERVADOR],
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.OBSERVADOR,
+      UserRole.SUPERVISOR_CARNICERIA,
+      UserRole.SUPERVISOR_FRUVER,
+      UserRole.SUPERVISOR_PASILLO,
+    ],
+  },
+  {
+    id: 'MEAT_YIELD',
+    defaultLabel: 'Rendimiento Cárnico (Desposte)',
+    group: 'OPERACIONES',
+    icon: Layers,
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.SUPERVISOR_CARNICERIA,
+    ],
+  },
+  {
+    id: 'FRUVER_YIELD',
+    defaultLabel: 'Rendimiento Frutas y Verduras',
+    group: 'OPERACIONES',
+    icon: Apple,
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.SUPERVISOR_FRUVER,
+    ],
   },
   {
     id: 'CHRYSTAL_IMPORT',

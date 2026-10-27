@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Institutional Branding Assets & Constants
  * Brand: Hiper Abasto Polar, C.A.
  * Official Copyright: © 2026 AR Group. Todos los derechos de desarrollo reservados.

@@ -14,8 +14,8 @@ import { DynamicModuleStudio } from '../common/DynamicModuleStudio';
 import { DiagnosticConsole } from '../common/DiagnosticConsole';
 import { ReorderNotificationCenter } from '../common/ReorderNotificationCenter';
 import { CompanyProfileModal } from '../common/CompanyProfileModal';
-import { MobileInstallBanner } from '../common/MobileInstallBanner';
 import { ChatAssistantWidget } from '../assistant/ChatAssistantWidget';
+import { MobileInstallBanner } from './MobileInstallBanner';
 import { useUIConfig } from '../../context/UIConfigContext';
 
 interface LayoutProps {
@@ -70,6 +70,9 @@ export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children
 
       <Footer />
 
+      {/* Mobile PWA / A2HS Install Banner positioned directly above mobile bottom nav */}
+      <MobileInstallBanner />
+
       {/* Smartphone Bottom Quick Navigation Bar (visible on < lg screens) */}
       <nav
         aria-label="Barra de navegación rápida móvil"
@@ -113,8 +116,6 @@ export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children
       />
 
       <CompanyProfileModal />
-
-      <MobileInstallBanner />
 
       <ChatAssistantWidget onNavigate={onSelectTab} />
 
