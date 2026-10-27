@@ -144,7 +144,7 @@ interface InventoryContextType {
   markAllAlertsAsRead: () => void;
   triggerRealtimeStockDropDemo: () => ReorderAlertItem | null;
   replenishAlertStock: (alertId: string) => void;
-  addOrUpdateProduct: (product: Product) => void;
+  addOrUpdateProduct: (product: Product, baseSnapshot?: Product) => void;
   updateProductPricing: (productId: string, newCostUsd: number, newMarginPct: number) => void;
   executeStockTransfer: (
     productId: string,

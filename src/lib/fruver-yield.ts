@@ -124,11 +124,19 @@ export function calculateFruverBatch(params: {
   const suggestedPvpVes = round2(toDecimal(suggestedPvpUsd).times(bcvRate));
 
   const caracasNow = getCaracasNow();
-  const batchCode = `FRUV-${input.category.substring(0, 4)}-${caracasNow.dateFormatted.replace(/\//g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const trimmedCustom = input.customBatchCode?.trim();
+  const batchCode = trimmedCustom && trimmedCustom.length > 0
+    ? trimmedCustom
+    : `FRUV-${input.category.substring(0, 4)}-${caracasNow.dateFormatted.replace(/\//g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
 
   return {
     id: `fruv-batch-${Date.now()}`,
     batchCode,
+    customBatchCode: trimmedCustom || undefined,
+    receptionDate: input.receptionDate || caracasNow.dateFormatted,
+    supplierId: input.supplierId,
+    supplierName: input.supplierName,
+    inventoryLoaded: false,
     productId: input.productId,
     productSku: input.productSku,
     productName: input.productName,
@@ -154,5 +162,29 @@ export function calculateFruverBatch(params: {
     supervisorRole: supervisor.role,
     createdAtVet: `${caracasNow.dateFormatted} ${caracasNow.timeFormatted}`,
     status: 'REGISTRADO',
+  };
+}
+
+/**
+ * Calculates how many Kg of raw agricultural product must be ordered from the farm/supplier
+ * to achieve a target demand of salable produce on the shelf, accounting for expected waste.
+ */
+export function projectFruverRequirementForDemand(params: {
+  productSku: string;
+  targetDemandKg: number;
+  customExpectedYieldPercent?: number;
+}): { rawNeededKg: number; salableYieldPercent: number } {
+  const { productSku, targetDemandKg, customExpectedYieldPercent } = params;
+  const found = FRUVER_STANDARD_PRODUCTS.find((p) => p.sku === productSku);
+  const effectiveYield = customExpectedYieldPercent || (found ? found.expectedSalableYieldPercent : 90);
+  const yieldRatio = toDecimal(effectiveYield).dividedBy(100);
+
+  const rawNeeded = yieldRatio.isZero()
+    ? 0
+    : round2(toDecimal(targetDemandKg).dividedBy(yieldRatio));
+
+  return {
+    rawNeededKg: rawNeeded,
+    salableYieldPercent: effectiveYield,
   };
 }

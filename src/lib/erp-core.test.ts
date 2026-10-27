@@ -103,6 +103,7 @@ import {
 } from './meat-yield';
 import {
   calculateFruverBatch,
+  projectFruverRequirementForDemand,
   FRUVER_LOSS_CAUSE_LABELS,
   FRUVER_STANDARD_PRODUCTS,
 } from './fruver-yield';
@@ -2857,5 +2858,180 @@ test('43. PolarBot Zero-Duplication Parser & Inline Markdown Tokenizer Invariant
   }
   const elapsed = Date.now() - startTime;
   assert.ok(elapsed < 100, `Stress tokenization took ${elapsed}ms for 1000 items, must be < 100ms`);
+});
+
+test('44. Custom Batch Ingestion, Supplier Association, Species-Tailored Yields & Direct Inventory Loading (Meat & Fruver)', () => {
+  const supervisor = {
+    uid: 'usr-supervisor-carn',
+    displayName: 'Supervisor Carnicería y Fruver',
+    role: UserRole.SUPERVISOR_CARNICERIA,
+  };
+
+  // ========================================================
+  // 1. Meat Yield Custom Batch Ingestion & Supplier Tying
+  // ========================================================
+  const customMeatBatch = calculateMeatYieldBatch({
+    input: {
+      animalType: 'RES',
+      presentation: 'MEDIA_CANAL',
+      locationId: 'loc-pzo-01',
+      carcassWeightKg: 220,
+      carcassCostPerKgUsd: 2.85,
+      customBatchCode: 'GUIA-SADA-BOV-2026-90412',
+      receptionDate: '2026-03-25',
+      supplierId: 'sup-004',
+      supplierName: 'Frigorífico Industrial y Matadero Bolívar, C.A.',
+      cuts: [
+        { cutName: 'Lomito / Filet Mignon', tier: 'PRIMERA_ALTO_VALOR', weightKg: 3.96, relativeValueFactor: 2.6, targetMarginPercent: 32 },
+        { cutName: 'Solomo de Cuerito', tier: 'PRIMERA_ALTO_VALOR', weightKg: 7.7, relativeValueFactor: 2.3, targetMarginPercent: 30 },
+        { cutName: 'Carne Molida Especial', tier: 'SEGUNDA_CORTE_GUISO', weightKg: 26.4, relativeValueFactor: 1.25, targetMarginPercent: 25 },
+        { cutName: 'Costilla de Res', tier: 'TERCERA_SOPA_HUESO', weightKg: 20.9, relativeValueFactor: 0.75, targetMarginPercent: 20 },
+      ],
+      wastes: [
+        { wasteType: 'MERMA_EVAPORACION_LIQUIDOS', label: 'Merma por Líquidos y Oreo en Cava', weightKg: 4.5 },
+        { wasteType: 'ASERRIN_CORTE_SIERRA', label: 'Merma por Aserrín de Corte Sierra', weightKg: 2.2 },
+        { wasteType: 'HUESO_BLANCO_DESECHO', label: 'Hueso Blanco No Aprovechable (Desecho)', weightKg: 6.8 },
+        { wasteType: 'GRASA_SEBO_DESECHO', label: 'Sebo / Grasa Excedente No Comercial', weightKg: 3.5 },
+      ],
+    },
+    bcvRate: 885.5,
+    locationName: 'Sede Alta Vista',
+    supervisor,
+  });
+
+  // Verify non-random custom batch code was preserved verbatim
+  assert.equal(customMeatBatch.batchCode, 'GUIA-SADA-BOV-2026-90412');
+  assert.equal(customMeatBatch.customBatchCode, 'GUIA-SADA-BOV-2026-90412');
+  assert.equal(customMeatBatch.receptionDate, '2026-03-25');
+  assert.equal(customMeatBatch.supplierId, 'sup-004');
+  assert.equal(customMeatBatch.supplierName, 'Frigorífico Industrial y Matadero Bolívar, C.A.');
+  assert.equal(customMeatBatch.totalCarcassCostUsd, 627.0); // 220 * 2.85
+
+  // ========================================================
+  // 2. Fruver Yield Custom Batch Ingestion & Supplier Tying
+  // ========================================================
+  const customFruverBatch = calculateFruverBatch({
+    input: {
+      productId: 'prd-fruv-tom-per',
+      productSku: 'FRUV-TOM-PER',
+      productName: 'Tomate Perita Seleccionado',
+      category: 'VERDURAS_HORTALIZAS',
+      locationId: 'loc-pzo-01',
+      initialWeightKg: 120,
+      initialCostPerKgUsd: 1.15,
+      targetMarginPercent: 28,
+      customBatchCode: 'INSAI-AGRO-2026-77810',
+      receptionDate: '2026-03-24',
+      supplierId: 'sup-005',
+      supplierName: 'Distribuidora Agrícola Campo Fresco Los Andes, C.A.',
+      wastes: [
+        { cause: 'DESHIDRATACION_PERDIDA_PESO', weightKg: 3.0, notes: 'Evaporación natural' },
+        { cause: 'DANO_EXCESO_FRIO', weightKg: 1.5, notes: 'Quemadura frío' },
+        { cause: 'DANO_EXCESO_CALOR', weightKg: 4.0, notes: 'Maduración acelerada' },
+        { cause: 'DANO_MECANICO_MANIPULACION', weightKg: 2.5, notes: 'Aplastamiento en cesta' },
+        { cause: 'EXCESO_DIAS_EXPOSICION_ROTACION', weightKg: 1.0, notes: 'Merma piso venta' },
+      ],
+    },
+    bcvRate: 885.5,
+    locationName: 'Sede Alta Vista',
+    supervisor,
+  });
+
+  // Verify non-random custom fruver batch code
+  assert.equal(customFruverBatch.batchCode, 'INSAI-AGRO-2026-77810');
+  assert.equal(customFruverBatch.customBatchCode, 'INSAI-AGRO-2026-77810');
+  assert.equal(customFruverBatch.receptionDate, '2026-03-24');
+  assert.equal(customFruverBatch.supplierId, 'sup-005');
+  assert.equal(customFruverBatch.supplierName, 'Distribuidora Agrícola Campo Fresco Los Andes, C.A.');
+
+  // Verify exact Decimal.js waste and cost absorption calculations
+  // Total initial: 120 Kg @ $1.15 = $138.00 USD
+  assert.equal(customFruverBatch.totalBatchCostUsd, 138.0);
+  assert.equal(customFruverBatch.totalWasteKg, 12.0); // 3 + 1.5 + 4 + 2.5 + 1
+  assert.equal(customFruverBatch.wastePercent, 10.0); // 12 / 120 = 10%
+  assert.equal(customFruverBatch.netSalableWeightKg, 108.0); // 120 - 12 = 108 Kg
+  assert.equal(customFruverBatch.netYieldPercent, 90.0); // 108 / 120 = 90%
+  assert.equal(customFruverBatch.effectiveCostPerSalableKgUsd, 1.28); // 138 / 108 = 1.2777... -> 1.28
+  assert.equal(customFruverBatch.suggestedPvpPerKgUsd, 1.78); // 1.28 / (1 - 0.28) = 1.7777... -> 1.78
+  assert.equal(customFruverBatch.totalWasteLossUsd, 13.81); // Itemized sum: 3.45 + 1.73 + 4.60 + 2.88 + 1.15 = 13.81
+
+  // ========================================================
+  // 3. Multi-Species Tailored Purchase Projections
+  // ========================================================
+  // Res: Solomo demand 35 Kg -> Carcass needed
+  const resProj = projectCarcassRequirementForCutDemand({
+    animalType: 'RES',
+    cutName: 'Solomo de Cuerito',
+    targetDemandKg: 35,
+  });
+  // Yield is 3.5% -> 35 / 0.035 = 1000 Kg
+  assert.equal(resProj.carcassNeededKg, 1000);
+  assert.equal(resProj.cutYieldPercent, 3.5);
+
+  // Cerdo: Pernil demand 53 Kg
+  const cerdoProj = projectCarcassRequirementForCutDemand({
+    animalType: 'CERDO',
+    cutName: 'Pernil de Cerdo',
+    targetDemandKg: 53,
+  });
+  // Yield is 26.5% -> 53 / 0.265 = 200 Kg
+  assert.equal(cerdoProj.carcassNeededKg, 200);
+  assert.equal(cerdoProj.cutYieldPercent, 26.5);
+
+  // Pollo: Pechuga demand 62 Kg
+  const polloProj = projectCarcassRequirementForCutDemand({
+    animalType: 'POLLO',
+    cutName: 'Pechuga con Hueso',
+    targetDemandKg: 62,
+  });
+  // Yield is 31.0% -> 62 / 0.31 = 200 Kg
+  assert.equal(polloProj.carcassNeededKg, 200);
+  assert.equal(polloProj.cutYieldPercent, 31.0);
+
+  // Fruver purchase projection: 100 Kg net salable produce requirement
+  const fruverProj = projectFruverRequirementForDemand({
+    productSku: 'FRUV-TOM-PER',
+    targetDemandKg: 100,
+    customExpectedYieldPercent: 90.0, // using current batch yield
+  });
+  // 100 / 0.90 = 111.11 Kg raw
+  assert.equal(fruverProj.rawNeededKg, 111.11);
+  assert.equal(fruverProj.salableYieldPercent, 90.0);
+
+  // ========================================================
+  // 4. Simulated Direct Inventory Stock Load (Cortes Cárnicos)
+  // ========================================================
+  const mockCatalog: Record<string, Product> = {};
+  let totalCommittedKg = 0;
+
+  customMeatBatch.cuts.forEach((cut, idx) => {
+    const sku = `CARN-RES-${cut.cutName.slice(0, 3).toUpperCase()}`;
+    mockCatalog[sku] = {
+      id: `prd-${sku}`,
+      sku,
+      barcode: `75910000000${idx}`,
+      name: cut.cutName,
+      category: 'Carnicería',
+      unit: 'KG',
+      costUsd: cut.allocatedCostPerKgUsd,
+      targetMarginPercent: cut.targetMarginPercent,
+      priceUsd: cut.retailPriceUsdPerKg,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': cut.weightKg },
+      minStockByLocation: { 'loc-pzo-01': 20 },
+      monthlyUnitsSold: 80,
+      abcClass: 'A',
+      supplierId: 'sup-004',
+      lastUpdatedVet: '2026-03-25T14:00:00-04:00',
+    };
+    totalCommittedKg += cut.weightKg;
+  });
+
+  assert.equal(Object.keys(mockCatalog).length, 4);
+  assert.equal(totalCommittedKg, 58.96); // 3.96 + 7.7 + 26.4 + 20.9
+  assert.equal(mockCatalog['CARN-RES-LOM'].stockByLocation['loc-pzo-01'], 3.96);
+  assert.equal(mockCatalog['CARN-RES-LOM'].supplierId, 'sup-004');
+  assert.ok(mockCatalog['CARN-RES-LOM'].costUsd > 0);
+  assert.ok(mockCatalog['CARN-RES-LOM'].priceUsd > mockCatalog['CARN-RES-LOM'].costUsd);
 });
 

@@ -90,6 +90,30 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     paymentTerms: 'Crédito 30 Días Comercial',
     balanceUsd: 540.75,
   },
+  {
+    id: 'sup-004',
+    rif: 'J-31458920-5',
+    name: 'Frigorífico Industrial y Matadero Bolívar, C.A.',
+    category: 'Carnes / Avícola',
+    contactName: 'Dr. Roberto Mendoza (Médico Veterinario)',
+    phone: '+58 286-9231800',
+    email: 'despacho@frigorificobolivar.com.ve',
+    creditDays: 15,
+    paymentTerms: 'Crédito 15 Días Canal Fría',
+    balanceUsd: 0,
+  },
+  {
+    id: 'sup-005',
+    rif: 'J-40982314-1',
+    name: 'Distribuidora Agrícola Campo Fresco Los Andes, C.A.',
+    category: 'Frutas y Hortalizas',
+    contactName: 'Sr. Eloy Zambrano',
+    phone: '+58 274-2441920',
+    email: 'ventas@campofrescolosandes.com',
+    creditDays: 7,
+    paymentTerms: 'Crédito 7 Días Flete Incluido',
+    balanceUsd: 0,
+  },
 ];
 
 const INITIAL_INVOICES: PurchaseInvoice[] = [

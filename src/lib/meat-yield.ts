@@ -178,11 +178,19 @@ export function calculateMeatYieldBatch(params: {
     : 0;
 
   const caracasNow = getCaracasNow();
-  const batchCode = `DESP-${input.animalType.substring(0, 3)}-${caracasNow.dateFormatted.replace(/\//g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+  const trimmedCustom = input.customBatchCode?.trim();
+  const batchCode = trimmedCustom && trimmedCustom.length > 0
+    ? trimmedCustom
+    : `DESP-${input.animalType.substring(0, 3)}-${caracasNow.dateFormatted.replace(/\//g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
 
   return {
     id: `batch-${Date.now()}`,
     batchCode,
+    customBatchCode: trimmedCustom || undefined,
+    receptionDate: input.receptionDate || caracasNow.dateFormatted,
+    supplierId: input.supplierId,
+    supplierName: input.supplierName,
+    inventoryLoaded: false,
     animalType: input.animalType,
     presentation: input.presentation,
     locationId: input.locationId,

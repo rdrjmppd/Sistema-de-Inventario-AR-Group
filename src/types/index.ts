@@ -429,7 +429,9 @@ export type AuditActionType =
   | 'INVENTORY_DISCARD_AUTHORIZE'
   | 'INVENTORY_DISCARD_REJECT'
   | 'MEAT_YIELD_BATCH_CREATE'
-  | 'FRUVER_YIELD_BATCH_CREATE';
+  | 'FRUVER_YIELD_BATCH_CREATE'
+  | 'MEAT_YIELD_INVENTORY_LOAD'
+  | 'FRUVER_YIELD_INVENTORY_LOAD';
 
 export interface AuditLogEntry {
   id: string;
@@ -554,6 +556,12 @@ export interface MeatWasteItem {
 export interface MeatYieldBatch {
   id: string;
   batchCode: string;
+  customBatchCode?: string;
+  receptionDate?: string;
+  supplierId?: string;
+  supplierName?: string;
+  inventoryLoaded?: boolean;
+  inventoryLoadedAt?: string;
   animalType: MeatAnimalType;
   presentation: MeatCarcassPresentation;
   locationId: string;
@@ -585,6 +593,10 @@ export interface CreateMeatYieldBatchInput {
   locationId: string;
   carcassWeightKg: number;
   carcassCostPerKgUsd: number;
+  customBatchCode?: string;
+  receptionDate?: string;
+  supplierId?: string;
+  supplierName?: string;
   cuts: Array<{
     cutName: string;
     tier: MeatCutTier;
@@ -630,6 +642,12 @@ export interface FruverWasteRecord {
 export interface FruverBatchRecord {
   id: string;
   batchCode: string;
+  customBatchCode?: string;
+  receptionDate?: string;
+  supplierId?: string;
+  supplierName?: string;
+  inventoryLoaded?: boolean;
+  inventoryLoadedAt?: string;
   productId: string;
   productSku: string;
   productName: string;
@@ -654,7 +672,7 @@ export interface FruverBatchRecord {
   supervisorName: string;
   supervisorRole: UserRole;
   createdAtVet: string;
-  status: 'REGISTRADO' | 'AUDITADO';
+  status: 'REGISTRADO' | 'AUDITADO' | 'CONFIRMADO_INVENTARIO';
 }
 
 export interface CreateFruverBatchInput {
@@ -666,6 +684,10 @@ export interface CreateFruverBatchInput {
   initialWeightKg: number;
   initialCostPerKgUsd: number;
   targetMarginPercent?: number;
+  customBatchCode?: string;
+  receptionDate?: string;
+  supplierId?: string;
+  supplierName?: string;
   wastes: Array<{
     cause: FruverLossCause;
     weightKg: number;
