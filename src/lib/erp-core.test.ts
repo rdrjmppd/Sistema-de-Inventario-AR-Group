@@ -2721,6 +2721,29 @@ test('40. PolarBot Latency Optimization: Sub-Second Local Deterministic Fast-Pat
   assert.ok(supRes.answer.includes('carniceria@hiperabastopolar.com'));
   assert.ok(supRes.answer.includes('fruver@hiperabastopolar.com'));
   assert.ok(supRes.answer.includes('pasillo@hiperabastopolar.com'));
+
+  // 5. Species-specific desposte: Pollo MUST NOT discuss beef cuts (Solomo / Lomito)
+  const chickenRes = answerQueryWithHeuristicEngine('Como desgloso el pollo?', context);
+  assert.ok(chickenRes.answer.includes('Carlos Méndez (Analista)'), 'Must personalize greeting to active user');
+  assert.ok(chickenRes.answer.includes('Pollo Beneficiado'));
+  assert.ok(chickenRes.answer.includes('Pechuga (Entera / Milanesas)'));
+  assert.ok(chickenRes.answer.includes('Muslos y Contramuslos'));
+  assert.equal(chickenRes.answer.includes('Solomo'), false, 'Chicken response must never mention beef cuts like Solomo');
+  assert.equal(chickenRes.answer.includes('Lomito'), false, 'Chicken response must never mention beef cuts like Lomito');
+
+  // 6. Species-specific desposte: Cerdo MUST discuss pork cuts (Pernil, Chuleta, Costillita)
+  const porkRes = answerQueryWithHeuristicEngine('Como hago la carga y desglose de cerdo?', context);
+  assert.ok(porkRes.answer.includes('Carlos Méndez (Analista)'));
+  assert.ok(porkRes.answer.includes('Canal de Cerdo'));
+  assert.ok(porkRes.answer.includes('Pernil (Pierna Trasera)'));
+  assert.ok(porkRes.answer.includes('Lomo y Chuletas'));
+  assert.equal(porkRes.answer.includes('Solomo'), false, 'Pork response must never mention beef cuts like Solomo');
+
+  // 7. Species-specific desposte: Res MUST discuss beef cuts (Solomo, Lomito, Chocozuela)
+  const beefRes = answerQueryWithHeuristicEngine('Como desgloso la canal de res?', context);
+  assert.ok(beefRes.answer.includes('Carlos Méndez (Analista)'));
+  assert.ok(beefRes.answer.includes('Solomo de Cuerito'));
+  assert.ok(beefRes.answer.includes('Chocozuela'));
 });
 
 test('41. Navigation State Resilience: Multi-Tab Persistence (activeTab), URL Hash Synchronization, and Anti-Reset Protection', () => {

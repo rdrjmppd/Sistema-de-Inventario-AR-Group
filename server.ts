@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import Decimal from 'decimal.js';
 import { GoogleGenAI, Type } from '@google/genai';
+import { buildMasterSystemPrompt } from './src/ai-assistant/system-prompt';
 
 Decimal.set({
   precision: 28,
@@ -685,7 +686,10 @@ async function startServer() {
         return;
       }
 
-      const apiKey = process.env.GEMINI_API_KEY;
+      const apiKey =
+        process.env.GEMINI_API_KEY ||
+        process.env.API_KEY ||
+        process.env.VITE_GEMINI_API_KEY;
       const canUseGemini = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey.length > 20);
 
       if (canUseGemini) {
@@ -699,36 +703,27 @@ async function startServer() {
             },
           });
 
-          const systemInstruction = `Eres "PolarBot", el Asistente Inteligente, Asesor Técnico y Brazo Derecho Operativo de Chrystal® Enterprise Food Retail ERP (Edición Venezuela), para la empresa HIPER ABASTO POLAR, C.A. (RIF: J-50123456-7, SADA: SADA-049821, Maracay, Edo. Aragua).
-Tono masculino, empático, profesional, altamente racional, respetuoso y sumamente directo al grano.
-Explica siempre entre paréntesis los términos técnicos (SKU, PVP, Merma, Punto de reorden, Doble firma, Desposte, Rendimiento Cárnico) para analistas junior.
-Operas estrictamente en modo solo lectura y respetas los niveles RBAC (Usuario actual: ${liveContext?.activeUser?.displayName || 'Operador'} - Rol: ${liveContext?.activeUser?.role || 'ANALISTA'}).
-Conoces los módulos de Rendimiento Cárnico (desposte de res, cerdo y pollo con costeo por valor comercial y proyección de compras) y Rendimiento de Frutas y Verduras (control de mermas por deshidratación, frío, calor, daño mecánico y rotación).
-Contexto en vivo: Tasa oficial BCV Bs. ${Number(liveContext?.bcvState?.activeRate || 36.5).toFixed(4)} / USD, Total SKUs: ${liveContext?.metrics?.totalSkus || 0}, SKUs en riesgo: ${liveContext?.metrics?.atRiskSkusCount || 0}.`;
+          const systemInstruction = buildMasterSystemPrompt(liveContext);
 
           const recentHistory = Array.isArray(conversationHistory)
-            ? conversationHistory.slice(-6)
+            ? conversationHistory.slice(-8)
             : [];
           const historyContext = recentHistory
             .map((m: { sender?: string; text?: string }) =>
-              `${m.sender === 'user' ? 'Usuario' : 'PolarBot'}: ${m.text || ''}`
+              `${m.sender === 'user' ? (liveContext?.activeUser?.displayName || 'Usuario') : 'PolarBot'}: ${m.text || ''}`
             )
             .join('\n\n');
 
           const promptWithHistory = historyContext
-            ? `Historial reciente de conversación:\n${historyContext}\n\nNueva consulta del usuario:\n${query}`
+            ? `Historial de conversación previa:\n${historyContext}\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
             : String(query);
 
-          // Fast low-latency execution: Disable reasoning loops and enforce fast timeout
           const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: promptWithHistory,
             config: {
               systemInstruction,
-              temperature: 0.2,
-              thinkingConfig: {
-                thinkingBudget: 0,
-              },
+              temperature: 0.3,
             },
           });
 
@@ -747,7 +742,8 @@ Contexto en vivo: Tasa oficial BCV Bs. ${Number(liveContext?.bcvState?.activeRat
             });
             return;
           }
-        } catch {
+        } catch (aiErr: any) {
+          console.warn('[PolarBot Gemini Warning]:', aiErr?.message || aiErr);
           // Fall through so client uses deterministic heuristic engine
         }
       }

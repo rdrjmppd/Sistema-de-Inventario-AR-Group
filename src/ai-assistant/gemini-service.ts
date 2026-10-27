@@ -23,7 +23,7 @@ export function answerQueryWithHeuristicEngine(
   const q = query.toLowerCase().trim();
   const userName = liveContext.activeUser.displayName;
 
-  // 1. Saludo inicial o presentación (directo y al grano)
+  // 1. Saludo inicial o presentación (empático, cercano y profesional)
   if (
     q === 'hola' ||
     q.startsWith('hola ') ||
@@ -35,23 +35,24 @@ export function answerQueryWithHeuristicEngine(
     q.includes('quién eres')
   ) {
     return {
-      answer: `Soy **PolarBot**, Asistente Inteligente y Brazo Derecho Operativo de **${COMPANY_IDENTITY.razonSocial}** (RIF: ${COMPANY_IDENTITY.rif}, SADA: ${COMPANY_IDENTITY.sada}). Estoy conectado en tiempo real a los datos de **Chrystal® ERP**.
+      answer: `Hola ${userName}. Soy **PolarBot**, tu Asistente Inteligente y Brazo Derecho Operativo en **${COMPANY_IDENTITY.razonSocial}** (RIF: ${COMPANY_IDENTITY.rif}, SADA: ${COMPANY_IDENTITY.sada}). Estoy conectado en tiempo real a los datos de **Chrystal® ERP**.
 
-Puedo orientarte de inmediato en:
-* Existencias por SKU (código único que identifica a cada producto para no confundir marcas ni presentaciones) y alertas de punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor).
-* Tasa oficial BCV activa y regla de corte a las 17:00 VET.
-* Solicitud de bajas por merma (pérdida de mercancía que se daña, vence o rompe y ya no se puede vender) bajo doble firma (medida de seguridad donde una persona solicita la operación y un gerente la aprueba con su clave confidencial).
-* Cálculo de PVP (precio de venta al público en anaquel con margen de ganancia e impuestos incluidos) y auditoría forense OCR.`,
+¿En qué te puedo orientar hoy? Puedo asesorarte de inmediato en:
+* **Existencias por SKU** y alertas de punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor).
+* **Tasa oficial BCV activa** y regla horaria de corte a las 17:00 VET.
+* **Desposte y Rendimiento Cárnico** específico para **Pollo**, **Cerdo** y **Res**.
+* **Rendimiento Fruver** (mermas agrícolas y fórmula de absorción en PVP).
+* **Solicitud de bajas y descargas de inventario** bajo doble firma gerencial.`,
       suggestedPrompts: [
+        '¿Cómo desgloso el pollo?',
         '¿Cuál es la tasa oficial BCV hoy?',
         '¿Qué productos están en quiebre de stock?',
         '¿Cómo solicito una baja de inventario?',
-        '¿Cuál es la valorización total del inventario?',
       ],
     };
   }
 
-  // 2. Tasa oficial BCV (directo al dato)
+  // 2. Tasa oficial BCV (personalizado y directo al dato)
   if (
     q.includes('tasa') ||
     q.includes('bcv') ||
@@ -67,7 +68,7 @@ Puedo orientarte de inmediato en:
       : 'Horario diurno regular (antes de las 17:00 VET): rige la tasa spot de la jornada actual.';
 
     return {
-      answer: `La **tasa oficial del BCV activa** es **${bcv.activeRate.toFixed(4)} VES/USD**.
+      answer: `Hola ${userName}. La **tasa oficial del BCV activa** es **${bcv.activeRate.toFixed(4)} VES/USD**.
 
 Detalle de vigencia cambiaria:
 * **Tasa spot del día**: ${bcv.spotRateToday.toFixed(4)} VES/USD
@@ -102,7 +103,7 @@ Todos los cálculos de PVP (precio de venta al público en anaquel con margen de
 
     if (count === 0 || criticalList.length === 0) {
       return {
-        answer: `Actualmente **no existen productos en quiebre de stock**. Los **${liveContext.metrics.totalSkus} SKUs** (código único que identifica a cada producto para no confundir marcas ni presentaciones) superan su punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor).`,
+        answer: `Hola ${userName}. Actualmente **no existen productos en quiebre de stock**. Los **${liveContext.metrics.totalSkus} SKUs** (código único que identifica a cada producto para no confundir marcas ni presentaciones) superan su punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor).`,
         suggestedPrompts: [
           '¿Cuál es la valorización total del inventario?',
           '¿Cómo dar de alta un nuevo producto (SKU)?',
@@ -120,7 +121,7 @@ Todos los cálculos de PVP (precio de venta al público en anaquel con margen de
       .join('\n');
 
     return {
-      answer: `Hay **${count} SKU(s)** (código único que identifica a cada producto para no confundir marcas ni presentaciones) en alerta de quiebre por debajo de su punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor):
+      answer: `Hola ${userName}. Hay **${count} SKU(s)** en alerta de quiebre por debajo de su punto de reorden (la cantidad mínima de paquetes que debe quedar en el depósito antes de tener que pedirle más al proveedor):
 
 ${itemsText}
 
@@ -152,7 +153,7 @@ Para emitir el pedido sugerido al proveedor, ingresa a **"Inteligencia y Gobiern
         : '\n\nEstado actual en vivo: **0 solicitudes pendientes por autorizar**.';
 
     return {
-      answer: `El registro de merma (pérdida de mercancía que se daña, vence o rompe y ya no se puede vender) opera bajo **doble firma** (medida de seguridad donde una persona solicita la operación y un gerente la aprueba con su clave confidencial):
+      answer: `Hola ${userName}. El registro de mermas y descargas de inventario opera bajo **doble firma** (medida de seguridad donde una persona solicita la operación y un gerente la aprueba con su clave confidencial):
 
 **Fase 1 — Pre-registro por el Analista:**
 1. Ingresa en **"Inteligencia y Gobierno > Descargas & Bajas"** y pulsa **"+ Nueva Solicitud de Descarga"**.
@@ -175,38 +176,131 @@ Un usuario con rol **GERENTE** o **SUPERADMIN** revisa la pérdida en USD y Bol�
     };
   }
 
-  // 4B. Rendimiento Cárnico y Desposte (Res, Cerdo, Pollo)
+  // 4B1. Rendimiento Cárnico — Desposte de POLLO (Aves)
   if (
-    q.includes('carnic') ||
-    q.includes('cárnic') ||
-    q.includes('desposte') ||
-    q.includes('canal') ||
-    q.includes('cerdo') ||
     q.includes('pollo') ||
+    q.includes('pechuga') ||
+    q.includes('alita') ||
+    q.includes('alas') ||
+    q.includes('muslo') ||
+    q.includes('milanesa')
+  ) {
+    return {
+      answer: `Hola ${userName}. Con gusto te oriento en el desposte y rendimiento de **Pollo Beneficiado** en el módulo **"Operaciones > Rendimiento Cárnico"**:
+
+**1. Desglose Anatómico y Transformación del Pollo:**
+* **Ingreso de Lote de Pollo**: Se registra el peso neto del lote de aves en kg y el costo total de adquisición en USD.
+* **Distribución de Cortes Específicos de Pollo**:
+  * **Pechuga (Entera / Milanesas)**: Corte noble de mayor valor comercial relativo ($/kg), absorbe el mayor porcentaje del costo de adquisición.
+  * **Muslos y Contramuslos**: Cuartos traseros de alta salida en piso de venta.
+  * **Alas**: Se comercializan enteras o divididas en alitas y chupetas.
+  * **Rabadilla / Carcasa**: Huesos carnosos para caldo o sopa a precio accesible.
+  * **Menudencias**: Hígado, molleja y corazón.
+* **Control de Mermas Técnicas de Pollo**: Sangría residual, oreo en cava fría, exceso de líquido de inmersión y recortes de grasa.
+
+**2. Calculadora Proyectiva de Compra de Pollo:**
+Permite ingresar los kilos de demanda esperada de milanesa de pechuga (ej. 60 kg) y el sistema proyecta automáticamente cuántos pollos beneficiados enteros deben solicitarse al proveedor para cubrir dicho requerimiento según el rendimiento porcentual de la pechuga.
+
+**3. Trazabilidad y Roles:**
+El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) registra los pesajes de lote y despostes en báscula digital.`,
+      suggestedPrompts: [
+        '¿Cómo funciona el desglose de cerdo?',
+        '¿Cómo funciona el desposte de res?',
+        '¿Cómo funciona el módulo de Rendimiento Fruver?',
+      ],
+    };
+  }
+
+  // 4B2. Rendimiento Cárnico — Desglose de CERDO (Porcino)
+  if (
+    q.includes('cerdo') ||
+    q.includes('cochino') ||
+    q.includes('pernil') ||
+    q.includes('chuleta') ||
+    q.includes('costillita') ||
+    q.includes('tocino') ||
+    q.includes('panceta')
+  ) {
+    return {
+      answer: `Hola ${userName}. Con gusto te oriento en el desglose y rendimiento de **Canal de Cerdo** en el módulo **"Operaciones > Rendimiento Cárnico"**:
+
+**1. Desglose y Cortes Porcinos:**
+* **Ingreso de Canal Porcina**: Se registra el peso bruto de la media canal o canal entera en kg y el costo total de compra en USD.
+* **Distribución de Cortes Específicos de Cerdo**:
+  * **Pernil (Pierna Trasera)** y **Paleta**: Piezas nobles de alto rendimiento y valor comercial.
+  * **Lomo y Chuletas (de Aguja y de Lomo)**: Cortes nobles que absorben el valor comercial real del cerdo sin distorsionar márgenes.
+  * **Costillitas**: Corte parrillero de alta demanda y valor relativo elevado.
+  * **Tocino / Panceta / Chicharrón**: Aprovechamiento cárnico y graso de valor intermedio.
+  * **Papada, Cuero, Patas y Cabeza**: Subproductos salables para consumo tradicional.
+* **Control de Mermas Técnicas**: Grasa/manteca, hueso blanco y aserrín de sierra.
+
+**2. Calculadora Proyectiva de Compra:**
+Permite ingresar los kilos de demanda esperada de chuletas o pernil y el sistema calcula la cantidad exacta de cerdos enteros que deben solicitarse al proveedor.
+
+**3. Trazabilidad y Roles:**
+El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) registra pesajes y despostes con doble firma para bajas con PIN de Gerencia.`,
+      suggestedPrompts: [
+        '¿Cómo desgloso el pollo?',
+        '¿Cómo funciona el desposte de res?',
+        '¿Cómo funciona el módulo de Rendimiento Fruver?',
+      ],
+    };
+  }
+
+  // 4B3. Rendimiento Cárnico — Desposte de RES (Bovino)
+  if (
     q.includes('res') ||
     q.includes('solomo') ||
     q.includes('lomito') ||
-    q.includes('pechuga') ||
-    q.includes('pernil')
+    q.includes('chocozuela') ||
+    q.includes('pulpa negra') ||
+    q.includes('costilla') ||
+    q.includes('lagarto') ||
+    q.includes('vacuno')
   ) {
     return {
-      answer: `El módulo **"Operaciones > Rendimiento Cárnico"** gestiona la transformación y desglose de canales completas de **Res, Cerdo y Pollo** en cortes primarios, secundarios y mermas técnicas:
+      answer: `Hola ${userName}. Con gusto te oriento en el desposte de canal bovina (**Res**) en el módulo **"Operaciones > Rendimiento Cárnico"**:
 
 **1. Desglose y Transformación Matemática Exacta:**
 * **Ingreso de Canal**: Se registra el peso bruto de la canal en kg y el costo total de adquisición en USD.
-* **Distribución de Cortes**: Cada corte (ej. Solomo de Cuerito, Lomito, Chocozuela, Costilla, Pulpa Negra) se pondera según su rendimiento histórico y su **valor comercial relativo ($/kg)**.
+* **Distribución de Cortes Nobles y Secundarios**: Solomo de Cuerito, Lomito, Chocozuela, Pulpa Negra, Costilla, Lagarto, Pecho y Falda, ponderados por rendimiento y **valor comercial relativo ($/kg)**.
 * **Alineación de Costos**: El costo total de la canal se distribuye proporcionalmente entre los cortes salables según su precio de mercado, garantizando que los cortes nobles absorban su valor real sin distorsionar el margen.
 * **Control de Mermas Técnicas**: Se pesan y registran con precisión: \`Hueso Blanco/Rojo\`, \`Grasa/Sebo\`, \`Aserrín de Sierra\` y \`Evaporación/Oreo en Cava\`.
 
 **2. Calculadora Proyectiva de Compra:**
-Permite ingresar los kilos de demanda esperada de cortes premium (ej. 150 kg de Solomo) y el sistema proyecta automáticamente cuántas canales de res o cerdos enteros deben solicitarse al proveedor para cubrir dicho requerimiento.
+Permite ingresar los kilos de demanda esperada de cortes premium (ej. 150 kg de Solomo) y el sistema proyecta automáticamente cuántas canales de res completas deben solicitarse al proveedor.
 
 **3. Trazabilidad y Roles:**
-El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) puede registrar pesajes y despostes. Cualquier baja por descomposición o desincorporación de hueso pasa a la bandeja de bajas para autorización gerencial con PIN.`,
+El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) puede registrar pesajes y despostes. Cualquier baja pasa a la bandeja para autorización gerencial con PIN.`,
       suggestedPrompts: [
+        '¿Cómo desgloso el pollo?',
+        '¿Cómo funciona el desglose de cerdo?',
         '¿Cómo funciona el módulo de Rendimiento Fruver?',
-        '¿Cuál es el producto con mayor rotación?',
-        '¿Cómo solicito una baja de inventario?',
+      ],
+    };
+  }
+
+  // 4B4. Rendimiento Cárnico General (Multi-especie)
+  if (
+    q.includes('carnic') ||
+    q.includes('cárnic') ||
+    q.includes('desposte') ||
+    q.includes('canal')
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo **"Operaciones > Rendimiento Cárnico"** gestiona la transformación matemática exacta de las 3 especies cárnicas principales de **Chrystal® ERP**: **Res, Cerdo y Pollo**:
+
+1. **Ingreso y Pesaje de Canal**: Registro de peso bruto (kg) y costo total de adquisición (USD) con protección cambiaria.
+2. **Desglose Específico por Especie**:
+   * **Pollo**: Pechuga (milanesa), muslos, alas, carcasa y menudencias.
+   * **Cerdo**: Pernil, paleta, lomo, chuletas, costillitas y tocino.
+   * **Res**: Solomo de cuerito, lomito, chocozuela, costilla y lagarto.
+3. **Absorción de Costo y Mermas Técnicas**: Pesaje de \`Hueso Blanco/Rojo\`, grasa/sebo, aserrín de sierra y evaporación en cava.
+4. **Calculadora Proyectiva**: Cálculo automático de canales o aves necesarias según requerimiento de cortes nobles.`,
+      suggestedPrompts: [
+        '¿Cómo desgloso el pollo?',
+        '¿Cómo funciona el desglose de cerdo?',
+        '¿Cómo funciona el desposte de res?',
       ],
     };
   }
@@ -222,7 +316,7 @@ El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) p
     q.includes('deshidratac')
   ) {
     return {
-      answer: `El módulo **"Operaciones > Rendimiento Fruver"** audita la recepción y rendimiento de lotes agrícolas (frutas, verduras y hortalizas) y clasifica sus pérdidas bajo **5 Causas Específicas**:
+      answer: `Hola ${userName}. El módulo **"Operaciones > Rendimiento Fruver"** audita la recepción y rendimiento de lotes agrícolas (frutas, verduras y hortalizas) y clasifica sus pérdidas bajo **5 Causas Específicas**:
 
 **1. Las 5 Causas Oficiales de Merma Fruver:**
 1. \`DESHIDRATACION_PERDIDA_PESO\`: Pérdida natural de humedad por tiempo en exhibición o cava seca.
@@ -239,9 +333,9 @@ Así, el PVP (precio de venta al público en anaquel con margen de ganancia e im
 **3. Trazabilidad y Roles:**
 El **Supervisor de Fruver** (\`fruver@hiperabastopolar.com\`) registra los lotes y pesajes de merma en báscula.`,
       suggestedPrompts: [
-        '¿Cómo funciona el módulo de Rendimiento Cárnico?',
+        '¿Cómo desgloso el pollo?',
+        '¿Cómo funciona el desglose de cerdo?',
         '¿Cuál es el producto con mayor rotación?',
-        '¿Cómo dar de alta un nuevo producto (SKU)?',
       ],
     };
   }
@@ -269,7 +363,7 @@ El **Supervisor de Fruver** (\`fruver@hiperabastopolar.com\`) registra los lotes
         .join('\n');
 
       return {
-        answer: `Ranking de **Productos con Mayor Rotación** en vivo (determinado por volumen histórico de ventas y salida de anaquel):
+        answer: `Hola ${userName}. Te comparto el ranking de **Productos con Mayor Rotación** en vivo (determinado por volumen histórico de ventas y salida de anaquel):
 
 ${topItems}
 
@@ -283,15 +377,15 @@ Estos productos forman parte de los artículos de alta rotación (Clase A en el 
     }
 
     return {
-      answer: `Actualmente los productos con mayor rotación corresponden a las categorías de **Canasta Básica y Alimentos de Consumo Masivo** (Harina PAN, Arroz, Pasta, Aceite vegetal y Azúcar refinada), los cuales representan más del 70% del flujo diario de unidades en piso de venta.
+      answer: `Hola ${userName}. Actualmente los productos con mayor rotación corresponden a las categorías de **Canasta Básica y Alimentos de Consumo Masivo** (Harina PAN, Arroz, Pasta, Aceite vegetal y Azúcar refinada), los cuales representan más del 70% del flujo diario de unidades en piso de venta.
 
 Para consultar el análisis detallado de rotación por volumen y facturación acumulada, ingresa en **"Inteligencia y Gobierno > Análisis Pareto ABC"** en el menú lateral.`,
-      suggestedPrompts: [
-        '¿Qué productos están en quiebre de stock?',
-        '¿Cómo solicito una baja de inventario?',
-        '¿Cuál es la tasa oficial BCV hoy?',
-      ],
-    };
+        suggestedPrompts: [
+          '¿Qué productos están en quiebre de stock?',
+          '¿Cómo solicito una baja de inventario?',
+          '¿Cuál es la tasa oficial BCV hoy?',
+        ],
+      };
   }
 
   // 4E. Roles y Credenciales de Supervisores (Carnicería, Fruver, Pasillo)
@@ -304,7 +398,7 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
     q.includes('cuentas supervisor')
   ) {
     return {
-      answer: `Cuentas y roles de **Supervisión Operativa** configurados en **Chrystal® ERP**:
+      answer: `Hola ${userName}. Cuentas y roles de **Supervisión Operativa** configurados en **Chrystal® ERP**:
 
 1. **Supervisor de Carnicería**:
    * Usuario: \`carniceria@hiperabastopolar.com\`
@@ -318,9 +412,9 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
 
 *Nota de Seguridad*: Los supervisores tienen nivel de **Analista Operativo** para registrar entradas, mediciones y proponer bajas de mercancía. Cualquier desincorporación definitiva requiere la **doble firma con PIN** de un Gerente o Superadmin.`,
       suggestedPrompts: [
-        '¿Cómo funciona el módulo de Rendimiento Cárnico?',
+        '¿Cómo desgloso el pollo?',
+        '¿Cómo funciona el desglose de cerdo?',
         '¿Cómo funciona el módulo de Rendimiento Fruver?',
-        '¿Cómo solicito una baja de inventario?',
       ],
     };
   }
@@ -338,7 +432,7 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
     q.includes('sku')
   ) {
     return {
-      answer: `Procedimiento para registrar un producto en el **Catálogo Maestro SKU** (código único que identifica a cada producto para no confundir marcas ni presentaciones):
+      answer: `Hola ${userName}. Procedimiento para registrar un producto en el **Catálogo Maestro SKU** (código único que identifica a cada producto para no confundir marcas ni presentaciones):
 
 1. Abre **"Inventario > Catálogo Maestro SKU"** y pulsa **"+ Nuevo Producto"**.
 2. Completa los datos de identificación:
@@ -371,7 +465,7 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
     q.includes('transferencia')
   ) {
     return {
-      answer: `El módulo **"Finanzas > Auditoría Forense OCR"** valida comprobantes de Pago Móvil, transferencias, Zelle y facturas aplicando **4 Candados Forenses**:
+      answer: `Hola ${userName}. El módulo **"Finanzas > Auditoría Forense OCR"** valida comprobantes de Pago Móvil, transferencias, Zelle y facturas aplicando **4 Candados Forenses**:
 
 1. **Candado 1 — Huella Criptográfica SHA-256**: Firma digital única de los bytes del archivo que detecta si exactamente el mismo archivo ya fue subido antes.
 2. **Candado 2 — Hash Perceptual (pHash)**: Huella visual que detecta si un comprobante antiguo fue reenviado con otro nombre o recorte leve.
@@ -404,7 +498,7 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
       .join('\n');
 
     return {
-      answer: `Red operativa activa de **${COMPANY_IDENTITY.razonSocial}** (**${locs.length} sedes/depósitos**):
+      answer: `Hola ${userName}. Red operativa activa de **${COMPANY_IDENTITY.razonSocial}** (**${locs.length} sedes/depósitos**):
 
 ${locText}
 
@@ -429,7 +523,7 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
   ) {
     const m = liveContext.metrics;
     return {
-      answer: `Valorización contable en vivo de **${COMPANY_IDENTITY.razonSocial}**:
+      answer: `Hola ${userName}. Valorización contable en vivo de **${COMPANY_IDENTITY.razonSocial}**:
 
 * **Catálogo Activo**: ${m.totalSkus} SKUs (código único que identifica a cada producto para no confundir marcas ni presentaciones) en ${m.totalLocations} sedes.
 * **Existencias Físicas Totales**: ${m.totalUnitsAll.toLocaleString('es-VE')} unidades.
@@ -458,7 +552,7 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     q.includes('sesión')
   ) {
     return {
-      answer: `Estándar documental y de gobernanza en **Chrystal® ERP**:
+      answer: `Hola ${userName}. Estándar documental y de gobernanza en **Chrystal® ERP**:
 
 * **Excel OpenXML (.xlsx)**: Membrete fiscal de **${COMPANY_IDENTITY.razonSocial}** (RIF: ${COMPANY_IDENTITY.rif}, SADA: ${COMPANY_IDENTITY.sada}), bordes ejecutivos visibles y pestaña \`3_Fichas_Producto_Celda\` con fichas individuales delimitadas.
 * **PDF Ejecutivo**: Cabecera con logo oficial de **${COMPANY_IDENTITY.brandingName}**, marca de agua central al 7% de opacidad en todas las páginas, análisis de liquidez de SKUs Clase A y pie de página legal (${COMPANY_IDENTITY.copyright}).
@@ -521,7 +615,7 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
   }
 
   return {
-    answer: `Sobre tu consulta ("${query}"):
+    answer: `Hola ${userName}. Con gusto te oriento sobre tu consulta ("${query}"):
 
 Puedes gestionar esta operación directamente en los módulos de **Chrystal® ERP**:
 * **Inventario**: Catálogo Maestro de SKU (código único que identifica a cada producto para no confundir marcas ni presentaciones), existencias multi-sede y Kardex.
@@ -560,10 +654,10 @@ export async function queryAssistant(
     };
   }
 
-  // Step 2: Call Server-Side Gemini API endpoint with 8s fast timeout when running in browser
+  // Step 2: Call Server-Side Gemini API endpoint with 35s reasoning timeout when running in browser
   if (typeof window !== 'undefined' && typeof fetch === 'function') {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeoutId = controller ? setTimeout(() => controller.abort(), 8000) : null;
+    const timeoutId = controller ? setTimeout(() => controller.abort(), 35000) : null;
 
     try {
       const response = await fetch('/api/assistant/chat', {

@@ -560,7 +560,7 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
                     <div className="w-6 h-6 rounded-md bg-emerald-600/10 flex items-center justify-center">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-spin" />
                     </div>
-                    <span className="italic">PolarBot está consultando la información...</span>
+                    <span className="italic">PolarBot está analizando y razonando tu consulta...</span>
                   </div>
                 )}
 
