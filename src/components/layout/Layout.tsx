@@ -24,6 +24,53 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
+interface AssistantBoundaryState {
+  hasError: boolean;
+}
+
+class AssistantWidgetErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  AssistantBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): AssistantBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.warn('[PolarBot Boundary Caught]:', error, errorInfo);
+  }
+
+  handleRetry = () => {
+    this.setState({ hasError: false });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <aside
+          aria-label="Aviso de recuperación de PolarBot"
+          className="fixed bottom-36 right-4 lg:bottom-6 lg:right-6 z-40 bg-slate-900/95 border border-amber-500/50 rounded-2xl p-3 text-xs text-white shadow-2xl flex items-center gap-2.5 backdrop-blur-md"
+        >
+          <span className="text-[11px] text-slate-300">PolarBot protegido contra fallos.</span>
+          <button
+            type="button"
+            onClick={this.handleRetry}
+            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-[10px] font-bold text-white transition cursor-pointer"
+          >
+            Reconectar
+          </button>
+        </aside>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children }) => {
   const [studioOpen, setStudioOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -117,7 +164,9 @@ export const Layout: React.FC<LayoutProps> = ({ activeTab, onSelectTab, children
 
       <CompanyProfileModal />
 
-      <ChatAssistantWidget onNavigate={onSelectTab} />
+      <AssistantWidgetErrorBoundary>
+        <ChatAssistantWidget onNavigate={onSelectTab} />
+      </AssistantWidgetErrorBoundary>
 
       {studioOpen && <DynamicModuleStudio onClose={() => setStudioOpen(false)} />}
       {diagnosticsOpen && <DiagnosticConsole onClose={() => setDiagnosticsOpen(false)} />}

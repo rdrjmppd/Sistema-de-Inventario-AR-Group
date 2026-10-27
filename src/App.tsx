@@ -138,9 +138,73 @@ const LoginView: React.FC = () => {
   );
 };
 
+export const STORAGE_KEY_ACTIVE_TAB = 'chrystal_erp_active_tab_v1';
+
+export const VALID_NAVIGATION_TABS: NavigationTab[] = [
+  'DASHBOARD',
+  'CATALOG',
+  'MULTILOCATION',
+  'TRANSFERS',
+  'INVENTORY_DISCARDS',
+  'MEAT_YIELD',
+  'FRUVER_YIELD',
+  'CHRYSTAL_IMPORT',
+  'PRICING',
+  'INVOICES_OCR',
+  'SUPPLIERS',
+  'ACCOUNTS_PAYABLE',
+  'ABC_ROTATION',
+  'PURCHASE_SUGGESTIONS',
+  'PURCHASE_ORDERS_CENTER',
+  'POS_API_SYNC',
+  'MONTHLY_CLOSING',
+  'SETTINGS_RBAC',
+  'AUDIT_HISTORY',
+];
+
+export function resolveStoredActiveTab(): NavigationTab {
+  try {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash.replace('#', '').toUpperCase() as NavigationTab;
+      if (VALID_NAVIGATION_TABS.includes(hash)) {
+        return hash;
+      }
+      const saved = localStorage.getItem(STORAGE_KEY_ACTIVE_TAB) as NavigationTab;
+      if (saved && VALID_NAVIGATION_TABS.includes(saved)) {
+        return saved;
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return 'DASHBOARD';
+}
+
 const MainShell: React.FC = () => {
   const { isAuthenticated } = useAuth();
-  const [activeTab, setActiveTab] = useState<NavigationTab>('DASHBOARD');
+  const [activeTab, setActiveTabState] = useState<NavigationTab>(() => resolveStoredActiveTab());
+
+  // Listen to browser hash changes (back/forward navigation)
+  React.useEffect(() => {
+    const handleHashChange = () => {
+      const target = resolveStoredActiveTab();
+      setActiveTabState(target);
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  const setActiveTab = (tab: NavigationTab) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem(STORAGE_KEY_ACTIVE_TAB, tab);
+      if (typeof window !== 'undefined' && window.location.hash !== `#${tab.toLowerCase()}`) {
+        window.history.replaceState(null, '', `#${tab.toLowerCase()}`);
+      }
+    } catch {
+      // ignore storage failure
+    }
+  };
 
   if (!isAuthenticated) {
     return <LoginView />;

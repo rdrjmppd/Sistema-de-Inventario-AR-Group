@@ -772,7 +772,19 @@ Contexto en vivo: Tasa oficial BCV Bs. ${Number(liveContext?.bcvState?.activeRat
       server: {
         middlewareMode: true,
         hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
-        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+        watch:
+          process.env.DISABLE_HMR === 'true'
+            ? null
+            : {
+                ignored: [
+                  '**/dist/**',
+                  '**/.git/**',
+                  '**/node_modules/**',
+                  '**/*.log',
+                  '**/.system_generated/**',
+                  '**/pending_queue.json',
+                ],
+              },
       },
       appType: 'spa',
     });

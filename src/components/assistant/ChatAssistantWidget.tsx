@@ -31,6 +31,61 @@ import {
   COMPANY_IDENTITY,
 } from '../../ai-assistant';
 
+export const STORAGE_KEY_POLARBOT_OPEN = 'chrystal_polarbot_open_v1';
+export const STORAGE_KEY_POLARBOT_MINIMIZED = 'chrystal_polarbot_minimized_v1';
+export const STORAGE_KEY_POLARBOT_MESSAGES = 'chrystal_polarbot_messages_v1';
+export const STORAGE_KEY_POLARBOT_DRAFT = 'chrystal_polarbot_draft_v1';
+
+export function loadStoredPolarbotOpen(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem(STORAGE_KEY_POLARBOT_OPEN) === 'true';
+    }
+  } catch {
+    // fallback
+  }
+  return false;
+}
+
+export function loadStoredPolarbotMinimized(): boolean {
+  try {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem(STORAGE_KEY_POLARBOT_MINIMIZED) === 'true';
+    }
+  } catch {
+    // fallback
+  }
+  return false;
+}
+
+export function loadStoredPolarbotDraft(): string {
+  try {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem(STORAGE_KEY_POLARBOT_DRAFT) || '';
+    }
+  } catch {
+    // fallback
+  }
+  return '';
+}
+
+export function loadStoredPolarbotMessages(): ChatMessage[] {
+  try {
+    if (typeof window !== 'undefined') {
+      const raw = sessionStorage.getItem(STORAGE_KEY_POLARBOT_MESSAGES);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return [];
+}
+
 interface ChatAssistantWidgetProps {
   onNavigate?: (tab: NavigationTab) => void;
 }
@@ -40,17 +95,59 @@ export const ChatAssistantWidget: React.FC<ChatAssistantWidgetProps> = ({ onNavi
   const { products, locations, discards } = useInventory();
   const { bcvState } = useFinance();
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [isMinimized, setIsMinimized] = useState(false);
-  const [inputText, setInputText] = useState('');
+  const [isOpen, setIsOpenState] = useState<boolean>(() => loadStoredPolarbotOpen());
+  const [isMinimized, setIsMinimizedState] = useState<boolean>(() => loadStoredPolarbotMinimized());
+  const [inputText, setInputTextState] = useState<string>(() => loadStoredPolarbotDraft());
   const [isProcessing, setIsProcessing] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadStoredPolarbotMessages());
   const [suggestedPrompts, setSuggestedPrompts] = useState<string[]>([
     '¿Cuál es la tasa oficial BCV hoy?',
     '¿Qué productos están en quiebre de stock?',
     '¿Cómo solicito una baja de inventario?',
     '¿Cuál es la valorización total del inventario?',
   ]);
+
+  const setIsOpen = (open: boolean) => {
+    setIsOpenState(open);
+    try {
+      sessionStorage.setItem(STORAGE_KEY_POLARBOT_OPEN, open ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+  };
+
+  const setIsMinimized = (min: boolean) => {
+    setIsMinimizedState(min);
+    try {
+      sessionStorage.setItem(STORAGE_KEY_POLARBOT_MINIMIZED, min ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+  };
+
+  const setInputText = (text: string) => {
+    setInputTextState(text);
+    try {
+      if (text) {
+        sessionStorage.setItem(STORAGE_KEY_POLARBOT_DRAFT, text);
+      } else {
+        sessionStorage.removeItem(STORAGE_KEY_POLARBOT_DRAFT);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  // Sync messages to sessionStorage whenever they change
+  useEffect(() => {
+    try {
+      if (messages.length > 0) {
+        sessionStorage.setItem(STORAGE_KEY_POLARBOT_MESSAGES, JSON.stringify(messages.slice(-30)));
+      }
+    } catch {
+      // ignore
+    }
+  }, [messages]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -162,6 +259,12 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
 
   const handleResetChat = () => {
     setMessages([]);
+    try {
+      sessionStorage.removeItem(STORAGE_KEY_POLARBOT_MESSAGES);
+      sessionStorage.removeItem(STORAGE_KEY_POLARBOT_DRAFT);
+    } catch {
+      // ignore
+    }
     setSuggestedPrompts([
       '¿Cuál es la tasa oficial BCV hoy?',
       '¿Qué productos están en quiebre de stock?',
@@ -181,110 +284,124 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
     else if (module.includes('pareto') || module.includes('abc')) onNavigate('ABC_ROTATION');
   };
 
-  // Render markdown text cleanly
+  // Render markdown text cleanly with full defensive error containment
   const renderFormattedText = (text: string) => {
-    const lines = text.split('\n');
-    return lines.map((line, idx) => {
-      // Empty lines
-      if (!line.trim()) {
-        return <div key={idx} className="h-2" />;
-      }
+    try {
+      const lines = text.split('\n');
+      return lines.map((line, idx) => {
+        // Empty lines
+        if (!line.trim()) {
+          return <div key={idx} className="h-2" />;
+        }
 
-      // Bullet points
-      if (line.startsWith('* ') || line.startsWith('- ')) {
-        const content = line.substring(2);
+        // Bullet points
+        if (line.startsWith('* ') || line.startsWith('- ')) {
+          const content = line.substring(2);
+          return (
+            <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
+              <span className="text-emerald-500 font-bold">•</span>
+              <div className="flex-1">{formatInline(content)}</div>
+            </div>
+          );
+        }
+
+        // Numbered items
+        const numMatch = line.match(/^(\d+)\.\s+(.+)$/);
+        if (numMatch) {
+          return (
+            <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
+              <span className="text-emerald-600 font-semibold">{numMatch[1]}.</span>
+              <div className="flex-1">{formatInline(numMatch[2])}</div>
+            </div>
+          );
+        }
+
         return (
-          <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
-            <span className="text-emerald-500 font-bold">•</span>
-            <div className="flex-1">{formatInline(content)}</div>
+          <div key={idx} className="my-0.5">
+            {formatInline(line)}
           </div>
         );
-      }
-
-      // Numbered items
-      const numMatch = line.match(/^(\d+)\.\s+(.+)$/);
-      if (numMatch) {
-        return (
-          <div key={idx} className="flex items-start gap-1.5 my-0.5 pl-1">
-            <span className="text-emerald-600 font-semibold">{numMatch[1]}.</span>
-            <div className="flex-1">{formatInline(numMatch[2])}</div>
-          </div>
-        );
-      }
-
-      return (
-        <div key={idx} className="my-0.5">
-          {formatInline(line)}
-        </div>
-      );
-    });
+      });
+    } catch {
+      return <div className="my-0.5 whitespace-pre-wrap">{text}</div>;
+    }
   };
 
   const formatInline = (str: string) => {
-    // Basic regex parser for bold, italics, code
-    const parts: React.ReactNode[] = [];
-    let remaining = str;
-    let keyIdx = 0;
+    try {
+      // Basic regex parser for bold, italics, code with loop counter shield
+      const parts: React.ReactNode[] = [];
+      let remaining = str;
+      let keyIdx = 0;
+      let loopCounter = 0;
+      const MAX_LOOPS = 60;
 
-    while (remaining.length > 0) {
-      // Bold **text**
-      const boldMatch = remaining.match(/^([\s\S]*?)\*\*(.+?)\*\*([\s\S]*)$/);
-      // Code `code`
-      const codeMatch = remaining.match(/^([\s\S]*?)`([^`]+)`([\s\S]*)$/);
-      // Italic *italic*
-      const italicMatch = remaining.match(/^([\s\S]*?)\*([^*]+)\*([\s\S]*)$/);
+      while (remaining.length > 0 && loopCounter++ < MAX_LOOPS) {
+        // Bold **text**
+        const boldMatch = remaining.match(/^([\s\S]*?)\*\*(.+?)\*\*([\s\S]*)$/);
+        // Code `code`
+        const codeMatch = remaining.match(/^([\s\S]*?)`([^`]+)`([\s\S]*)$/);
+        // Italic *italic*
+        const italicMatch = remaining.match(/^([\s\S]*?)\*([^*]+)\*([\s\S]*)$/);
 
-      // Prioritize the match that starts earlier
-      let firstMatch: { type: 'bold' | 'code' | 'italic'; index: number; match: RegExpMatchArray } | null = null;
+        // Prioritize the match that starts earlier
+        let firstMatch: { type: 'bold' | 'code' | 'italic'; index: number; match: RegExpMatchArray } | null = null;
 
-      if (boldMatch) {
-        firstMatch = { type: 'bold', index: boldMatch[1].length, match: boldMatch };
+        if (boldMatch) {
+          firstMatch = { type: 'bold', index: boldMatch[1].length, match: boldMatch };
+        }
+        if (codeMatch && (!firstMatch || codeMatch[1].length < firstMatch.index)) {
+          firstMatch = { type: 'code', index: codeMatch[1].length, match: codeMatch };
+        }
+        if (italicMatch && (!firstMatch || italicMatch[1].length < firstMatch.index)) {
+          firstMatch = { type: 'italic', index: italicMatch[1].length, match: italicMatch };
+        }
+
+        if (!firstMatch) {
+          parts.push(<span key={keyIdx++}>{remaining}</span>);
+          break;
+        }
+
+        const preText = firstMatch.match[1];
+        const matchText = firstMatch.match[2];
+        const postText = firstMatch.match[3];
+
+        if (preText) parts.push(<span key={keyIdx++}>{preText}</span>);
+
+        if (firstMatch.type === 'bold') {
+          parts.push(
+            <strong key={keyIdx++} className="font-semibold text-slate-900 dark:text-slate-100">
+              {matchText}
+            </strong>
+          );
+        } else if (firstMatch.type === 'code') {
+          parts.push(
+            <code
+              key={keyIdx++}
+              className="px-1.5 py-0.5 bg-slate-200 text-slate-800 rounded text-[11px] font-mono"
+            >
+              {matchText}
+            </code>
+          );
+        } else if (firstMatch.type === 'italic') {
+          parts.push(
+            <em key={keyIdx++} className="text-slate-600 italic">
+              {matchText}
+            </em>
+          );
+        }
+
+        remaining = postText;
       }
-      if (codeMatch && (!firstMatch || codeMatch[1].length < firstMatch.index)) {
-        firstMatch = { type: 'code', index: codeMatch[1].length, match: codeMatch };
-      }
-      if (italicMatch && (!firstMatch || italicMatch[1].length < firstMatch.index)) {
-        firstMatch = { type: 'italic', index: italicMatch[1].length, match: italicMatch };
-      }
 
-      if (!firstMatch) {
+      if (remaining.length > 0) {
         parts.push(<span key={keyIdx++}>{remaining}</span>);
-        break;
       }
 
-      const preText = firstMatch.match[1];
-      const matchText = firstMatch.match[2];
-      const postText = firstMatch.match[3];
-
-      if (preText) parts.push(<span key={keyIdx++}>{preText}</span>);
-
-      if (firstMatch.type === 'bold') {
-        parts.push(
-          <strong key={keyIdx++} className="font-semibold text-slate-900 dark:text-slate-100">
-            {matchText}
-          </strong>
-        );
-      } else if (firstMatch.type === 'code') {
-        parts.push(
-          <code
-            key={keyIdx++}
-            className="px-1.5 py-0.5 bg-slate-200 text-slate-800 rounded text-[11px] font-mono"
-          >
-            {matchText}
-          </code>
-        );
-      } else if (firstMatch.type === 'italic') {
-        parts.push(
-          <em key={keyIdx++} className="text-slate-600 italic">
-            {matchText}
-          </em>
-        );
-      }
-
-      remaining = postText;
+      return parts;
+    } catch {
+      return [<span key="fallback">{str}</span>];
     }
-
-    return parts;
   };
 
   return (

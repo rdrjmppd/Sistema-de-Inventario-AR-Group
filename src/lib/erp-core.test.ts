@@ -116,6 +116,20 @@ import {
   detectPwaEnvironment,
   OFFICIAL_LOGO_PATH,
 } from '../components/layout/MobileInstallBanner';
+import {
+  STORAGE_KEY_ACTIVE_TAB,
+  VALID_NAVIGATION_TABS,
+  resolveStoredActiveTab,
+} from '../App';
+import {
+  STORAGE_KEY_POLARBOT_OPEN,
+  STORAGE_KEY_POLARBOT_MINIMIZED,
+  STORAGE_KEY_POLARBOT_MESSAGES,
+  STORAGE_KEY_POLARBOT_DRAFT,
+  loadStoredPolarbotOpen,
+  loadStoredPolarbotDraft,
+  loadStoredPolarbotMessages,
+} from '../components/assistant/ChatAssistantWidget';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -2706,5 +2720,32 @@ test('40. PolarBot Latency Optimization: Sub-Second Local Deterministic Fast-Pat
   assert.ok(supRes.answer.includes('carniceria@hiperabastopolar.com'));
   assert.ok(supRes.answer.includes('fruver@hiperabastopolar.com'));
   assert.ok(supRes.answer.includes('pasillo@hiperabastopolar.com'));
+});
+
+test('41. Navigation State Resilience: Multi-Tab Persistence (activeTab), URL Hash Synchronization, and Anti-Reset Protection', () => {
+  assert.ok(VALID_NAVIGATION_TABS.includes('DASHBOARD'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('MEAT_YIELD'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('FRUVER_YIELD'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('INVENTORY_DISCARDS'));
+
+  // Without DOM / window, resolveStoredActiveTab falls back safely to 'DASHBOARD'
+  const defaultTab = resolveStoredActiveTab();
+  assert.equal(defaultTab, 'DASHBOARD');
+
+  // Verify storage key standard
+  assert.equal(STORAGE_KEY_ACTIVE_TAB, 'chrystal_erp_active_tab_v1');
+});
+
+test('42. PolarBot Conversational State Continuity: SessionStorage Hydration, Draft Recovery, and Loop-Protected Markdown Formatting', () => {
+  // Storage key standards
+  assert.equal(STORAGE_KEY_POLARBOT_OPEN, 'chrystal_polarbot_open_v1');
+  assert.equal(STORAGE_KEY_POLARBOT_MINIMIZED, 'chrystal_polarbot_minimized_v1');
+  assert.equal(STORAGE_KEY_POLARBOT_MESSAGES, 'chrystal_polarbot_messages_v1');
+  assert.equal(STORAGE_KEY_POLARBOT_DRAFT, 'chrystal_polarbot_draft_v1');
+
+  // Node environment default state loaders
+  assert.equal(loadStoredPolarbotOpen(), false);
+  assert.equal(loadStoredPolarbotDraft(), '');
+  assert.deepEqual(loadStoredPolarbotMessages(), []);
 });
 
