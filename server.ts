@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -763,10 +764,16 @@ Contexto en vivo: Tasa oficial BCV Bs. ${Number(liveContext?.bcvState?.activeRat
     }
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -778,7 +785,7 @@ Contexto en vivo: Tasa oficial BCV Bs. ${Number(liveContext?.bcvState?.activeRat
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
   });
 }
