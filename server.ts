@@ -719,7 +719,7 @@ async function startServer() {
             : String(query);
 
           const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.8-flash',
             contents: promptWithHistory,
             config: {
               systemInstruction,
@@ -742,9 +742,8 @@ async function startServer() {
             });
             return;
           }
-        } catch (aiErr: any) {
-          console.warn('[PolarBot Gemini Warning]:', aiErr?.message || aiErr);
-          // Fall through so client uses deterministic heuristic engine
+        } catch {
+          // Fall through transparently so client uses deterministic heuristic engine
         }
       }
 
