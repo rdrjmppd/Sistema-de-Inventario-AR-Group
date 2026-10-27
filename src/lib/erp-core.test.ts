@@ -2455,11 +2455,14 @@ test('36. PWA / A2HS Mobile Installability: Manifests, Service Worker Network-Fi
     assert.equal(has512, true, `${manifestFile} must declare 512x512 any maskable icon`);
   }
 
-  // 3. Validate public/sw.js precaches logo and index.html and excludes Firestore
+  // 3. Validate public/sw.js precaches logo and index.html and excludes Firestore & APIs
   const swContent = fs.readFileSync(path.join(rootDir, 'public/sw.js'), 'utf8');
   assert.ok(swContent.includes('/assets/branding/hiper_abasto_polar_logo.jpg'));
   assert.ok(swContent.includes('/index.html'));
   assert.ok(swContent.includes('firestore.googleapis.com'));
+  assert.ok(swContent.includes('identitytoolkit.googleapis.com'));
+  assert.ok(swContent.includes('/api/'));
+  assert.ok(swContent.includes('hiper-abasto-polar-erp-v2'));
 
   // 4. Validate index.html PWA links and meta tags
   const indexHtml = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');

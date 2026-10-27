@@ -1,11 +1,12 @@
 /**
  * Service Worker Oficial — Hiper Abasto Polar — Chrystal® ERP
+ * Versión de Caché: v2 (hiper-abasto-polar-erp-v2)
  * Estrategia: Network-First con fallback a caché para el shell estático.
- * Excluye explícitamente Firebase Firestore, Auth y endpoints en tiempo real (/api/*).
+ * Exclusiones estrictas: Firebase Firestore, IdentityToolkit, WebSockets y endpoints transaccionales (/api/*).
  * © 2026 AR Group. Todos los derechos de desarrollo reservados.
  */
 
-const CACHE_NAME = 'hiper-abasto-polar-erp-v1';
+const CACHE_NAME = 'hiper-abasto-polar-erp-v2';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -45,28 +46,29 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
-  // Only handle GET requests
+  // Solo gestionar peticiones GET
   if (request.method !== 'GET') {
     return;
   }
 
   const url = new URL(request.url);
 
-  // Exclude Firebase Firestore, Google APIs, WebSockets, and live ERP API endpoints
+  // Línea Roja de Exclusión: Firebase Firestore, WebSockets y APIs en tiempo real
   if (
     url.protocol === 'ws:' ||
     url.protocol === 'wss:' ||
     url.pathname.startsWith('/api/') ||
     url.hostname.includes('firestore.googleapis.com') ||
-    url.hostname.includes('googleapis.com') ||
+    url.hostname.includes('identitytoolkit.googleapis.com') ||
     url.hostname.includes('firebaseio.com') ||
+    url.hostname.includes('googleapis.com') ||
     url.hostname.includes('bcv.org.ve') ||
     url.hostname.includes('dolarapi.com')
   ) {
     return;
   }
 
-  // Network-First strategy with cache fallback for shell and static assets
+  // Estrategia Network-First con fallback a caché para App Shell y assets estáticos
   event.respondWith(
     fetch(request)
       .then((networkResponse) => {
@@ -93,7 +95,7 @@ self.addEventListener('fetch', (event) => {
             return fallbackHtml;
           }
         }
-        return new Response('Modo sin conexión activo.', {
+        return new Response('Modo sin conexión activo — Chrystal® ERP', {
           status: 503,
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         });
