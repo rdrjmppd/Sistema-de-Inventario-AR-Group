@@ -132,6 +132,13 @@ import {
   loadStoredPolarbotMessages,
   tokenizeInlineMarkdown,
 } from '../components/assistant/ChatAssistantWidget';
+import {
+  PWA_CACHE_NAME,
+  PWA_PRECACHE_ASSETS,
+  PWA_EXCLUDED_HOSTNAMES,
+  shouldBypassServiceWorker,
+  simulateServiceWorkerFetch,
+} from './pwa-service-worker';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -3037,4 +3044,172 @@ test('44. Custom Batch Ingestion, Supplier Association, Species-Tailored Yields 
   assert.ok(mockCatalog['CARN-RES-LOM'].costUsd > 0);
   assert.ok(mockCatalog['CARN-RES-LOM'].priceUsd > mockCatalog['CARN-RES-LOM'].costUsd);
 });
+
+test('45. PWA Service Worker Network-First & Security Bypass Stress Test (1,000 Concurrent Requests, Offline Simulation, and Firestore Isolation)', () => {
+  // 1. Verify Cache Invariants and Precache Asset Declarations
+  assert.equal(PWA_CACHE_NAME, 'hiper-abasto-polar-erp-v2');
+  assert.ok(PWA_PRECACHE_ASSETS.includes('/'));
+  assert.ok(PWA_PRECACHE_ASSETS.includes('/index.html'));
+  assert.ok(PWA_PRECACHE_ASSETS.includes('/manifest.webmanifest'));
+  assert.ok(PWA_PRECACHE_ASSETS.includes('/manifest.json'));
+  assert.ok(PWA_PRECACHE_ASSETS.includes('/assets/branding/hiper_abasto_polar_logo.jpg'));
+
+  // 2. Deterministic Security Gateway: Strict Bypass Routing Verification
+  // Firestore must NEVER be touched by Service Worker cache
+  const firestoreDecision = shouldBypassServiceWorker(
+    'https://firestore.googleapis.com/v1/projects/ar-group-erp/databases/(default)/documents/products'
+  );
+  assert.equal(firestoreDecision.bypass, true);
+  assert.equal(firestoreDecision.reason, 'FIRESTORE_OR_GOOGLE_API');
+
+  // Firebase Auth / IdentityToolkit must bypass cache
+  const authDecision = shouldBypassServiceWorker(
+    'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyFakeKey'
+  );
+  assert.equal(authDecision.bypass, true);
+  assert.equal(authDecision.reason, 'FIRESTORE_OR_GOOGLE_API');
+
+  // AI Assistant and OCR APIs must bypass cache
+  const assistantDecision = shouldBypassServiceWorker('https://hiperabastopolar.com/api/assistant/chat');
+  assert.equal(assistantDecision.bypass, true);
+  assert.equal(assistantDecision.reason, 'API_TRANSACTIONAL_ENDPOINT');
+
+  const ocrDecision = shouldBypassServiceWorker('https://hiperabastopolar.com/api/ocr/extract');
+  assert.equal(ocrDecision.bypass, true);
+  assert.equal(ocrDecision.reason, 'API_TRANSACTIONAL_ENDPOINT');
+
+  // WebSockets must bypass cache
+  const wsDecision = shouldBypassServiceWorker('ws://localhost:3000/vite-hmr');
+  assert.equal(wsDecision.bypass, true);
+  assert.equal(wsDecision.reason, 'WEBSOCKET_PROTOCOL');
+
+  // Service Worker script itself must never cache itself
+  const swScriptDecision = shouldBypassServiceWorker('https://hiperabastopolar.com/sw.js');
+  assert.equal(swScriptDecision.bypass, true);
+  assert.equal(swScriptDecision.reason, 'SERVICE_WORKER_SCRIPT');
+
+  // Non-GET methods (POST, PUT, DELETE) must bypass cache
+  const postDecision = shouldBypassServiceWorker('https://hiperabastopolar.com/index.html', 'POST');
+  assert.equal(postDecision.bypass, true);
+  assert.equal(postDecision.reason, 'NON_GET_METHOD');
+
+  // Shell assets must be intercepted by Service Worker
+  const shellDecision = shouldBypassServiceWorker('https://hiperabastopolar.com/index.html', 'GET');
+  assert.equal(shellDecision.bypass, false);
+
+  const logoDecision = shouldBypassServiceWorker(
+    'https://hiperabastopolar.com/assets/branding/hiper_abasto_polar_logo.jpg',
+    'GET'
+  );
+  assert.equal(logoDecision.bypass, false);
+
+  // 3. Simulated Network-First Lifecycle and Offline Degradation
+  const mockCacheStore = new Map<string, string>();
+  mockCacheStore.set('/index.html', '<html><head><title>Chrystal ERP Shell</title></head><body>Shell</body></html>');
+  mockCacheStore.set('/assets/branding/hiper_abasto_polar_logo.jpg', 'fake-binary-jpeg-data');
+
+  // Scenario A: Online user fetches shell -> returns fresh network and updates cache
+  const onlineShellFetch = simulateServiceWorkerFetch({
+    url: 'https://hiperabastopolar.com/index.html',
+    method: 'GET',
+    mode: 'navigate',
+    networkOnline: true,
+    networkPayload: '<html><head><title>Updated Live Shell v2</title></head><body>Shell v2</body></html>',
+    cacheStore: mockCacheStore,
+  });
+  assert.equal(onlineShellFetch.handledBySw, true);
+  assert.equal(onlineShellFetch.source, 'NETWORK');
+  assert.equal(onlineShellFetch.status, 200);
+  assert.ok(onlineShellFetch.body.includes('Updated Live Shell v2'));
+  assert.equal(onlineShellFetch.updatedCache, true);
+
+  // Scenario B: Offline user (cava de frío / pérdida de señal) navigates -> returns cached shell
+  const offlineShellFetch = simulateServiceWorkerFetch({
+    url: 'https://hiperabastopolar.com/index.html',
+    method: 'GET',
+    mode: 'navigate',
+    networkOnline: false,
+    cacheStore: mockCacheStore,
+  });
+  assert.equal(offlineShellFetch.handledBySw, true);
+  assert.equal(offlineShellFetch.source, 'CACHE');
+  assert.equal(offlineShellFetch.status, 200);
+  assert.ok(offlineShellFetch.body.includes('Updated Live Shell v2'));
+
+  // Scenario C: Offline user fetches branding logo -> served from cache
+  const offlineLogoFetch = simulateServiceWorkerFetch({
+    url: 'https://hiperabastopolar.com/assets/branding/hiper_abasto_polar_logo.jpg',
+    method: 'GET',
+    networkOnline: false,
+    cacheStore: mockCacheStore,
+  });
+  assert.equal(offlineLogoFetch.handledBySw, true);
+  assert.equal(offlineLogoFetch.source, 'CACHE');
+  assert.equal(offlineLogoFetch.body, 'fake-binary-jpeg-data');
+
+  // Scenario D: Offline user queries an uncached random resource -> graceful 503 fallback
+  const offlineUncachedFetch = simulateServiceWorkerFetch({
+    url: 'https://hiperabastopolar.com/some-uncached-file.pdf',
+    method: 'GET',
+    networkOnline: false,
+    cacheStore: mockCacheStore,
+  });
+  assert.equal(offlineUncachedFetch.handledBySw, true);
+  assert.equal(offlineUncachedFetch.source, 'OFFLINE_FALLBACK');
+  assert.equal(offlineUncachedFetch.status, 503);
+  assert.ok(offlineUncachedFetch.body.includes('Modo sin conexión activo'));
+
+  // Scenario E: Firestore call while offline -> bypassed directly to network, resulting in 502 without poisoning cache
+  const firestoreFetch = simulateServiceWorkerFetch({
+    url: 'https://firestore.googleapis.com/v1/projects/ar-group/databases',
+    method: 'GET',
+    networkOnline: false,
+    cacheStore: mockCacheStore,
+  });
+  assert.equal(firestoreFetch.handledBySw, false);
+  assert.equal(firestoreFetch.source, 'BYPASS_TO_NETWORK');
+  assert.equal(firestoreFetch.updatedCache, false);
+
+  // 4. Stress Test: 1,000 High-Frequency Concurrent Requests across all Categories
+  const testCorpus = [
+    { url: 'https://firestore.googleapis.com/v1/projects/test/documents/col', method: 'GET', online: true },
+    { url: 'https://identitytoolkit.googleapis.com/v1/accounts', method: 'POST', online: true },
+    { url: 'https://hiperabastopolar.com/api/assistant/chat', method: 'POST', online: true },
+    { url: 'https://hiperabastopolar.com/api/ocr/extract', method: 'POST', online: true },
+    { url: 'ws://localhost:3000/vite-hmr', method: 'GET', online: true },
+    { url: 'https://hiperabastopolar.com/index.html', method: 'GET', mode: 'navigate', online: true },
+    { url: 'https://hiperabastopolar.com/index.html', method: 'GET', mode: 'navigate', online: false },
+    { url: 'https://hiperabastopolar.com/assets/branding/hiper_abasto_polar_logo.jpg', method: 'GET', online: false },
+    { url: 'https://hiperabastopolar.com/manifest.webmanifest', method: 'GET', online: true },
+    { url: 'https://hiperabastopolar.com/sw.js', method: 'GET', online: true },
+    { url: 'https://bcv.org.ve/cotizaciones', method: 'GET', online: true },
+  ];
+
+  const startTime = Date.now();
+  let bypassCount = 0;
+  let cacheHitCount = 0;
+  let networkHitCount = 0;
+
+  for (let i = 0; i < 1000; i++) {
+    const item = testCorpus[i % testCorpus.length];
+    const res = simulateServiceWorkerFetch({
+      url: item.url,
+      method: item.method,
+      mode: item.mode,
+      networkOnline: item.online,
+      cacheStore: mockCacheStore,
+    });
+
+    if (res.source === 'BYPASS_TO_NETWORK') bypassCount++;
+    if (res.source === 'CACHE') cacheHitCount++;
+    if (res.source === 'NETWORK') networkHitCount++;
+  }
+
+  const durationMs = Date.now() - startTime;
+  assert.ok(bypassCount > 500, `Expected > 500 bypassed requests, got ${bypassCount}`);
+  assert.ok(cacheHitCount > 150, `Expected > 150 cache hits, got ${cacheHitCount}`);
+  assert.ok(networkHitCount > 150, `Expected > 150 network hits, got ${networkHitCount}`);
+  assert.ok(durationMs < 100, `1,000 Service Worker request decisions took ${durationMs}ms (threshold: < 100ms)`);
+});
+
 

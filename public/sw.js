@@ -1,12 +1,22 @@
 /**
  * Service Worker Oficial — Hiper Abasto Polar — Chrystal® ERP
  * Versión de Caché: v2 (hiper-abasto-polar-erp-v2)
- * Estrategia: Network-First con fallback a caché para el shell estático.
- * Exclusiones estrictas: Firebase Firestore, IdentityToolkit, WebSockets y endpoints transaccionales (/api/*).
+ * 
+ * Estrategia: Network-First con fallback a caché para App Shell y Branding.
+ * Línea Roja de Exclusión Incondicional:
+ *  - Firebase Firestore (firestore.googleapis.com)
+ *  - Firebase Auth / IdentityToolkit (identitytoolkit.googleapis.com)
+ *  - Firebase RTDB (firebaseio.com)
+ *  - Google APIs generales (googleapis.com)
+ *  - Endpoints de Servidor / IA (/api/*, incl. /api/assistant/chat con Gemini 3.8 y /api/ocr/extract)
+ *  - WebSockets (ws:, wss:)
+ *  - Cotizaciones financieras en vivo (bcv.org.ve, dolarapi.com)
+ * 
  * © 2026 AR Group. Todos los derechos de desarrollo reservados.
  */
 
 const CACHE_NAME = 'hiper-abasto-polar-erp-v2';
+
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -15,6 +25,16 @@ const PRECACHE_ASSETS = [
   '/assets/branding/hiper_abasto_polar_logo.jpg',
 ];
 
+const EXCLUDED_HOSTNAMES = [
+  'firestore.googleapis.com',
+  'identitytoolkit.googleapis.com',
+  'firebaseio.com',
+  'googleapis.com',
+  'bcv.org.ve',
+  'dolarapi.com',
+];
+
+// Instalación: Precaché de shell estático y branding institucional
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
@@ -25,6 +45,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
+// Activación: Purga limpia de cachés obsoletas (v1, etc.) y toma de control inmediato
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
@@ -43,39 +64,53 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Intercepción Fetch: Network-First con exclusión absoluta de Firestore y APIs en tiempo real
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
-  // Solo gestionar peticiones GET
+  // Solo interceptar peticiones GET
   if (request.method !== 'GET') {
     return;
   }
 
-  const url = new URL(request.url);
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return;
+  }
 
-  // Línea Roja de Exclusión: Firebase Firestore, WebSockets y APIs en tiempo real
+  // Bypass para protocolos de sockets o extensiones
   if (
     url.protocol === 'ws:' ||
     url.protocol === 'wss:' ||
-    url.pathname.startsWith('/api/') ||
-    url.hostname.includes('firestore.googleapis.com') ||
-    url.hostname.includes('identitytoolkit.googleapis.com') ||
-    url.hostname.includes('firebaseio.com') ||
-    url.hostname.includes('googleapis.com') ||
-    url.hostname.includes('bcv.org.ve') ||
-    url.hostname.includes('dolarapi.com')
+    url.protocol === 'chrome-extension:' ||
+    url.pathname === '/sw.js'
   ) {
     return;
   }
 
-  // Estrategia Network-First con fallback a caché para App Shell y assets estáticos
+  // Bypass obligatorio para endpoints de servidor e IA
+  if (url.pathname.startsWith('/api/')) {
+    return;
+  }
+
+  // Bypass obligatorio para Firebase Firestore, Auth y APIs financieras
+  const hostname = url.hostname.toLowerCase();
+  for (let i = 0; i < EXCLUDED_HOSTNAMES.length; i++) {
+    if (hostname.includes(EXCLUDED_HOSTNAMES[i])) {
+      return;
+    }
+  }
+
+  // Estrategia Network-First con fallback a caché para App Shell
   event.respondWith(
     fetch(request)
       .then((networkResponse) => {
         if (
           networkResponse &&
           networkResponse.status === 200 &&
-          networkResponse.type === 'basic'
+          (networkResponse.type === 'basic' || networkResponse.type === 'cors')
         ) {
           const responseClone = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
@@ -89,12 +124,16 @@ self.addEventListener('fetch', (event) => {
         if (cachedResponse) {
           return cachedResponse;
         }
+
+        // Si es navegación entre vistas, devolver el index.html en caché
         if (request.mode === 'navigate') {
           const fallbackHtml = await caches.match('/index.html');
           if (fallbackHtml) {
             return fallbackHtml;
           }
         }
+
+        // Respuesta degradada controlada sin excepciones no capturadas
         return new Response('Modo sin conexión activo — Chrystal® ERP', {
           status: 503,
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
