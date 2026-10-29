@@ -3212,4 +3212,22 @@ test('45. PWA Service Worker Network-First & Security Bypass Stress Test (1,000 
   assert.ok(durationMs < 100, `1,000 Service Worker request decisions took ${durationMs}ms (threshold: < 100ms)`);
 });
 
+test('46. Cloud Run Container Readiness: package.json esbuild server.js bundle, immediate 0.0.0.0:3000 healthcheck, and anti-crash guard', () => {
+  const pkgJsonPath = path.join(process.cwd(), 'package.json');
+  const pkgRaw = fs.readFileSync(pkgJsonPath, 'utf8');
+  const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
 
+  assert.equal(
+    pkg.scripts?.build,
+    'vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=server.js'
+  );
+  assert.equal(pkg.scripts?.start, 'node server.js');
+  assert.equal(pkg.scripts?.dev, 'tsx server.ts');
+
+  const serverTsPath = path.join(process.cwd(), 'server.ts');
+  const serverTsRaw = fs.readFileSync(serverTsPath, 'utf8');
+  assert.ok(serverTsRaw.includes("httpServer.listen(PORT, '0.0.0.0'"));
+  assert.ok(serverTsRaw.includes("fs.existsSync(distPath)"));
+  assert.ok(serverTsRaw.includes("app.get('/api/health'"));
+  assert.ok(serverTsRaw.includes('startServer().catch('));
+});

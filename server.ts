@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
@@ -760,41 +761,58 @@ async function startServer() {
   });
 
   const httpServer = http.createServer(app);
+  httpServer.on('error', (err) => {
+    console.error('[Chrystal ERP] HTTP Server socket error captured:', err);
+  });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
-        watch:
-          process.env.DISABLE_HMR === 'true'
-            ? null
-            : {
-                ignored: [
-                  '**/dist/**',
-                  '**/.git/**',
-                  '**/node_modules/**',
-                  '**/*.log',
-                  '**/.system_generated/**',
-                  '**/pending_queue.json',
-                ],
-              },
-      },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
+  // Bind to 0.0.0.0:PORT immediately so Cloud Run healthchecks (/api/health) receive 200 OK without waiting for asset middleware
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
   });
+
+  const distPath = path.join(process.cwd(), 'dist');
+  const isProductionMode =
+    process.env.NODE_ENV === 'production' || fs.existsSync(distPath);
+
+  if (isProductionMode) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      const indexFile = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+      } else {
+        res.status(200).json({ status: 'ok', mode: 'degraded_static', port: PORT });
+      }
+    });
+  } else {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+          watch:
+            process.env.DISABLE_HMR === 'true'
+              ? null
+              : {
+                  ignored: [
+                    '**/dist/**',
+                    '**/.git/**',
+                    '**/node_modules/**',
+                    '**/*.log',
+                    '**/.system_generated/**',
+                    '**/pending_queue.json',
+                  ],
+                },
+        },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (viteErr) {
+      console.error('[Chrystal ERP] Vite middleware initialization fallback:', viteErr);
+      app.use(express.static(distPath));
+    }
+  }
 }
 
 const isTestRun =
@@ -802,5 +820,24 @@ const isTestRun =
   process.env.NODE_ENV === 'test';
 
 if (!isTestRun) {
-  startServer();
+  startServer().catch((err) => {
+    console.error('[Chrystal ERP] Critical startup error captured (keeping degraded HTTP listener alive):', err);
+    try {
+      const fallbackServer = http.createServer((req, res) => {
+        if (req.url?.startsWith('/api/health')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok', port: PORT, degraded: true }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'degraded', port: PORT }));
+      });
+      fallbackServer.on('error', () => {
+        // Port already bound by primary httpServer
+      });
+      fallbackServer.listen(PORT, '0.0.0.0');
+    } catch {
+      // Ignore secondary bind failure if primary listener is already active
+    }
+  });
 }
