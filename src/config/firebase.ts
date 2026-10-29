@@ -126,6 +126,10 @@ export function mergeConcurrentProductStock(
 
   const affectedLocations: string[] = [];
 
+  const mergedShelfByLocation: Record<string, number> = {
+    ...(currentStoredProduct.shelfStockByLocation || {}),
+  };
+
   for (const locId of allLocationIds) {
     const baseQty = toDecimal(baseSnapshotProduct?.stockByLocation?.[locId] ?? 0);
     const storedQty = toDecimal(currentStoredProduct.stockByLocation?.[locId] ?? 0);
@@ -139,17 +143,39 @@ export function mergeConcurrentProductStock(
     }
 
     const reconciled = round2(storedQty.plus(localDelta));
-    mergedStockByLocation[locId] = Math.max(0, reconciled);
+    const clampedTotal = Math.max(0, reconciled);
+    mergedStockByLocation[locId] = clampedTotal;
+
+    if (
+      currentStoredProduct.shelfStockByLocation?.[locId] !== undefined ||
+      incomingUpdate.shelfStockByLocation?.[locId] !== undefined
+    ) {
+      const baseShelf = toDecimal(baseSnapshotProduct?.shelfStockByLocation?.[locId] ?? 0);
+      const storedShelf = toDecimal(currentStoredProduct.shelfStockByLocation?.[locId] ?? 0);
+      const incomingShelf = toDecimal(incomingUpdate.shelfStockByLocation?.[locId] ?? 0);
+      const localShelfDelta = incomingShelf.minus(baseShelf);
+      const reconciledShelf = round2(storedShelf.plus(localShelfDelta));
+      mergedShelfByLocation[locId] = Math.min(clampedTotal, Math.max(0, reconciledShelf));
+    }
   }
 
   const mergedProduct: Product = {
     ...currentStoredProduct,
     ...incomingUpdate,
     stockByLocation: mergedStockByLocation,
+    shelfStockByLocation:
+      Object.keys(mergedShelfByLocation).length > 0 ? mergedShelfByLocation : undefined,
     minStockByLocation: {
       ...(currentStoredProduct.minStockByLocation || {}),
       ...(incomingUpdate.minStockByLocation || {}),
     },
+    minShelfByLocation:
+      currentStoredProduct.minShelfByLocation || incomingUpdate.minShelfByLocation
+        ? {
+            ...(currentStoredProduct.minShelfByLocation || {}),
+            ...(incomingUpdate.minShelfByLocation || {}),
+          }
+        : undefined,
     lastUpdatedVet: vetNow,
   };
 

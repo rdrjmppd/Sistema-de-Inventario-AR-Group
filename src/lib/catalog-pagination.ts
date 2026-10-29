@@ -686,6 +686,12 @@ export function removeLocationFromProductStockMaps(
   return products.map((product) => {
     const nextStock = { ...product.stockByLocation };
     const nextMinStock = { ...product.minStockByLocation };
+    const nextShelfStock = product.shelfStockByLocation
+      ? { ...product.shelfStockByLocation }
+      : undefined;
+    const nextMinShelf = product.minShelfByLocation
+      ? { ...product.minShelfByLocation }
+      : undefined;
     const nextManualRisk = product.manualRiskByLocation
       ? { ...product.manualRiskByLocation }
       : undefined;
@@ -695,6 +701,8 @@ export function removeLocationFromProductStockMaps(
 
     delete nextStock[deletedLocationId];
     delete nextMinStock[deletedLocationId];
+    if (nextShelfStock) delete nextShelfStock[deletedLocationId];
+    if (nextMinShelf) delete nextMinShelf[deletedLocationId];
     if (nextManualRisk) delete nextManualRisk[deletedLocationId];
     if (nextSafetyMult) delete nextSafetyMult[deletedLocationId];
 
@@ -702,6 +710,8 @@ export function removeLocationFromProductStockMaps(
       ...product,
       stockByLocation: nextStock,
       minStockByLocation: nextMinStock,
+      shelfStockByLocation: nextShelfStock,
+      minShelfByLocation: nextMinShelf,
       manualRiskByLocation: nextManualRisk,
       safetyMultiplierByLocation: nextSafetyMult,
     };

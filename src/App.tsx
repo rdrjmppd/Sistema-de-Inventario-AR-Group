@@ -34,6 +34,18 @@ import { MeatYieldView } from './components/operations/MeatYieldView';
 import { FruverYieldView } from './components/operations/FruverYieldView';
 import { BRAND_ASSETS, BRAND_NAME, BRAND_LEGAL_NAME, BRAND_RIF } from './lib/brand-assets';
 
+const ShelfStockManager = React.lazy(() =>
+  import('./components/inventory/ShelfStockManager').then((m) => ({
+    default: m.default || m.ShelfStockManager,
+  }))
+);
+
+const RetentionsCenter = React.lazy(() =>
+  import('./components/finance/RetentionsCenter').then((m) => ({
+    default: m.default || m.RetentionsCenter,
+  }))
+);
+
 const LoginView: React.FC = () => {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
@@ -144,6 +156,7 @@ export const VALID_NAVIGATION_TABS: NavigationTab[] = [
   'DASHBOARD',
   'CATALOG',
   'MULTILOCATION',
+  'SHELF_STOCK',
   'TRANSFERS',
   'INVENTORY_DISCARDS',
   'MEAT_YIELD',
@@ -151,6 +164,7 @@ export const VALID_NAVIGATION_TABS: NavigationTab[] = [
   'CHRYSTAL_IMPORT',
   'PRICING',
   'INVOICES_OCR',
+  'TAX_RETENTIONS',
   'SUPPLIERS',
   'ACCOUNTS_PAYABLE',
   'ABC_ROTATION',
@@ -212,25 +226,35 @@ const MainShell: React.FC = () => {
 
   return (
     <Layout activeTab={activeTab} onSelectTab={setActiveTab}>
-      {activeTab === 'DASHBOARD' && <AnalyticsDashboard onNavigate={setActiveTab} />}
-      {activeTab === 'CATALOG' && <ProductCatalog />}
-      {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
-      {activeTab === 'TRANSFERS' && <StockTransfers />}
-      {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
-      {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
-      {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
-      {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
-      {activeTab === 'PRICING' && <PricingCalculator />}
-      {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
-      {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
-      {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
-      {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
-      {activeTab === 'PURCHASE_SUGGESTIONS' && <PurchaseSuggestions onNavigate={setActiveTab} />}
-      {activeTab === 'PURCHASE_ORDERS_CENTER' && <PurchaseOrdersCenter />}
-      {activeTab === 'POS_API_SYNC' && <SalesApiSimulator />}
-      {activeTab === 'MONTHLY_CLOSING' && <MonthlyClosing />}
-      {activeTab === 'SETTINGS_RBAC' && <BusinessSettings />}
-      {activeTab === 'AUDIT_HISTORY' && <AuditHistoryView />}
+      <React.Suspense
+        fallback={
+          <div className="p-8 text-center text-xs font-mono text-slate-500">
+            Cargando módulo operativo...
+          </div>
+        }
+      >
+        {activeTab === 'DASHBOARD' && <AnalyticsDashboard onNavigate={setActiveTab} />}
+        {activeTab === 'CATALOG' && <ProductCatalog />}
+        {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
+        {activeTab === 'SHELF_STOCK' && <ShelfStockManager />}
+        {activeTab === 'TRANSFERS' && <StockTransfers />}
+        {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
+        {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
+        {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
+        {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
+        {activeTab === 'PRICING' && <PricingCalculator />}
+        {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
+        {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter />}
+        {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
+        {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
+        {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
+        {activeTab === 'PURCHASE_SUGGESTIONS' && <PurchaseSuggestions onNavigate={setActiveTab} />}
+        {activeTab === 'PURCHASE_ORDERS_CENTER' && <PurchaseOrdersCenter />}
+        {activeTab === 'POS_API_SYNC' && <SalesApiSimulator />}
+        {activeTab === 'MONTHLY_CLOSING' && <MonthlyClosing />}
+        {activeTab === 'SETTINGS_RBAC' && <BusinessSettings />}
+        {activeTab === 'AUDIT_HISTORY' && <AuditHistoryView />}
+      </React.Suspense>
     </Layout>
   );
 };

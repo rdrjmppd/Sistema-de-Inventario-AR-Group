@@ -20,6 +20,8 @@ import {
   PackageMinus,
   Layers,
   Apple,
+  Store,
+  Receipt,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -64,6 +66,21 @@ const NAV_ITEMS: NavItem[] = [
     group: 'OPERACIONES',
     icon: Boxes,
     allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA, UserRole.OBSERVADOR],
+  },
+  {
+    id: 'SHELF_STOCK',
+    defaultLabel: 'Depósito ↔ Anaquel / Cava',
+    group: 'OPERACIONES',
+    icon: Store,
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.OBSERVADOR,
+      UserRole.SUPERVISOR_CARNICERIA,
+      UserRole.SUPERVISOR_FRUVER,
+      UserRole.SUPERVISOR_PASILLO,
+    ],
   },
   {
     id: 'TRANSFERS',
@@ -140,6 +157,13 @@ const NAV_ITEMS: NavItem[] = [
     defaultLabel: 'Facturas & OCR 4 Candados',
     group: 'FINANZAS & OCR',
     icon: ScanLine,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
+  },
+  {
+    id: 'TAX_RETENTIONS',
+    defaultLabel: 'Retenciones IVA / ISLR',
+    group: 'FINANZAS & OCR',
+    icon: Receipt,
     allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
   },
   {

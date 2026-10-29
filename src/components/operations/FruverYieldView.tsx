@@ -39,7 +39,10 @@ import {
   CreateFruverBatchInput,
   UserRole,
   Product,
+  StorageZone,
 } from '../../types';
+import { applyStockDeltaToZone } from '../../lib/shelf-stock';
+import { round2, toDecimal } from '../../lib/decimal';
 import { useAuth } from '../../context/AuthContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
@@ -212,6 +215,7 @@ export const FruverYieldView: React.FC = () => {
     });
   }, [selectedProduct, targetDemandKg, computedBatch.netYieldPercent]);
 
+  const [canEditStateZone, setTargetZone] = useState<StorageZone>('ANAQUEL');
   const canEdit = hasPermission([
     UserRole.SUPERADMIN,
     UserRole.GERENTE,
@@ -230,22 +234,23 @@ export const FruverYieldView: React.FC = () => {
     );
 
     if (existingProd) {
-      const currentStock = existingProd.stockByLocation[selectedLocationId] || 0;
-      const newStock = parseFloat((currentStock + computedBatch.netSalableWeightKg).toFixed(2));
+      const updatedWithZone = applyStockDeltaToZone(
+        existingProd,
+        selectedLocationId,
+        computedBatch.netSalableWeightKg,
+        canEditStateZone,
+        new Date().toISOString()
+      );
       const updatedProd: Product = {
-        ...existingProd,
+        ...updatedWithZone,
         costUsd: computedBatch.effectiveCostPerSalableKgUsd,
         targetMarginPercent,
         priceUsd: computedBatch.suggestedPvpPerKgUsd,
         supplierId: selectedSupplierId,
-        stockByLocation: {
-          ...existingProd.stockByLocation,
-          [selectedLocationId]: newStock,
-        },
-        lastUpdatedVet: new Date().toISOString(),
       };
       addOrUpdateProduct(updatedProd, existingProd);
     } else {
+      const netKg = round2(toDecimal(computedBatch.netSalableWeightKg));
       const newProd: Product = {
         id: `prd-fruv-${selectedProduct.sku.toLowerCase()}-${Date.now()}`,
         sku: selectedProduct.sku,
@@ -258,10 +263,16 @@ export const FruverYieldView: React.FC = () => {
         priceUsd: computedBatch.suggestedPvpPerKgUsd,
         ivaRate: 0,
         stockByLocation: {
-          [selectedLocationId]: computedBatch.netSalableWeightKg,
+          [selectedLocationId]: netKg,
+        },
+        shelfStockByLocation: {
+          [selectedLocationId]: canEditStateZone === 'ANAQUEL' ? netKg : 0,
         },
         minStockByLocation: {
           [selectedLocationId]: 30,
+        },
+        minShelfByLocation: {
+          [selectedLocationId]: 12,
         },
         monthlyUnitsSold: 200,
         abcClass: 'A',
@@ -573,15 +584,27 @@ export const FruverYieldView: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleLoadToInventory}
-          disabled={!canEdit || computedBatch.netSalableWeightKg <= 0}
-          className="min-h-[44px] px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <CheckCircle2 className="w-4 h-4" />
-          <span>Cargar Lote al Inventario Activo</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={canEditStateZone}
+            onChange={(e) => setTargetZone(e.target.value as StorageZone)}
+            disabled={!canEdit}
+            className="min-h-[44px] px-3 py-2 rounded-xl border border-emerald-300 bg-white text-slate-800 font-semibold text-xs"
+          >
+            <option value="ANAQUEL">🍎 Destino: Directo a Exhibición / Anaquel</option>
+            <option value="DEPOSITO">❄️ Destino: Resguardo en Depósito / Cava</option>
+          </select>
+
+          <button
+            type="button"
+            onClick={handleLoadToInventory}
+            disabled={!canEdit || computedBatch.netSalableWeightKg <= 0}
+            className="min-h-[44px] px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-bold rounded-xl shadow-md transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            <span>Cargar Lote al Inventario Activo</span>
+          </button>
+        </div>
       </div>
 
       {/* Status Feedback Banner */}

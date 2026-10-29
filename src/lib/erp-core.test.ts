@@ -86,6 +86,8 @@ import {
   ManualRiskMode,
   InventoryDiscardRecord,
   UserSessionRecord,
+  PurchaseInvoice,
+  TaxRetentionVoucher,
 } from '../types';
 import {
   evaluateSecurityGuardrails,
@@ -139,6 +141,37 @@ import {
   shouldBypassServiceWorker,
   simulateServiceWorkerFetch,
 } from './pwa-service-worker';
+import {
+  buildStandardDirectCutSku,
+  compareDirectVsCarcassCost,
+  calculateMeatDirectCutPurchase,
+  applyDirectCutPurchaseToCatalog,
+} from './meat-direct-cuts';
+import {
+  getLocationStockBreakdown,
+  applyStockDeltaToZone,
+  replenishShelfFromDeposit,
+  returnShelfToDeposit,
+  transferStockBetweenZonesAndLocations,
+  deductPosSaleShelfFirst,
+  evaluatePhysicalCountTolerance,
+  reconcileLocationPhysicalCount,
+  buildShelfReplenishmentPickList,
+} from './shelf-stock';
+import {
+  ISLR_CONCEPTS_CATALOG,
+  isValidVenezuelanRif,
+  formatRetentionVoucherNumber,
+  resolveFilingFortnight,
+  resolveIvaRetentionRatePercent,
+  calculateInvoiceRetentions,
+  voidRetentionVoucherWithPin,
+} from './fiscal-retentions';
+import {
+  generateIvaRetentionPdfDocument,
+  generateIslrRetentionPdfDocument,
+  generateQuincenalRetentionsPdfDocument,
+} from './retention-pdf';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -3230,4 +3263,834 @@ test('46. Cloud Run Container Readiness: package.json esbuild server.js bundle, 
   assert.ok(serverTsRaw.includes("fs.existsSync(distPath)"));
   assert.ok(serverTsRaw.includes("app.get('/api/health'"));
   assert.ok(serverTsRaw.includes('startServer().catch('));
+});
+
+
+test('47. Meat Direct Cuts Engine: Manual Assigned Cost (no forced CPP), Reception Shrinkage, Carcass Comparator, Zone Routing & 500-Iteration Stress Test', () => {
+  const actor = {
+    uid: 'usr-sup-carn-01',
+    displayName: 'Supervisor Carnicería PZO',
+    role: UserRole.SUPERVISOR_CARNICERIA,
+  };
+
+  // 1. SKU Normalization
+  assert.equal(
+    buildStandardDirectCutSku('RES', 'Solomo de Cuerito Premium'),
+    'CAR-RES-SOLOMO-DE-CUER'
+  );
+  assert.equal(
+    buildStandardDirectCutSku('POLLO', 'Pechuga Deshuesada Filete'),
+    'CAR-POL-PECHUGA-DESHUE'
+  );
+
+  // Reference carcass batch for live cost comparison
+  const refCarcassBatch = calculateMeatYieldBatch({
+    input: {
+      animalType: 'RES',
+      presentation: 'MEDIA_CANAL',
+      locationId: 'loc-pzo-01',
+      carcassWeightKg: 200,
+      carcassCostPerKgUsd: 3.1,
+      cuts: [
+        {
+          cutName: 'Solomo de Cuerito',
+          tier: 'PRIMERA_ALTO_VALOR',
+          weightKg: 35,
+          relativeValueFactor: 2.2,
+          targetMarginPercent: 30,
+        },
+        {
+          cutName: 'Pulpa Negra',
+          tier: 'PRIMERA_ALTO_VALOR',
+          weightKg: 45,
+          relativeValueFactor: 1.9,
+          targetMarginPercent: 28,
+        },
+        {
+          cutName: 'Costilla de Res',
+          tier: 'TERCERA_SOPA_HUESO',
+          weightKg: 95,
+          relativeValueFactor: 0.8,
+          targetMarginPercent: 22,
+        },
+      ],
+      wastes: [
+        { wasteType: 'HUESO_BLANCO_DESECHO', label: 'Hueso', weightKg: 15 },
+        { wasteType: 'GRASA_SEBO_DESECHO', label: 'Sebo', weightKg: 10 },
+      ],
+    },
+    bcvRate: 886.23,
+    locationName: 'Sede Alta Vista',
+    supervisor: actor,
+  });
+
+  // 2. Direct Cut Purchase with Manual Assigned Cost (NO automatic Weighted Average Cost)
+  const directPurchase = calculateMeatDirectCutPurchase({
+    input: {
+      batchCode: 'DIR-CARN-2026-0091',
+      invoiceOrGuideRef: 'FAC-FRIG-8821',
+      sadaGuide: 'SADA-BOL-55201',
+      receptionDate: '2026-10-29',
+      supplierId: 'sup-004',
+      supplierName: 'Frigorífico Industrial Bolívar, C.A.',
+      locationId: 'loc-pzo-01',
+      targetZone: 'ANAQUEL',
+      lines: [
+        {
+          cutName: 'Solomo de Cuerito',
+          sku: 'CAR-RES-SOLOMO',
+          animalType: 'RES',
+          tier: 'PRIMERA_ALTO_VALOR',
+          receivedWeightKg: 50,
+          shrinkageKg: 1, // 49 Kg net salable -> invoice $343.00 ($6.86/kg) -> effective $7.00/kg
+          purchaseCostPerKgUsd: 6.86,
+          manualAssignedCostUsd: 7.25, // Manual override chosen by management
+          targetMarginPercent: 30,
+        },
+        {
+          cutName: 'Pechuga Entera Sin Piel',
+          sku: 'CAR-POL-PECHUGA',
+          animalType: 'POLLO',
+          tier: 'PRIMERA_ALTO_VALOR',
+          receivedWeightKg: 40,
+          shrinkageKg: 0,
+          purchaseCostPerKgUsd: 4.1,
+          // omitted manualAssignedCostUsd -> defaults to effective cost $4.10
+          targetMarginPercent: 25,
+        },
+      ],
+    },
+    bcvRate: 886.23,
+    locationName: 'Sede Alta Vista',
+    actor,
+    carcassBatches: [refCarcassBatch],
+  });
+
+  assert.equal(directPurchase.batchCode, 'DIR-CARN-2026-0091');
+  assert.equal(directPurchase.totalReceivedWeightKg, 90);
+  assert.equal(directPurchase.totalShrinkageKg, 1);
+  assert.equal(directPurchase.totalNetSalableWeightKg, 89);
+
+  const solomoLine = directPurchase.lines[0];
+  assert.equal(solomoLine.netSalableWeightKg, 49);
+  assert.equal(solomoLine.lineInvoiceCostUsd, 343.0); // 50 * 6.86
+  assert.equal(solomoLine.effectivePurchaseCostPerKgUsd, 7.0); // 343 / 49
+  assert.equal(solomoLine.manualAssignedCostUsd, 7.25); // Manual assigned cost respected!
+  assert.equal(solomoLine.retailPriceUsdPerKg, 10.36); // 7.25 / (1 - 0.30) = 10.3571 -> 10.36
+  assert.ok(solomoLine.carcassReferenceCostPerKgUsd !== undefined);
+
+  const pechugaLine = directPurchase.lines[1];
+  assert.equal(pechugaLine.effectivePurchaseCostPerKgUsd, 4.1);
+  assert.equal(pechugaLine.manualAssignedCostUsd, 4.1);
+
+  // 3. Catalog Application: Verify Manual Cost replaces cost WITHOUT Weighted Average blending,
+  // and ANAQUEL routing increments both total and shelfStockByLocation
+  const existingCatalog: Product[] = [
+    {
+      id: 'prd-solomo',
+      sku: 'CAR-RES-SOLOMO',
+      barcode: '7591111222233',
+      name: 'Solomo de Cuerito',
+      category: 'Carnicería',
+      unit: 'KG',
+      costUsd: 5.5, // Previous cost from an older batch
+      targetMarginPercent: 28,
+      priceUsd: 7.64,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 20, 'loc-val-01': 30 },
+      shelfStockByLocation: { 'loc-pzo-01': 8, 'loc-val-01': 0 },
+      minStockByLocation: { 'loc-pzo-01': 15, 'loc-val-01': 15 },
+      monthlyUnitsSold: 120,
+      abcClass: 'A',
+      supplierId: 'sup-004',
+      lastUpdatedVet: '2026-10-28T10:00:00-04:00',
+    },
+  ];
+
+  const catalogRes = applyDirectCutPurchaseToCatalog({
+    purchase: directPurchase,
+    products: existingCatalog,
+    locationIds: ['loc-pzo-01', 'loc-val-01'],
+    updatedAtVet: '2026-10-29T11:00:00-04:00',
+  });
+
+  assert.equal(catalogRes.updatedProductsCount, 1);
+  assert.equal(catalogRes.createdProductsCount, 1);
+
+  const updatedSolomo = catalogRes.updatedProducts.find((p) => p.sku === 'CAR-RES-SOLOMO')!;
+  // Strictly 7.25 manual cost (NOT weighted average of 20kg @ 5.50 + 49kg @ 7.00 = 6.57)
+  assert.equal(updatedSolomo.costUsd, 7.25);
+  assert.equal(updatedSolomo.lastCostOrigin, 'CORTE_DIRECTO');
+  assert.equal(updatedSolomo.stockByLocation['loc-pzo-01'], 69); // 20 + 49
+  assert.equal(updatedSolomo.shelfStockByLocation?.['loc-pzo-01'], 57); // 8 + 49 routed to ANAQUEL
+
+  // Also test DEPOSITO / Nevera Cava routing (leaves shelf intact, increases deposit)
+  const cavaPurchase = calculateMeatDirectCutPurchase({
+    input: {
+      invoiceOrGuideRef: 'FAC-CAVA-02',
+      supplierId: 'sup-004',
+      supplierName: 'Frigorífico Bolívar',
+      locationId: 'loc-val-01',
+      targetZone: 'DEPOSITO',
+      cavaOriginNote: 'Nevera Frigorífica Cava Central Valencia',
+      lines: [
+        {
+          cutName: 'Solomo de Cuerito',
+          sku: 'CAR-RES-SOLOMO',
+          animalType: 'RES',
+          tier: 'PRIMERA_ALTO_VALOR',
+          receivedWeightKg: 25,
+          shrinkageKg: 0,
+          purchaseCostPerKgUsd: 6.9,
+          manualAssignedCostUsd: 6.95,
+          targetMarginPercent: 30,
+        },
+      ],
+    },
+    bcvRate: 886.23,
+    locationName: 'CEDIS Cava Valencia',
+    actor,
+  });
+
+  const afterCava = applyDirectCutPurchaseToCatalog({
+    purchase: cavaPurchase,
+    products: catalogRes.updatedProducts,
+    locationIds: ['loc-pzo-01', 'loc-val-01'],
+    updatedAtVet: '2026-10-29T12:00:00-04:00',
+  });
+  const solomoAfterCava = afterCava.updatedProducts.find((p) => p.sku === 'CAR-RES-SOLOMO')!;
+  const valBreakdown = getLocationStockBreakdown(solomoAfterCava, 'loc-val-01');
+  assert.equal(valBreakdown.total, 55); // 30 + 25
+  assert.equal(valBreakdown.shelf, 0); // Unchanged
+  assert.equal(valBreakdown.deposit, 55); // 100% stored in Cava/Depósito
+
+  // 4. Compare helper test
+  const cmpCheap = compareDirectVsCarcassCost({
+    cutName: 'Solomo de Cuerito',
+    animalType: 'RES',
+    directEffectiveCostPerKgUsd: 3.2,
+    manualAssignedCostUsd: 3.2,
+    carcassBatches: [refCarcassBatch],
+  });
+  assert.ok(cmpCheap !== null);
+  assert.equal(cmpCheap?.recommendation, 'CONVIENE_CORTE_DIRECTO');
+
+  // 5. 500-Iteration Financial Stress Test (Zero Decimal Drift)
+  for (let i = 0; i < 500; i++) {
+    const recKg = roundCurrency(15 + (i % 40) * 1.35);
+    const shrinkKg = roundCurrency((i % 5) * 0.25);
+    const unitCost = roundCurrency(3.15 + (i % 12) * 0.42);
+    const manualCost = roundCurrency(unitCost + 0.25);
+
+    const p = calculateMeatDirectCutPurchase({
+      input: {
+        invoiceOrGuideRef: `STRESS-${i}`,
+        supplierId: 'sup-004',
+        supplierName: 'Proveedor Stress',
+        locationId: 'loc-pzo-01',
+        targetZone: i % 2 === 0 ? 'DEPOSITO' : 'ANAQUEL',
+        lines: [
+          {
+            cutName: `Corte Stress ${i % 6}`,
+            animalType: i % 3 === 0 ? 'RES' : i % 3 === 1 ? 'CERDO' : 'POLLO',
+            tier: 'PRIMERA_ALTO_VALOR',
+            receivedWeightKg: recKg,
+            shrinkageKg: shrinkKg,
+            purchaseCostPerKgUsd: unitCost,
+            manualAssignedCostUsd: manualCost,
+            targetMarginPercent: 28,
+          },
+        ],
+      },
+      bcvRate: 886.23,
+      locationName: 'Sede Stress',
+      actor,
+    });
+
+    assert.equal(
+      p.totalNetSalableWeightKg,
+      subMoney(p.totalReceivedWeightKg, p.totalShrinkageKg)
+    );
+    assert.equal(
+      p.projectedGrossProfitUsd,
+      subMoney(p.totalProjectedRevenueUsd, p.totalPurchaseCostUsd)
+    );
+    assert.equal(p.lines[0].manualAssignedCostUsd, manualCost);
+  }
+});
+
+test('48. Shelf vs. Deposit Stock Engine: Layered Invariants, Cava Cross-Sede Transfer, POS Shelf-First Shortfall, ±2%/±1u PIN Reconciliation & 1,000-Movement Stress Test', () => {
+  const actorAnalyst = {
+    uid: 'usr-pasillo-01',
+    displayName: 'Supervisor de Pasillo',
+    role: UserRole.SUPERVISOR_PASILLO,
+  };
+
+  let prod: Product = {
+    id: 'prd-shelf-01',
+    sku: 'CAR-RES-PULPA',
+    barcode: '7590001112223',
+    name: 'Pulpa Negra Refrigerada (Kg)',
+    category: 'Carnicería',
+    unit: 'KG',
+    costUsd: 6.2,
+    targetMarginPercent: 30,
+    priceUsd: 8.86,
+    ivaRate: 0,
+    // loc-val-01 has 120 Kg in Nevera/Cava (0 on shelf); loc-pzo-01 has 50 Kg total (10 on shelf, 40 in deposit)
+    stockByLocation: { 'loc-pzo-01': 50, 'loc-val-01': 120 },
+    shelfStockByLocation: { 'loc-pzo-01': 10, 'loc-val-01': 0 },
+    minShelfByLocation: { 'loc-pzo-01': 25, 'loc-val-01': 0 },
+    minStockByLocation: { 'loc-pzo-01': 20, 'loc-val-01': 30 },
+    monthlyUnitsSold: 300,
+    abcClass: 'A',
+    supplierId: 'sup-004',
+    lastUpdatedVet: '2026-10-29T08:00:00-04:00',
+  };
+
+  // 1. Pick list detects shelf deficit (10 < 25 -> suggests moving 15 from PZO deposit)
+  const pickList = buildShelfReplenishmentPickList([prod], 'loc-pzo-01');
+  assert.equal(pickList.length, 1);
+  assert.equal(pickList[0].suggestedMoveQty, 15);
+
+  // 2. Internal Replenishment: Depósito -> Anaquel in PZO-01 (total stays 50, shelf 10 -> 25, deposit 40 -> 25)
+  const repRes = replenishShelfFromDeposit({
+    product: prod,
+    locationId: 'loc-pzo-01',
+    locationName: 'PZO-01',
+    quantity: 15,
+    actor: actorAnalyst,
+    timestampVet: '2026-10-29T08:30:00-04:00',
+  });
+  prod = repRes.updatedProduct;
+  const bAfterRep = getLocationStockBreakdown(prod, 'loc-pzo-01');
+  assert.equal(bAfterRep.total, 50);
+  assert.equal(bAfterRep.shelf, 25);
+  assert.equal(bAfterRep.deposit, 25);
+
+  // 3. Internal Return: Anaquel -> Depósito (5 Kg back to cold storage)
+  const retRes = returnShelfToDeposit({
+    product: prod,
+    locationId: 'loc-pzo-01',
+    locationName: 'PZO-01',
+    quantity: 5,
+    actor: actorAnalyst,
+    timestampVet: '2026-10-29T09:00:00-04:00',
+  });
+  prod = retRes.updatedProduct;
+  const bAfterRet = getLocationStockBreakdown(prod, 'loc-pzo-01');
+  assert.equal(bAfterRet.total, 50);
+  assert.equal(bAfterRet.shelf, 20);
+  assert.equal(bAfterRet.deposit, 30);
+
+  // 4. Cross-Sede Cold-Chain Transfer: Nevera/Cava in VAL-01 (DEPOSITO) -> Exhibición in PZO-01 (ANAQUEL)
+  const cavaTrf = transferStockBetweenZonesAndLocations({
+    product: prod,
+    fromLocationId: 'loc-val-01',
+    fromLocationName: 'Cava Frigorífica VAL-01',
+    fromZone: 'DEPOSITO',
+    toLocationId: 'loc-pzo-01',
+    toLocationName: 'Vitrina Carnicería PZO-01',
+    toZone: 'ANAQUEL',
+    quantity: 30,
+    actor: actorAnalyst,
+    timestampVet: '2026-10-29T10:00:00-04:00',
+  });
+  prod = cavaTrf.updatedProduct;
+  const valAfter = getLocationStockBreakdown(prod, 'loc-val-01');
+  const pzoAfter = getLocationStockBreakdown(prod, 'loc-pzo-01');
+  assert.equal(valAfter.total, 90); // 120 - 30
+  assert.equal(valAfter.deposit, 90);
+  assert.equal(pzoAfter.total, 80); // 50 + 30
+  assert.equal(pzoAfter.shelf, 50); // 20 + 30 directly in exhibition!
+  assert.equal(pzoAfter.deposit, 30); // unchanged
+
+  // 5. POS Sale Deduction: Shelf-first, then Deposit fallback with shortfall alert
+  // Sell 62 Kg at PZO-01 (50 Kg from Shelf + 12 Kg from Deposit)
+  const posRes = deductPosSaleShelfFirst({
+    product: prod,
+    locationId: 'loc-pzo-01',
+    qtySold: 62,
+    updatedAtVet: '2026-10-29T11:00:00-04:00',
+  });
+  assert.equal(posRes.hadShelfShortfall, true);
+  assert.equal(posRes.deductedFromShelf, 50);
+  assert.equal(posRes.deductedFromDeposit, 12);
+  prod = posRes.updatedProduct;
+  const bAfterPos = getLocationStockBreakdown(prod, 'loc-pzo-01');
+  assert.equal(bAfterPos.total, 18); // 80 - 62
+  assert.equal(bAfterPos.shelf, 0);
+  assert.equal(bAfterPos.deposit, 18);
+
+  // 6. Physical Count Reconciliation (Sinceración):
+  // 6a. Within ±1 unit tolerance (18 -> 17.2 total, diff -0.8 Kg <= 1u): NO PIN REQUIRED
+  const tolSmall = evaluatePhysicalCountTolerance({
+    systemDeposit: 18,
+    systemShelf: 0,
+    countedDeposit: 12.2,
+    countedShelf: 5.0, // total 17.2 (diff -0.8)
+  });
+  assert.equal(tolSmall.requiresManagerPin, false);
+
+  const syncNoPin = reconcileLocationPhysicalCount({
+    product: prod,
+    locationName: 'PZO-01',
+    input: {
+      productId: prod.id,
+      locationId: 'loc-pzo-01',
+      countedDepositQty: 12.2,
+      countedShelfQty: 5.0,
+      notes: 'Conteo físico matutino dentro de tolerancia',
+    },
+    actor: actorAnalyst,
+    timestampVet: '2026-10-29T12:00:00-04:00',
+  });
+  assert.equal(syncNoPin.requiresManagerPin, false);
+  prod = syncNoPin.updatedProduct;
+  assert.equal(getLocationStockBreakdown(prod, 'loc-pzo-01').total, 17.2);
+  assert.equal(getLocationStockBreakdown(prod, 'loc-pzo-01').shelf, 5.0);
+
+  // 6b. Beyond ±2% AND > ±1 unit (17.2 -> 14.0, diff -3.2 Kg = 18.6%): MUST REQUIRE MANAGER PIN
+  assert.throws(() => {
+    reconcileLocationPhysicalCount({
+      product: prod,
+      locationName: 'PZO-01',
+      input: {
+        productId: prod.id,
+        locationId: 'loc-pzo-01',
+        countedDepositQty: 10.0,
+        countedShelfQty: 4.0,
+        notes: 'Ajuste mayor sin PIN',
+      },
+      actor: actorAnalyst,
+      timestampVet: '2026-10-29T12:15:00-04:00',
+    });
+  }, /PIN de Gerente válido/);
+
+  const syncWithPin = reconcileLocationPhysicalCount({
+    product: prod,
+    locationName: 'PZO-01',
+    input: {
+      productId: prod.id,
+      locationId: 'loc-pzo-01',
+      countedDepositQty: 10.0,
+      countedShelfQty: 4.0,
+      notes: 'Sinceración autorizada por Gerencia',
+      managerPin: '203040',
+    },
+    actor: actorAnalyst,
+    timestampVet: '2026-10-29T12:20:00-04:00',
+  });
+  assert.equal(syncWithPin.requiresManagerPin, true);
+  assert.equal(getLocationStockBreakdown(syncWithPin.updatedProduct, 'loc-pzo-01').total, 14.0);
+
+  // 7. 1,000-Movement Stress Test: Mass Conservation & 0 <= Shelf <= Total Invariant
+  let stressProd: Product = {
+    ...prod,
+    stockByLocation: { 'loc-pzo-01': 5000, 'loc-val-01': 5000 },
+    shelfStockByLocation: { 'loc-pzo-01': 1500, 'loc-val-01': 500 },
+  };
+  let expectedGlobalMass = 10000;
+
+  for (let i = 0; i < 1000; i++) {
+    const mode = i % 4;
+    if (mode === 0) {
+      // Replenish 2.5 Kg in PZO if deposit >= 2.5
+      const b = getLocationStockBreakdown(stressProd, 'loc-pzo-01');
+      if (b.deposit >= 2.5) {
+        stressProd = replenishShelfFromDeposit({
+          product: stressProd,
+          locationId: 'loc-pzo-01',
+          locationName: 'PZO',
+          quantity: 2.5,
+          actor: actorAnalyst,
+          timestampVet: '2026-10-29T13:00:00-04:00',
+        }).updatedProduct;
+      }
+    } else if (mode === 1) {
+      // Return 1.25 Kg in PZO if shelf >= 1.25
+      const b = getLocationStockBreakdown(stressProd, 'loc-pzo-01');
+      if (b.shelf >= 1.25) {
+        stressProd = returnShelfToDeposit({
+          product: stressProd,
+          locationId: 'loc-pzo-01',
+          locationName: 'PZO',
+          quantity: 1.25,
+          actor: actorAnalyst,
+          timestampVet: '2026-10-29T13:00:00-04:00',
+        }).updatedProduct;
+      }
+    } else if (mode === 2) {
+      // Cross-sede Cava VAL -> Exhibición PZO (3.5 Kg)
+      const bVal = getLocationStockBreakdown(stressProd, 'loc-val-01');
+      if (bVal.deposit >= 3.5) {
+        stressProd = transferStockBetweenZonesAndLocations({
+          product: stressProd,
+          fromLocationId: 'loc-val-01',
+          fromLocationName: 'VAL',
+          fromZone: 'DEPOSITO',
+          toLocationId: 'loc-pzo-01',
+          toLocationName: 'PZO',
+          toZone: 'ANAQUEL',
+          quantity: 3.5,
+          actor: actorAnalyst,
+          timestampVet: '2026-10-29T13:00:00-04:00',
+        }).updatedProduct;
+      }
+    } else {
+      // POS Sale of 1.75 Kg in PZO
+      const bPzo = getLocationStockBreakdown(stressProd, 'loc-pzo-01');
+      if (bPzo.total >= 1.75) {
+        stressProd = deductPosSaleShelfFirst({
+          product: stressProd,
+          locationId: 'loc-pzo-01',
+          qtySold: 1.75,
+          updatedAtVet: '2026-10-29T13:00:00-04:00',
+        }).updatedProduct;
+        expectedGlobalMass = subMoney(expectedGlobalMass, 1.75);
+      }
+    }
+
+    const pzoB = getLocationStockBreakdown(stressProd, 'loc-pzo-01');
+    const valB = getLocationStockBreakdown(stressProd, 'loc-val-01');
+    assert.ok(pzoB.shelf >= 0 && pzoB.shelf <= pzoB.total);
+    assert.ok(valB.shelf >= 0 && valB.shelf <= valB.total);
+    assert.equal(addMoney(pzoB.shelf, pzoB.deposit), pzoB.total);
+    assert.equal(addMoney(valB.shelf, valB.deposit), valB.total);
+    assert.equal(addMoney(pzoB.total, valB.total), expectedGlobalMass);
+  }
+});
+
+test('49. Venezuelan Fiscal Retentions Engine: SPE IVA (75%/100%/0% SNAT/2025/000054), ISLR Decreto 1.808 (Service-Only & PN Sustraendo), Net Payable, PIN Voiding & 1,000 Sequential 14-Digit Vouchers Stress Test', () => {
+  const company = resolveCompanyProfile({
+    razonSocial: 'HIPER ABASTO POLAR, C.A.',
+    rif: 'J-50123456-7',
+    isSpecialTaxpayer: true,
+    isIvaRetentionAgent: true,
+    isIslrRetentionAgent: true,
+    defaultIvaRetentionPercent: 75,
+    utValueVes: 9.0,
+    nextIvaVoucherSeq: 1,
+    nextIslrVoucherSeq: 1,
+  });
+
+  // 1. RIF, Fortnight & 14-character SENIAT Voucher Format
+  assert.equal(isValidVenezuelanRif('J-00006372-9'), true);
+  assert.equal(isValidVenezuelanRif('V-18456789-2'), true);
+  assert.equal(isValidVenezuelanRif('RIF-INVALIDO'), false);
+
+  const vNum = formatRetentionVoucherNumber('2026-10-18', 42);
+  assert.equal(vNum, '20261000000042');
+  assert.equal(vNum.length, 14);
+
+  assert.equal(resolveFilingFortnight('2026-10-12').fortnight, 'PRIMERA_QUINCENA');
+  assert.equal(resolveFilingFortnight('2026-10-16').fortnight, 'SEGUNDA_QUINCENA');
+
+  // 2. IVA Retention Rate Resolution (SNAT/2025/000054)
+  assert.equal(
+    resolveIvaRetentionRatePercent({
+      companyProfile: company,
+      supplierTaxpayerType: 'ORDINARIO',
+      supplierRif: 'J-30148921-4',
+      controlNumber: '00-44812',
+    }),
+    75
+  );
+  assert.equal(
+    resolveIvaRetentionRatePercent({
+      companyProfile: company,
+      supplierTaxpayerType: 'ORDINARIO',
+      supplierRif: 'J-30148921-4',
+      controlNumber: '', // Missing control number -> 100%
+    }),
+    100
+  );
+  assert.equal(
+    resolveIvaRetentionRatePercent({
+      companyProfile: company,
+      supplierTaxpayerType: 'FORMAL',
+      supplierRif: 'J-40982314-1',
+      controlNumber: '00-11223',
+    }),
+    0
+  );
+
+  // 3. Mixed Invoice (0% Exempt Food + 16% Taxed Goods + 16% Freight Service PJ)
+  const mixedInvoice: PurchaseInvoice = {
+    id: 'inv-ret-test-01',
+    invoiceNumber: 'FAC-9901',
+    controlNumber: '00-88120',
+    supplierId: 'sup-log-01',
+    supplierName: 'Distribuidora y Transporte Oriental, C.A.',
+    supplierRif: 'J-31223344-5',
+    locationId: 'loc-pzo-01',
+    issueDate: '2026-10-20',
+    dueDate: '2026-11-04',
+    currency: 'USD',
+    bcvRateAtIssue: 100.0, // Clean 100 Bs/$ rate for exact verification
+    lines: [
+      {
+        id: 'l1',
+        sku: 'HAR-PAN-1KG',
+        description: 'Harina Precocida Exenta',
+        quantity: 100,
+        unitCostUsd: 1.0,
+        lineTotalUsd: 100.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
+      },
+      {
+        id: 'l2',
+        sku: 'ACE-MAZ-1LT',
+        description: 'Aceite Gravado 16%',
+        quantity: 50,
+        unitCostUsd: 4.0,
+        lineTotalUsd: 200.0,
+        ivaRate: 16, // IVA = $32.00 (Bs. 3,200.00) -> 75% ret = $24.00 (Bs. 2,400.00); BIEN -> ISLR = $0
+        lineType: 'BIEN',
+      },
+      {
+        id: 'l3',
+        sku: 'FLETE-NAC',
+        description: 'Servicio de Flete Refrigerado',
+        quantity: 1,
+        unitCostUsd: 100.0,
+        lineTotalUsd: 100.0,
+        ivaRate: 16, // IVA = $16.00 (Bs. 1,600.00) -> 75% ret = $12.00 (Bs. 1,200.00)
+        lineType: 'SERVICIO',
+        islrConceptCode: 'SRV-FLETE', // PJ 3% over Bs. 10,000 = Bs. 300.00 ($3.00)
+      },
+    ],
+    subtotalUsd: 400.0,
+    ivaAmountUsd: 48.0,
+    igtfAmountUsd: 0,
+    totalUsd: 448.0,
+    paidAmountUsd: 0,
+    status: 'PENDIENTE',
+    ocrEngineUsed: 'GEMINI_VISION_PRO',
+    forensicAudit: {
+      passedAllLocks: true,
+      lock1LineIntegrations: true,
+      lock2SubtotalMatch: true,
+      lock3TaxCoherence: true,
+      lock4TotalCrossCheck: true,
+      discrepancyUsd: 0,
+      auditLog: [],
+    },
+    createdAtVet: '2026-10-20T10:00:00-04:00',
+  };
+
+  const mixedRes = calculateInvoiceRetentions({
+    invoice: mixedInvoice,
+    supplier: { taxpayerType: 'ORDINARIO', personType: 'PJ_DOMICILIADA' },
+    companyProfile: company,
+    nextIvaSeq: 5,
+    nextIslrSeq: 12,
+    createdBy: 'finanzas@hiperabastopolar.com',
+  });
+
+  assert.ok(mixedRes.ivaVoucher !== null);
+  assert.ok(mixedRes.islrVoucher !== null);
+  assert.equal(mixedRes.ivaVoucher?.voucherNumber, '20261000000005');
+  assert.equal(mixedRes.islrVoucher?.voucherNumber, '20261000000012');
+
+  // IVA: ($32 + $16) = $48 IVA causado * 75% = $36.00 (Bs. 3,600.00)
+  assert.equal(mixedRes.ivaVoucher?.retainedTotalUsd, 36.0);
+  assert.equal(mixedRes.ivaVoucher?.retainedTotalVes, 3600.0);
+
+  // ISLR: Strictly on SERVICIO line ($100 = Bs. 10,000) * 3% PJ Flete = Bs. 300.00 ($3.00)
+  // Merchandise lines ($100 + $200) had 0% ISLR!
+  assert.equal(mixedRes.islrVoucher?.lines.length, 1);
+  assert.equal(mixedRes.islrVoucher?.retainedTotalVes, 300.0);
+  assert.equal(mixedRes.islrVoucher?.retainedTotalUsd, 3.0);
+
+  // Net Payable to Supplier = $448.00 - ($36.00 + $3.00) = $409.00
+  assert.equal(mixedRes.updatedInvoice.totalRetainedUsd, 39.0);
+  assert.equal(mixedRes.updatedInvoice.netPayableUsd, 409.0);
+
+  // 4. Persona Natural Residente (PN_RESIDENTE) Honorarios with U.T. Sustraendo (Decreto 1.808)
+  // UT = Bs. 9.00 -> Threshold = 83.3334 * 9 = Bs. 750.00
+  // Honorarios PN rate = 3% -> Sustraendo = 9 * 83.3334 * 0.03 = Bs. 22.50
+  // Base = $50 @ Bs. 100 = Bs. 5,000 -> Bruto 3% = Bs. 150.00 -> Retained = 150 - 22.50 = Bs. 127.50
+  const pnServiceInvoice: PurchaseInvoice = {
+    ...mixedInvoice,
+    id: 'inv-pn-01',
+    supplierRif: 'V-14556677-8',
+    lines: [
+      {
+        id: 'ln-pn-1',
+        sku: 'HON-CONT',
+        description: 'Honorarios Profesionales Auditoría',
+        quantity: 1,
+        unitCostUsd: 50.0,
+        lineTotalUsd: 50.0,
+        ivaRate: 16,
+        lineType: 'SERVICIO',
+        islrConceptCode: 'SRV-HONORARIOS',
+      },
+    ],
+    subtotalUsd: 50.0,
+    ivaAmountUsd: 8.0,
+    totalUsd: 58.0,
+  };
+
+  const pnRes = calculateInvoiceRetentions({
+    invoice: pnServiceInvoice,
+    supplier: { taxpayerType: 'ORDINARIO', personType: 'PN_RESIDENTE' },
+    companyProfile: company,
+    nextIvaSeq: 6,
+    nextIslrSeq: 13,
+    createdBy: 'finanzas@hiperabastopolar.com',
+  });
+  assert.equal(pnRes.islrVoucher?.sustraendoTotalVes, 22.5);
+  assert.equal(pnRes.islrVoucher?.retainedTotalVes, 127.5);
+
+  // 5. PIN-Protected Voiding preserves 14-digit voucher number immutably
+  assert.throws(() => {
+    voidRetentionVoucherWithPin({
+      voucher: mixedRes.ivaVoucher!,
+      actor: { uid: 'u1', displayName: 'Analista', role: UserRole.ANALISTA },
+      managerPin: '999999',
+      reason: 'Factura devuelta por error en RIF',
+      voidedAtVet: '29/10/2026 15:00',
+    });
+  }, /PIN Gerencial inválido/);
+
+  const voidedVoucher = voidRetentionVoucherWithPin({
+    voucher: mixedRes.ivaVoucher!,
+    actor: { uid: 'u1', displayName: 'Gerente Finanzas', role: UserRole.GERENTE },
+    managerPin: '203040',
+    reason: 'Nota de crédito total emitida por proveedor',
+    voidedAtVet: '29/10/2026 15:05',
+  });
+  assert.equal(voidedVoucher.status, 'ANULADO');
+  assert.equal(voidedVoucher.voucherNumber, '20261000000005'); // Correlativo preserved!
+
+  // 6. High-Concurrency Stress Test: 1,000 Sequential 14-Digit Vouchers (Zero Gaps, Zero Collisions)
+  const seenNumbers = new Set<string>();
+  let seq = 1;
+  for (let i = 0; i < 1000; i++) {
+    const stepRes = calculateInvoiceRetentions({
+      invoice: {
+        ...mixedInvoice,
+        id: `inv-stress-${i}`,
+        invoiceNumber: `FAC-STR-${i}`,
+        issueDate: '2026-10-25',
+      },
+      supplier: { taxpayerType: 'ORDINARIO', personType: 'PJ_DOMICILIADA' },
+      companyProfile: company,
+      nextIvaSeq: seq,
+      nextIslrSeq: seq,
+      createdBy: 'stress@hiperabastopolar.com',
+    });
+
+    const num = stepRes.ivaVoucher!.voucherNumber;
+    assert.equal(num.length, 14);
+    assert.equal(seenNumbers.has(num), false, `Duplicate voucher number ${num}`);
+    seenNumbers.add(num);
+    assert.equal(stepRes.nextIvaSeqAfter, seq + 1);
+    seq = stepRes.nextIvaSeqAfter;
+  }
+  assert.equal(seenNumbers.size, 1000);
+  assert.ok(seenNumbers.has('20261000000001'));
+  assert.ok(seenNumbers.has('20261000001000'));
+  assert.ok(ISLR_CONCEPTS_CATALOG.length >= 5);
+});
+
+test('50. Branded SENIAT Retention PDF Engine & Multi-Tab Routing: IVA, ISLR, Voided Watermark, 60-Line Multi-Page Voucher & Quincenal Summary', () => {
+  // Verify Navigation Tabs include both new modules
+  assert.ok(VALID_NAVIGATION_TABS.includes('SHELF_STOCK'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('TAX_RETENTIONS'));
+
+  const company = resolveCompanyProfile(DEFAULT_COMPANY_PROFILE);
+
+  // Build a 60-line invoice to stress-test multi-page table pagination in SENIAT Landscape PDF
+  const sixtyLines = Array.from({ length: 60 }, (_, idx) => ({
+    id: `ln-pdf-${idx + 1}`,
+    sku: `SKU-PDF-${String(idx + 1).padStart(3, '0')}`,
+    description: `Producto Agroindustrial Gravado Lote #${idx + 1}`,
+    quantity: 10,
+    unitCostUsd: 5.0,
+    lineTotalUsd: 50.0,
+    ivaRate: 16 as const,
+    lineType: (idx % 10 === 0 ? 'SERVICIO' : 'BIEN') as 'BIEN' | 'SERVICIO',
+    islrConceptCode: idx % 10 === 0 ? 'SRV-CONTRATISTA' : undefined,
+  }));
+
+  const multiLineInvoice: PurchaseInvoice = {
+    id: 'inv-pdf-60',
+    invoiceNumber: 'FAC-PDF-6000',
+    controlNumber: '00-600099',
+    supplierId: 'sup-001',
+    supplierName: 'Alimentos Polar Comercial, C.A.',
+    supplierRif: 'J-00006372-9',
+    locationId: 'loc-pzo-01',
+    issueDate: '2026-10-28',
+    dueDate: '2026-11-12',
+    currency: 'USD',
+    bcvRateAtIssue: 886.23,
+    lines: sixtyLines,
+    subtotalUsd: 3000.0,
+    ivaAmountUsd: 480.0,
+    igtfAmountUsd: 0,
+    totalUsd: 3480.0,
+    paidAmountUsd: 0,
+    status: 'PENDIENTE',
+    ocrEngineUsed: 'GEMINI_VISION_PRO',
+    forensicAudit: {
+      passedAllLocks: true,
+      lock1LineIntegrations: true,
+      lock2SubtotalMatch: true,
+      lock3TaxCoherence: true,
+      lock4TotalCrossCheck: true,
+      discrepancyUsd: 0,
+      auditLog: [],
+    },
+    createdAtVet: '2026-10-28T16:00:00-04:00',
+  };
+
+  const calc = calculateInvoiceRetentions({
+    invoice: multiLineInvoice,
+    supplier: { taxpayerType: 'ESPECIAL', personType: 'PJ_DOMICILIADA' },
+    companyProfile: company,
+    nextIvaSeq: 77,
+    nextIslrSeq: 33,
+    createdBy: 'rdrj.mppd@gmail.com',
+  });
+
+  assert.ok(calc.ivaVoucher !== null);
+  assert.ok(calc.islrVoucher !== null);
+
+  // 1. 60-line IVA Retention PDF (must paginate cleanly across >= 2 landscape A4 pages)
+  const ivaDoc = generateIvaRetentionPdfDocument(calc.ivaVoucher!, company);
+  assert.ok(ivaDoc.getNumberOfPages() >= 2, `Expected >= 2 pages for 60 lines, got ${ivaDoc.getNumberOfPages()}`);
+  const ivaPdfRaw = ivaDoc.output();
+  assert.ok(ivaPdfRaw.startsWith('%PDF-'));
+  assert.ok(ivaPdfRaw.length > 5000);
+
+  // 2. ISLR Retention PDF
+  const islrDoc = generateIslrRetentionPdfDocument(calc.islrVoucher!, company);
+  assert.ok(islrDoc.getNumberOfPages() >= 1);
+  const islrPdfRaw = islrDoc.output();
+  assert.ok(islrPdfRaw.startsWith('%PDF-'));
+
+  // 3. Voided Voucher PDF
+  const voidedVoucher: TaxRetentionVoucher = {
+    ...calc.ivaVoucher!,
+    status: 'ANULADO',
+    voidedBy: 'Gerencia General',
+    voidedAtVet: '29/10/2026 16:40',
+    voidReason: 'Anulación de prueba documental',
+  };
+  const voidDoc = generateIvaRetentionPdfDocument(voidedVoucher, company);
+  assert.ok(voidDoc.output().startsWith('%PDF-'));
+
+  // 4. Quincenal SENIAT Relation PDF
+  const quincenalDoc = generateQuincenalRetentionsPdfDocument(
+    [calc.ivaVoucher!, calc.islrVoucher!, voidedVoucher],
+    '2da Quincena Octubre 2026 (202610)',
+    company
+  );
+  assert.equal(quincenalDoc.getNumberOfPages(), 1);
+  assert.ok(quincenalDoc.output().startsWith('%PDF-'));
 });

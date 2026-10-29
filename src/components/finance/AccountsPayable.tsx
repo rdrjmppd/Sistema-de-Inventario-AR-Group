@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
-import { Wallet, CheckCircle2, AlertCircle, DollarSign } from 'lucide-react';
+import { Wallet, CheckCircle2, AlertCircle, DollarSign, FileDown } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
 import { useAuth } from '../../context/AuthContext';
+import { useUIConfig } from '../../context/UIConfigContext';
 import { AccountsPayablePayment } from '../../types';
 import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
+import { exportRetentionVoucherPdf } from '../../lib/retention-pdf';
 
 export const AccountsPayable: React.FC = () => {
-  const { invoices, payments, bcvState, registerInvoicePayment } = useFinance();
+  const { invoices, payments, retentionVouchers, bcvState, registerInvoicePayment } = useFinance();
   const { user } = useAuth();
+  const { config } = useUIConfig();
 
   const openInvoices = invoices.filter((i) => i.status !== 'PAGADA');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(openInvoices[0]?.id || '');
@@ -18,10 +21,11 @@ export const AccountsPayable: React.FC = () => {
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const totalPendingUsd = round2(
-    invoices.reduce(
-      (acc, inv) => acc.plus(toDecimal(inv.totalUsd).minus(inv.paidAmountUsd)),
-      toDecimal(0)
-    )
+    invoices.reduce((acc, inv) => {
+      const effectivePayable = inv.netPayableUsd ?? inv.totalUsd;
+      const rem = Math.max(0, round2(toDecimal(effectivePayable).minus(inv.paidAmountUsd)));
+      return acc.plus(rem);
+    }, toDecimal(0))
   );
   const totalPendingVes = round2(toDecimal(totalPendingUsd).times(bcvState.activeRate));
 
@@ -119,10 +123,14 @@ export const AccountsPayable: React.FC = () => {
               className="w-full px-2.5 py-2 border border-slate-300 rounded-lg bg-white font-medium"
             >
               {openInvoices.map((inv) => {
-                const rem = round2(toDecimal(inv.totalUsd).minus(inv.paidAmountUsd));
+                const netPayable = inv.netPayableUsd ?? inv.totalUsd;
+                const rem = Math.max(
+                  0,
+                  round2(toDecimal(netPayable).minus(inv.paidAmountUsd))
+                );
                 return (
                   <option key={inv.id} value={inv.id}>
-                    {inv.invoiceNumber} — {inv.supplierName} (Resta: ${rem.toFixed(2)})
+                    {inv.invoiceNumber} — {inv.supplierName} (Neto pendiente: ${rem.toFixed(2)})
                   </option>
                 );
               })}
@@ -173,7 +181,7 @@ export const AccountsPayable: React.FC = () => {
           <button
             type="submit"
             disabled={openInvoices.length === 0}
-            className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center justify-center gap-2 transition"
+            className="w-full min-h-[44px] py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
           >
             <DollarSign className="w-4 h-4" />
             Ejecutar Pago a Tasa BCV Vigente
@@ -184,7 +192,7 @@ export const AccountsPayable: React.FC = () => {
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-              Estado de Cuenta por Factura y Trazabilidad de Abonos
+              Estado de Cuenta por Factura, Retenciones SENIAT y Neto Exigible
             </h3>
           </div>
           <div className="overflow-x-auto">
@@ -193,15 +201,30 @@ export const AccountsPayable: React.FC = () => {
                 <tr className="bg-slate-900 text-slate-200 text-[11px] font-mono uppercase">
                   <th className="py-2.5 px-3">Factura / Vencimiento</th>
                   <th className="py-2.5 px-3">Proveedor</th>
-                  <th className="py-2.5 px-3 text-right">Total USD</th>
-                  <th className="py-2.5 px-3 text-right">Abonado USD</th>
+                  <th className="py-2.5 px-3 text-right">Total Factura</th>
+                  <th className="py-2.5 px-3 text-right">Retenido SENIAT</th>
+                  <th className="py-2.5 px-3 text-right">Neto Proveedor</th>
+                  <th className="py-2.5 px-3 text-right">Abonado</th>
                   <th className="py-2.5 px-3 text-right">Saldo Pendiente</th>
                   <th className="py-2.5 px-3 text-center">Estatus</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 text-xs">
                 {invoices.map((inv) => {
-                  const pending = round2(toDecimal(inv.totalUsd).minus(inv.paidAmountUsd));
+                  const netPayable = inv.netPayableUsd ?? inv.totalUsd;
+                  const totalRetained = inv.totalRetainedUsd ?? 0;
+                  const pending = Math.max(
+                    0,
+                    round2(toDecimal(netPayable).minus(inv.paidAmountUsd))
+                  );
+                  const ivaVoucher = retentionVouchers.find(
+                    (v) => v.id === inv.ivaRetentionId || (v.invoiceId === inv.id && v.type === 'IVA')
+                  );
+                  const islrVoucher = retentionVouchers.find(
+                    (v) =>
+                      v.id === inv.islrRetentionId || (v.invoiceId === inv.id && v.type === 'ISLR')
+                  );
+
                   return (
                     <tr key={inv.id} className="hover:bg-slate-50">
                       <td className="py-2.5 px-3 font-mono">
@@ -209,15 +232,51 @@ export const AccountsPayable: React.FC = () => {
                         <div className="text-[10px] text-slate-500">Vence: {inv.dueDate}</div>
                       </td>
                       <td className="py-2.5 px-3 font-medium text-slate-900">
-                        {inv.supplierName}
+                        <div>{inv.supplierName}</div>
+                        {(ivaVoucher || islrVoucher) && (
+                          <div className="flex items-center gap-1 mt-1">
+                            {ivaVoucher && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  exportRetentionVoucherPdf(ivaVoucher, config.companyProfile)
+                                }
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-800 text-sky-300 font-mono text-[9px] font-bold cursor-pointer"
+                                title={`PDF Retención IVA #${ivaVoucher.voucherNumber}`}
+                              >
+                                <FileDown className="w-2.5 h-2.5" />
+                                IVA
+                              </button>
+                            )}
+                            {islrVoucher && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  exportRetentionVoucherPdf(islrVoucher, config.companyProfile)
+                                }
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-white font-mono text-[9px] font-bold cursor-pointer"
+                                title={`PDF Retención ISLR #${islrVoucher.voucherNumber}`}
+                              >
+                                <FileDown className="w-2.5 h-2.5" />
+                                ISLR
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono">
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                         {formatUsd(inv.totalUsd)}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono text-emerald-700 font-semibold">
+                      <td className="py-2.5 px-3 text-right font-mono text-amber-700 tabular-nums">
+                        {totalRetained > 0 ? `-${formatUsd(totalRetained)}` : '$0.00'}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900 tabular-nums">
+                        {formatUsd(netPayable)}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-emerald-700 font-semibold tabular-nums">
                         {formatUsd(inv.paidAmountUsd)}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-700">
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-700 tabular-nums">
                         {formatUsd(pending)}
                       </td>
                       <td className="py-2.5 px-3 text-center">

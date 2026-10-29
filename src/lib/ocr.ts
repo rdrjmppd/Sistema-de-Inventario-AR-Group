@@ -128,6 +128,8 @@ export function simulateDualEngineOcrExtraction(
         quantity: 45,
         unitCostUsd: 18.4,
         lineTotalUsd: 828.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
       },
       {
         id: 'ln-ocr-2',
@@ -136,6 +138,8 @@ export function simulateDualEngineOcrExtraction(
         quantity: 30,
         unitCostUsd: 26.5,
         lineTotalUsd: 795.0,
+        ivaRate: 16,
+        lineType: 'BIEN',
       },
       {
         id: 'ln-ocr-3',
@@ -144,6 +148,8 @@ export function simulateDualEngineOcrExtraction(
         quantity: 25,
         unitCostUsd: 22.8,
         lineTotalUsd: 570.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
       },
     ];
     const subtotalUsd = 2193.0;
@@ -324,6 +330,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
       quantity: 35,
       unitCostUsd: 18.4,
       lineTotalUsd: 644.0,
+      ivaRate: 0,
+      lineType: 'BIEN',
     },
     {
       id: `ln-up-2-${suffix}`,
@@ -332,6 +340,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
       quantity: 20,
       unitCostUsd: 26.5,
       lineTotalUsd: 530.0,
+      ivaRate: 16,
+      lineType: 'BIEN',
     },
     {
       id: `ln-up-3-${suffix}`,
@@ -340,6 +350,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
       quantity: 15,
       unitCostUsd: 22.8,
       lineTotalUsd: 342.0,
+      ivaRate: 0,
+      lineType: 'BIEN',
     },
   ];
   let subtotalUsd = 1516.0;
@@ -358,6 +370,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
         quantity: 28,
         unitCostUsd: 27.0,
         lineTotalUsd: 756.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
       },
       {
         id: `ln-up-2-${suffix}`,
@@ -366,6 +380,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
         quantity: 12,
         unitCostUsd: 42.0,
         lineTotalUsd: 504.0,
+        ivaRate: 16,
+        lineType: 'BIEN',
       },
     ];
     subtotalUsd = 1260.0;
@@ -383,6 +399,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
         quantity: 16,
         unitCostUsd: 72.0,
         lineTotalUsd: 1152.0,
+        ivaRate: 16,
+        lineType: 'BIEN',
       },
       {
         id: `ln-up-2-${suffix}`,
@@ -391,6 +409,8 @@ export function extractHeuristicInvoiceFromUploadedFile(params: {
         quantity: 10,
         unitCostUsd: 68.0,
         lineTotalUsd: 680.0,
+        ivaRate: 16,
+        lineType: 'BIEN',
       },
     ];
     subtotalUsd = 1832.0;

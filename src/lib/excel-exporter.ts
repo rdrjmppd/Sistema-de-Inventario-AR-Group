@@ -23,6 +23,13 @@ export const DEFAULT_COMPANY_PROFILE: CompanyFiscalProfile = {
   updatedAtVet: '2026-03-19 08:00',
   brandingName: BRAND_NAME,
   logoBase64: HIPER_ABASTO_POLAR_LOGO_DATA_URI,
+  isSpecialTaxpayer: true,
+  isIvaRetentionAgent: true,
+  isIslrRetentionAgent: true,
+  defaultIvaRetentionPercent: 75,
+  utValueVes: 9.0,
+  nextIvaVoucherSeq: 1,
+  nextIslrVoucherSeq: 1,
 };
 
 export const EXCEL_INSTITUTIONAL_WATERMARK_ROW: string[] = [
@@ -68,6 +75,34 @@ export function resolveCompanyProfile(
     actividadEconomica,
     isCustomConfigured,
     updatedAtVet: input.updatedAtVet || DEFAULT_COMPANY_PROFILE.updatedAtVet,
+    brandingName: input.brandingName || DEFAULT_COMPANY_PROFILE.brandingName,
+    logoBase64: input.logoBase64 || DEFAULT_COMPANY_PROFILE.logoBase64,
+    isSpecialTaxpayer:
+      input.isSpecialTaxpayer !== undefined
+        ? input.isSpecialTaxpayer
+        : DEFAULT_COMPANY_PROFILE.isSpecialTaxpayer,
+    isIvaRetentionAgent:
+      input.isIvaRetentionAgent !== undefined
+        ? input.isIvaRetentionAgent
+        : DEFAULT_COMPANY_PROFILE.isIvaRetentionAgent,
+    isIslrRetentionAgent:
+      input.isIslrRetentionAgent !== undefined
+        ? input.isIslrRetentionAgent
+        : DEFAULT_COMPANY_PROFILE.isIslrRetentionAgent,
+    defaultIvaRetentionPercent:
+      input.defaultIvaRetentionPercent === 100 ? 100 : 75,
+    utValueVes:
+      input.utValueVes && input.utValueVes > 0
+        ? input.utValueVes
+        : DEFAULT_COMPANY_PROFILE.utValueVes,
+    nextIvaVoucherSeq:
+      input.nextIvaVoucherSeq && input.nextIvaVoucherSeq >= 1
+        ? input.nextIvaVoucherSeq
+        : DEFAULT_COMPANY_PROFILE.nextIvaVoucherSeq,
+    nextIslrVoucherSeq:
+      input.nextIslrVoucherSeq && input.nextIslrVoucherSeq >= 1
+        ? input.nextIslrVoucherSeq
+        : DEFAULT_COMPANY_PROFILE.nextIslrVoucherSeq,
   };
 }
 

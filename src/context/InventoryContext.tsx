@@ -17,6 +17,13 @@ import {
   UserRole,
   InventoryDiscardRecord,
   CreateDiscardInput,
+  StorageZone,
+  ShelfMovementRecord,
+  PhysicalCountReconciliationInput,
+  PhysicalCountReconciliationResult,
+  CreateMeatDirectCutPurchaseInput,
+  MeatDirectCutPurchase,
+  MeatYieldBatch,
 } from '../types';
 import {
   toDecimal,
@@ -53,6 +60,19 @@ import {
 import { useFinance } from './FinanceContext';
 import { useAuth } from './AuthContext';
 import {
+  getLocationStockBreakdown,
+  replenishShelfFromDeposit,
+  returnShelfToDeposit,
+  transferStockBetweenZonesAndLocations,
+  deductPosSaleShelfFirst,
+  reconcileLocationPhysicalCount,
+  applyStockDeltaToZone,
+} from '../lib/shelf-stock';
+import {
+  calculateMeatDirectCutPurchase,
+  applyDirectCutPurchaseToCatalog,
+} from '../lib/meat-direct-cuts';
+import {
   isFirebaseConfigured,
   db,
   collection,
@@ -80,6 +100,7 @@ export interface ManualReceiptInput {
   unitCostUsd: number;
   reorderPoint?: number;
   orderNumberRef?: string;
+  targetZone?: StorageZone;
 }
 
 interface InventoryContextType {
@@ -152,8 +173,49 @@ interface InventoryContextType {
     toLocationId: string,
     qty: number,
     notes: string,
-    createdBy: string
+    createdBy: string,
+    fromZone?: StorageZone,
+    toZone?: StorageZone
   ) => { success: boolean; error?: string };
+  shelfMovements: ShelfMovementRecord[];
+  meatDirectPurchases: MeatDirectCutPurchase[];
+  posShelfShortfallBanner: string | null;
+  dismissPosShelfShortfallBanner: () => void;
+  replenishShelf: (
+    productId: string,
+    locationId: string,
+    qty: number,
+    notes?: string
+  ) => { success: boolean; movement?: ShelfMovementRecord; error?: string };
+  returnFromShelf: (
+    productId: string,
+    locationId: string,
+    qty: number,
+    notes?: string
+  ) => { success: boolean; movement?: ShelfMovementRecord; error?: string };
+  executeZoneStockTransfer: (params: {
+    productId: string;
+    fromLocationId: string;
+    fromZone: StorageZone;
+    toLocationId: string;
+    toZone: StorageZone;
+    quantity: number;
+    notes?: string;
+  }) => { success: boolean; movement?: ShelfMovementRecord; error?: string };
+  updateMinShelfThreshold: (productId: string, locationId: string, minShelf: number) => void;
+  reconcileShelfAndDepositCount: (
+    input: PhysicalCountReconciliationInput
+  ) => { success: boolean; result?: PhysicalCountReconciliationResult; error?: string };
+  registerAndLoadMeatDirectPurchase: (
+    input: CreateMeatDirectCutPurchaseInput,
+    carcassBatches?: MeatYieldBatch[]
+  ) => {
+    success: boolean;
+    purchase?: MeatDirectCutPurchase;
+    createdCount?: number;
+    updatedCount?: number;
+    error?: string;
+  };
   applyChrystalImport: (
     result: ChrystalParseResult,
     targetLocationId: string,
@@ -506,6 +568,44 @@ const STORAGE_KEY_TRANSFERS = 'chrystal_erp_transfers_v1';
 const STORAGE_KEY_PURCHASE_ORDERS = 'chrystal_erp_purchase_orders_v1';
 const STORAGE_KEY_MANUAL_RECEIPTS = 'chrystal_erp_manual_receipts_v1';
 const STORAGE_KEY_DISCARDS = 'chrystal_erp_discards_v1';
+const STORAGE_KEY_SHELF_MOVEMENTS = 'chrystal_erp_shelf_movements_v1';
+const STORAGE_KEY_MEAT_DIRECT = 'chrystal_erp_meat_direct_v1';
+
+function seedDefaultShelfDistribution(
+  productList: Product[],
+  locationList: LocationNode[]
+): Product[] {
+  const locTypeMap = new Map(locationList.map((l) => [l.id, l.type]));
+  return productList.map((p) => {
+    if (p.shelfStockByLocation && Object.keys(p.shelfStockByLocation).length > 0) {
+      return p;
+    }
+    const shelfMap: Record<string, number> = {};
+    const minShelfMap: Record<string, number> = {};
+    for (const [locId, totalVal] of Object.entries(p.stockByLocation || {})) {
+      const total = Math.max(0, round2(totalVal ?? 0));
+      const minTotal = Math.max(0, round2(p.minStockByLocation?.[locId] ?? 0));
+      const locType = locTypeMap.get(locId);
+      const isDepotOrCava =
+        locType === 'DEPOSITO' || locType === 'CEDIS' || locType === 'FRIGORIFICO';
+      if (isDepotOrCava) {
+        shelfMap[locId] = 0;
+        minShelfMap[locId] = 0;
+      } else {
+        shelfMap[locId] = Math.min(total, Math.floor(round2(toDecimal(total).times('0.35'))));
+        minShelfMap[locId] = Math.max(
+          5,
+          Math.floor(round2(toDecimal(minTotal).times('0.35')))
+        );
+      }
+    }
+    return {
+      ...p,
+      shelfStockByLocation: shelfMap,
+      minShelfByLocation: minShelfMap,
+    };
+  });
+}
 
 export const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
@@ -516,6 +616,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     invoices,
     payments,
     closures,
+    retentionVouchers,
     resetFinanceState,
     restoreFinanceState,
   } = useFinance();
@@ -546,13 +647,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (saved !== null) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed;
+          return seedDefaultShelfDistribution(parsed, INITIAL_LOCATIONS);
         }
       }
     } catch {
       // ignore
     }
-    return INITIAL_PRODUCTS;
+    return seedDefaultShelfDistribution(INITIAL_PRODUCTS, INITIAL_LOCATIONS);
   });
 
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => {
@@ -591,6 +692,34 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [salesEvents, setSalesEvents] = useState<SalesSyncEvent[]>([]);
   const [draftPurchaseTarget, setDraftPurchaseTarget] = useState<DraftPurchaseTarget | null>(null);
+  const [posShelfShortfallBanner, setPosShelfShortfallBanner] = useState<string | null>(null);
+  const dismissPosShelfShortfallBanner = () => setPosShelfShortfallBanner(null);
+
+  const [shelfMovements, setShelfMovements] = useState<ShelfMovementRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SHELF_MOVEMENTS);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+
+  const [meatDirectPurchases, setMeatDirectPurchases] = useState<MeatDirectCutPurchase[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_MEAT_DIRECT);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
 
   const [discards, setDiscards] = useState<InventoryDiscardRecord[]>(() => {
     try {
@@ -694,6 +823,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // ignore
     }
   }, [discards]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SHELF_MOVEMENTS, JSON.stringify(shelfMovements));
+    } catch {
+      // ignore
+    }
+  }, [shelfMovements]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_MEAT_DIRECT, JSON.stringify(meatDirectPurchases));
+    } catch {
+      // ignore
+    }
+  }, [meatDirectPurchases]);
 
   // Persist products (Cache-First + 800ms Debounced WriteBatch)
   useEffect(() => {
@@ -1040,20 +1185,17 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       finalCategory = existingProd.category;
       finalUnit = existingProd.unit;
 
+      const targetZone: StorageZone = input.targetZone || 'DEPOSITO';
       setProducts((prev) =>
         prev.map((p) => {
           if (p.id !== existingProd.id) return p;
-          const curStock = p.stockByLocation[locObj.id] ?? 0;
           const curMin = p.minStockByLocation[locObj.id] ?? 0;
           const newPrice = calculatePriceFromMargin(cost, p.targetMarginPercent);
+          const withZone = applyStockDeltaToZone(p, locObj.id, qty, targetZone, vetNow);
           return {
-            ...p,
+            ...withZone,
             costUsd: cost,
             priceUsd: newPrice,
-            stockByLocation: {
-              ...p.stockByLocation,
-              [locObj.id]: round2(toDecimal(curStock).plus(qty)),
-            },
             minStockByLocation: {
               ...p.minStockByLocation,
               [locObj.id]: input.reorderPoint !== undefined ? input.reorderPoint : Math.max(curMin, 40),
@@ -1073,11 +1215,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const margin = Math.min(95, Math.max(5, input.targetMarginPercent || 28));
       const priceUsd = calculatePriceFromMargin(cost, margin);
 
+      const targetZone: StorageZone = input.targetZone || 'DEPOSITO';
       const stockMap: Record<string, number> = {};
       const minMap: Record<string, number> = {};
+      const shelfMap: Record<string, number> = {};
+      const minShelfMap: Record<string, number> = {};
       for (const l of locations) {
         stockMap[l.id] = l.id === locObj.id ? qty : 0;
         minMap[l.id] = l.id === locObj.id ? Math.max(10, input.reorderPoint ?? 50) : 0;
+        shelfMap[l.id] = l.id === locObj.id && targetZone === 'ANAQUEL' ? qty : 0;
+        minShelfMap[l.id] = l.id === locObj.id ? 10 : 0;
       }
 
       const newProduct: Product = {
@@ -1095,6 +1242,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         ivaRate: input.ivaRate,
         stockByLocation: stockMap,
         minStockByLocation: minMap,
+        shelfStockByLocation: shelfMap,
+        minShelfByLocation: minShelfMap,
         monthlyUnitsSold: Math.max(20, Math.round(qty * 1.2)),
         abcClass: 'B',
         supplierId: suppliers[0]?.id || 'sup-001',
@@ -1318,7 +1467,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     toLocationId: string,
     qty: number,
     notes: string,
-    createdBy: string
+    createdBy: string,
+    fromZone?: StorageZone,
+    toZone?: StorageZone
   ) => {
     if (fromLocationId === toLocationId) {
       return {
@@ -1333,6 +1484,19 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const product = products.find((p) => p.id === productId);
     if (!product) {
       return { success: false, error: 'Producto no encontrado en el catálogo maestro.' };
+    }
+
+    if (fromZone || toZone) {
+      const zoneRes = executeZoneStockTransfer({
+        productId,
+        fromLocationId,
+        fromZone: fromZone || 'DEPOSITO',
+        toLocationId,
+        toZone: toZone || 'DEPOSITO',
+        quantity: qty,
+        notes,
+      });
+      return { success: zoneRes.success, error: zoneRes.error };
     }
 
     const available = product.stockByLocation[fromLocationId] ?? 0;
@@ -1351,13 +1515,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (p.id !== productId) return p;
         const fromCurrent = p.stockByLocation[fromLocationId] ?? 0;
         const toCurrent = p.stockByLocation[toLocationId] ?? 0;
+        const newFromTotal = round2(toDecimal(fromCurrent).minus(qty));
+        const newToTotal = round2(toDecimal(toCurrent).plus(qty));
+        const prevFromShelf = p.shelfStockByLocation?.[fromLocationId] ?? 0;
         return {
           ...p,
           stockByLocation: {
             ...p.stockByLocation,
-            [fromLocationId]: round2(toDecimal(fromCurrent).minus(qty)),
-            [toLocationId]: round2(toDecimal(toCurrent).plus(qty)),
+            [fromLocationId]: newFromTotal,
+            [toLocationId]: newToTotal,
           },
+          shelfStockByLocation: p.shelfStockByLocation
+            ? {
+                ...p.shelfStockByLocation,
+                [fromLocationId]: Math.min(newFromTotal, prevFromShelf),
+              }
+            : undefined,
           lastUpdatedVet: vetNow,
         };
       })
@@ -1368,6 +1541,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       reference: `GUIA-TRF-${String(transfers.length + 193).padStart(5, '0')}`,
       fromLocationId,
       toLocationId,
+      fromZone: 'DEPOSITO',
+      toZone: 'DEPOSITO',
       productId: product.id,
       productName: product.name,
       sku: product.sku,
@@ -1484,6 +1659,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const vetNow = getCaracasNow().isoTimestamp;
     const eventItems: SalesSyncEvent['items'] = [];
+    const shortfallAlerts: NonNullable<SalesSyncEvent['shelfShortfallAlerts']> = [];
     let totalUsd = toDecimal(0);
 
     for (const reqItem of items) {
@@ -1494,13 +1670,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           error: `SKU no encontrado en catálogo maestro: ${reqItem.sku}`,
         };
       }
-      const currentStock = prod.stockByLocation[locationId] ?? 0;
-      if (currentStock < reqItem.qty) {
+      const breakdown = getLocationStockBreakdown(prod, locationId);
+      if (breakdown.total < reqItem.qty) {
         return {
           success: false,
-          error: `Stock insuficiente en sede/depósito ${locationId} para ${prod.name}. Disponible: ${currentStock}`,
+          error: `Stock insuficiente en sede/depósito ${locationId} para ${prod.name}. Disponible: ${breakdown.total}`,
         };
       }
+
+      const simDeduct = deductPosSaleShelfFirst({
+        product: prod,
+        locationId,
+        qtySold: reqItem.qty,
+        updatedAtVet: vetNow,
+      });
+
+      if (simDeduct.hadShelfShortfall) {
+        shortfallAlerts.push({
+          sku: prod.sku,
+          productName: prod.name,
+          qtySold: reqItem.qty,
+          deductedFromShelf: simDeduct.deductedFromShelf,
+          deductedFromDeposit: simDeduct.deductedFromDeposit,
+        });
+      }
+
       eventItems.push({
         sku: prod.sku,
         productName: prod.name,
@@ -1514,18 +1708,36 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       prev.map((p) => {
         const match = items.find((i) => i.sku.toLowerCase() === p.sku.toLowerCase());
         if (!match) return p;
-        const currentStock = p.stockByLocation[locationId] ?? 0;
+        const deducted = deductPosSaleShelfFirst({
+          product: p,
+          locationId,
+          qtySold: match.qty,
+          updatedAtVet: vetNow,
+        });
         return {
-          ...p,
-          stockByLocation: {
-            ...p.stockByLocation,
-            [locationId]: round2(toDecimal(currentStock).minus(match.qty)),
-          },
+          ...deducted.updatedProduct,
           monthlyUnitsSold: p.monthlyUnitsSold + match.qty,
-          lastUpdatedVet: vetNow,
         };
       })
     );
+
+    if (shortfallAlerts.length > 0) {
+      const summary = shortfallAlerts
+        .map(
+          (a) =>
+            `${a.sku}: vendidos ${a.qtySold} (Anaquel: ${a.deductedFromShelf}, Respaldo Depósito: ${a.deductedFromDeposit})`
+        )
+        .join(' · ');
+      setPosShelfShortfallBanner(
+        `Alerta POS de Reposición en Anaquel: Venta superó existencia en exhibición y descontó respaldo de depósito (${summary}). Sincronice reposición física.`
+      );
+      logAuditEvent(
+        'SALE_SHELF_SHORTFALL_ALERT',
+        'SHELF_STOCK',
+        `Venta POS en ${locationId} sin existencia suficiente en anaquel; se descontó respaldo del depósito (${summary}).`,
+        { locationId, shortfallAlerts }
+      );
+    }
 
     const newEvent: SalesSyncEvent = {
       id: `pos-evt-${Date.now()}`,
@@ -1533,6 +1745,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       locationId,
       timestampVet: vetNow,
       items: eventItems,
+      shelfShortfallAlerts: shortfallAlerts.length > 0 ? shortfallAlerts : undefined,
       totalUsd: round2(totalUsd),
       status: 'PROCESADO',
     };
@@ -1777,6 +1990,371 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
   };
 
+  const replenishShelf = (
+    productId: string,
+    locationId: string,
+    qty: number,
+    notes?: string
+  ): { success: boolean; movement?: ShelfMovementRecord; error?: string } => {
+    const product = products.find((p) => p.id === productId);
+    const loc = locations.find((l) => l.id === locationId);
+    if (!product || !loc) {
+      return { success: false, error: 'Producto o Sede no encontrados.' };
+    }
+    try {
+      const vetNow = getCaracasNow();
+      const timestampVet = `${vetNow.dateFormatted} ${vetNow.timeFormatted}`;
+      const res = replenishShelfFromDeposit({
+        product,
+        locationId,
+        locationName: loc.name,
+        quantity: qty,
+        actor: {
+          uid: user?.uid || 'sys-op',
+          displayName: user?.displayName || 'Operador de Piso',
+          role: user?.role || UserRole.SUPERVISOR_PASILLO,
+        },
+        notes,
+        timestampVet,
+      });
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === productId ? res.updatedProduct : p))
+      );
+      setShelfMovements((prev) => [res.movement, ...prev]);
+
+      logAuditEvent(
+        'SHELF_REPLENISH',
+        'SHELF_STOCK',
+        `Reposición Depósito → Anaquel en ${loc.code}: ${res.movement.quantity} ${product.unit} de ${product.sku} (Anaquel: ${res.movement.shelfBefore} -> ${res.movement.shelfAfter}).`,
+        {
+          sku: product.sku,
+          locationCode: loc.code,
+          quantity: res.movement.quantity,
+          shelfAfter: res.movement.shelfAfter,
+          depositAfter: res.movement.depositAfter,
+        },
+        res.movement.id
+      );
+
+      return { success: true, movement: res.movement };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error al reponer anaquel.',
+      };
+    }
+  };
+
+  const returnFromShelf = (
+    productId: string,
+    locationId: string,
+    qty: number,
+    notes?: string
+  ): { success: boolean; movement?: ShelfMovementRecord; error?: string } => {
+    const product = products.find((p) => p.id === productId);
+    const loc = locations.find((l) => l.id === locationId);
+    if (!product || !loc) {
+      return { success: false, error: 'Producto o Sede no encontrados.' };
+    }
+    try {
+      const vetNow = getCaracasNow();
+      const timestampVet = `${vetNow.dateFormatted} ${vetNow.timeFormatted}`;
+      const res = returnShelfToDeposit({
+        product,
+        locationId,
+        locationName: loc.name,
+        quantity: qty,
+        actor: {
+          uid: user?.uid || 'sys-op',
+          displayName: user?.displayName || 'Operador de Piso',
+          role: user?.role || UserRole.SUPERVISOR_PASILLO,
+        },
+        notes,
+        timestampVet,
+      });
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === productId ? res.updatedProduct : p))
+      );
+      setShelfMovements((prev) => [res.movement, ...prev]);
+
+      logAuditEvent(
+        'SHELF_RETURN',
+        'SHELF_STOCK',
+        `Retorno Anaquel → Depósito/Cava en ${loc.code}: ${res.movement.quantity} ${product.unit} de ${product.sku} (Anaquel: ${res.movement.shelfBefore} -> ${res.movement.shelfAfter}).`,
+        {
+          sku: product.sku,
+          locationCode: loc.code,
+          quantity: res.movement.quantity,
+          shelfAfter: res.movement.shelfAfter,
+          depositAfter: res.movement.depositAfter,
+        },
+        res.movement.id
+      );
+
+      return { success: true, movement: res.movement };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error al retornar a depósito.',
+      };
+    }
+  };
+
+  const executeZoneStockTransfer = (params: {
+    productId: string;
+    fromLocationId: string;
+    fromZone: StorageZone;
+    toLocationId: string;
+    toZone: StorageZone;
+    quantity: number;
+    notes?: string;
+  }): { success: boolean; movement?: ShelfMovementRecord; error?: string } => {
+    const product = products.find((p) => p.id === params.productId);
+    const fromLoc = locations.find((l) => l.id === params.fromLocationId);
+    const toLoc = locations.find((l) => l.id === params.toLocationId);
+
+    if (!product || !fromLoc || !toLoc) {
+      return { success: false, error: 'Producto o Sedes/Cavas seleccionadas no existen.' };
+    }
+
+    try {
+      const vetNow = getCaracasNow();
+      const timestampVet = `${vetNow.dateFormatted} ${vetNow.timeFormatted}`;
+      const res = transferStockBetweenZonesAndLocations({
+        product,
+        fromLocationId: fromLoc.id,
+        fromLocationName: fromLoc.name,
+        fromZone: params.fromZone,
+        toLocationId: toLoc.id,
+        toLocationName: toLoc.name,
+        toZone: params.toZone,
+        quantity: params.quantity,
+        actor: {
+          uid: user?.uid || 'sys-op',
+          displayName: user?.displayName || 'Supervisor Cadena de Frío',
+          role: user?.role || UserRole.SUPERVISOR_CARNICERIA,
+        },
+        notes: params.notes,
+        timestampVet,
+      });
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === params.productId ? res.updatedProduct : p))
+      );
+      setShelfMovements((prev) => [res.movement, ...prev]);
+
+      if (fromLoc.id !== toLoc.id) {
+        const totalValueUsd = round2(
+          toDecimal(product.costUsd).times(res.movement.quantity)
+        );
+        const newTransfer: StockTransfer = {
+          id: `trf-${Date.now()}`,
+          reference: `GUIA-TRF-${String(transfers.length + 193).padStart(5, '0')}`,
+          fromLocationId: fromLoc.id,
+          toLocationId: toLoc.id,
+          fromZone: params.fromZone,
+          toZone: params.toZone,
+          productId: product.id,
+          productName: product.name,
+          sku: product.sku,
+          quantity: res.movement.quantity,
+          unitCostUsd: product.costUsd,
+          totalValueUsd,
+          status: 'COMPLETADO',
+          createdBy: user?.email || 'rdrj.mppd@gmail.com',
+          createdAtVet: vetNow.isoTimestamp,
+          notes:
+            params.notes ||
+            `Traslado sincronizado ${fromLoc.code} (${params.fromZone}) → ${toLoc.code} (${params.toZone})`,
+        };
+        setTransfers((prev) => [newTransfer, ...prev]);
+      }
+
+      logAuditEvent(
+        'CAVA_TO_EXHIBICION_TRANSFER',
+        'SHELF_STOCK',
+        `Traslado ${fromLoc.code} (${params.fromZone}) → ${toLoc.code} (${params.toZone}): ${res.movement.quantity} ${product.unit} de ${product.sku}.`,
+        {
+          sku: product.sku,
+          fromLocation: fromLoc.code,
+          fromZone: params.fromZone,
+          toLocation: toLoc.code,
+          toZone: params.toZone,
+          quantity: res.movement.quantity,
+        },
+        res.movement.id
+      );
+
+      return { success: true, movement: res.movement };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error en traslado por zona.',
+      };
+    }
+  };
+
+  const updateMinShelfThreshold = (
+    productId: string,
+    locationId: string,
+    minShelf: number
+  ) => {
+    const safeMin = Math.max(0, round2(minShelf));
+    const vetNow = getCaracasNow().isoTimestamp;
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === productId
+          ? {
+              ...p,
+              minShelfByLocation: {
+                ...(p.minShelfByLocation || {}),
+                [locationId]: safeMin,
+              },
+              lastUpdatedVet: vetNow,
+            }
+          : p
+      )
+    );
+  };
+
+  const reconcileShelfAndDepositCount = (
+    input: PhysicalCountReconciliationInput
+  ): {
+    success: boolean;
+    result?: PhysicalCountReconciliationResult;
+    error?: string;
+  } => {
+    const product = products.find((p) => p.id === input.productId);
+    const loc = locations.find((l) => l.id === input.locationId);
+    if (!product || !loc) {
+      return { success: false, error: 'Producto o Sede no encontrados.' };
+    }
+
+    try {
+      const vetNow = getCaracasNow();
+      const timestampVet = `${vetNow.dateFormatted} ${vetNow.timeFormatted}`;
+      const result = reconcileLocationPhysicalCount({
+        product,
+        locationName: loc.name,
+        input,
+        actor: {
+          uid: user?.uid || 'sys-audit',
+          displayName: user?.displayName || 'Auditor de Inventario',
+          role: user?.role || UserRole.GERENTE,
+          pin: user?.pin,
+        },
+        timestampVet,
+      });
+
+      setProducts((prev) =>
+        prev.map((p) => (p.id === product.id ? result.updatedProduct : p))
+      );
+      setShelfMovements((prev) => [result.movementRecord, ...prev]);
+
+      logAuditEvent(
+        'SHELF_PHYSICAL_COUNT_ADJUST',
+        'SHELF_STOCK',
+        `Sinceración física en ${loc.code} para ${product.sku}: Depósito ${result.systemDepositBefore} -> ${input.countedDepositQty}, Anaquel ${result.systemShelfBefore} -> ${input.countedShelfQty} (Dif. Total: ${result.totalDiff}). PIN Gerencial requerido: ${result.requiresManagerPin ? 'SÍ' : 'NO (dentro de ±2%/±1u)'}.`,
+        {
+          sku: product.sku,
+          locationCode: loc.code,
+          depositDiff: result.depositDiff,
+          shelfDiff: result.shelfDiff,
+          totalDiff: result.totalDiff,
+          requiresManagerPin: result.requiresManagerPin,
+          notes: input.notes,
+        },
+        result.movementRecord.id
+      );
+
+      return { success: true, result };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error en sinceración física.',
+      };
+    }
+  };
+
+  const registerAndLoadMeatDirectPurchase = (
+    input: CreateMeatDirectCutPurchaseInput,
+    carcassBatches: MeatYieldBatch[] = []
+  ): {
+    success: boolean;
+    purchase?: MeatDirectCutPurchase;
+    createdCount?: number;
+    updatedCount?: number;
+    error?: string;
+  } => {
+    const loc = locations.find((l) => l.id === input.locationId) || locations[0];
+    if (!loc) {
+      return { success: false, error: 'Sede o Cava receptora no encontrada.' };
+    }
+
+    try {
+      const purchase = calculateMeatDirectCutPurchase({
+        input,
+        bcvRate: bcvState.activeRate,
+        locationName: loc.name,
+        actor: {
+          uid: user?.uid || 'usr-carn-01',
+          displayName: user?.displayName || 'Supervisor Carnicería',
+          role: user?.role || UserRole.SUPERVISOR_CARNICERIA,
+        },
+        carcassBatches,
+      });
+
+      const vetNow = getCaracasNow();
+      const updatedAtVet = vetNow.isoTimestamp;
+      const catalogRes = applyDirectCutPurchaseToCatalog({
+        purchase,
+        products,
+        locationIds: locations.map((l) => l.id),
+        updatedAtVet,
+      });
+
+      const confirmedPurchase: MeatDirectCutPurchase = {
+        ...purchase,
+        inventoryLoaded: true,
+        inventoryLoadedAt: `${vetNow.dateFormatted} ${vetNow.timeFormatted}`,
+        status: 'CONFIRMADO_INVENTARIO',
+      };
+
+      setProducts(catalogRes.updatedProducts);
+      setMeatDirectPurchases((prev) => [confirmedPurchase, ...prev]);
+
+      logAuditEvent(
+        'MEAT_DIRECT_CUT_LOAD',
+        'MEAT_DIRECT_PURCHASE',
+        `Recepción de Cortes Directos ${confirmedPurchase.batchCode} (${confirmedPurchase.supplierName}) cargada a ${loc.name} [${confirmedPurchase.targetZone === 'ANAQUEL' ? 'Exhibición/Anaquel' : 'Nevera/Cava/Depósito'}]: ${confirmedPurchase.totalNetSalableWeightKg} Kg netos ($${confirmedPurchase.totalPurchaseCostUsd.toFixed(2)}) con costos asignados manuales.`,
+        {
+          batchCode: confirmedPurchase.batchCode,
+          supplierName: confirmedPurchase.supplierName,
+          locationCode: loc.code,
+          targetZone: confirmedPurchase.targetZone,
+          totalNetSalableWeightKg: confirmedPurchase.totalNetSalableWeightKg,
+          totalPurchaseCostUsd: confirmedPurchase.totalPurchaseCostUsd,
+          linesCount: confirmedPurchase.lines.length,
+        },
+        confirmedPurchase.id
+      );
+
+      return {
+        success: true,
+        purchase: confirmedPurchase,
+        createdCount: catalogRes.createdProductsCount,
+        updatedCount: catalogRes.updatedProductsCount,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error al registrar cortes directos.',
+      };
+    }
+  };
+
   const wipePlatformDataToPristine = (
     superAdminPin: string
   ): { success: boolean; error?: string } => {
@@ -1796,6 +2374,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setManualReceipts([]);
     setSalesEvents([]);
     setDiscards([]);
+    setShelfMovements([]);
+    setMeatDirectPurchases([]);
+    setPosShelfShortfallBanner(null);
 
     resetFinanceState();
 
@@ -1805,6 +2386,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       localStorage.setItem(STORAGE_KEY_PURCHASE_ORDERS, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_MANUAL_RECEIPTS, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_DISCARDS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_SHELF_MOVEMENTS, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_MEAT_DIRECT, JSON.stringify([]));
     } catch {
       // ignore
     }
@@ -1840,12 +2423,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (backupData.manualReceipts) setManualReceipts(backupData.manualReceipts);
     if (backupData.salesEvents) setSalesEvents(backupData.salesEvents);
     if (Array.isArray(backupData.discards)) setDiscards(backupData.discards);
+    if (Array.isArray(backupData.shelfMovements)) setShelfMovements(backupData.shelfMovements);
+    if (Array.isArray(backupData.meatDirectPurchases))
+      setMeatDirectPurchases(backupData.meatDirectPurchases);
 
     restoreFinanceState({
       suppliers: backupData.suppliers,
       invoices: backupData.invoices,
       payments: backupData.payments,
       closures: backupData.closures,
+      retentionVouchers: backupData.retentionVouchers,
     });
 
     if (Array.isArray(backupData.auditLogs) && backupData.auditLogs.length > 0) {
@@ -1906,6 +2493,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       auditLogs,
       sessionHistory,
       discards,
+      retentionVouchers,
+      meatDirectPurchases,
+      shelfMovements,
     };
 
     logAuditEvent(
@@ -1954,6 +2544,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         addOrUpdateProduct,
         updateProductPricing,
         executeStockTransfer,
+        shelfMovements,
+        meatDirectPurchases,
+        posShelfShortfallBanner,
+        dismissPosShelfShortfallBanner,
+        replenishShelf,
+        returnFromShelf,
+        executeZoneStockTransfer,
+        updateMinShelfThreshold,
+        reconcileShelfAndDepositCount,
+        registerAndLoadMeatDirectPurchase,
         applyChrystalImport,
         simulatePosWebhookSale,
         recalculateAbcClassification,

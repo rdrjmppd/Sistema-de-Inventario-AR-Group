@@ -30,6 +30,25 @@ export const CompanyProfileModal: React.FC = () => {
   const [codigoSada, setCodigoSada] = useState(company.codigoSada);
   const [representanteLegal, setRepresentanteLegal] = useState(company.representanteLegal);
   const [actividadEconomica, setActividadEconomica] = useState(company.actividadEconomica);
+  const [isSpecialTaxpayer, setIsSpecialTaxpayer] = useState(
+    company.isSpecialTaxpayer ?? true
+  );
+  const [isIvaRetentionAgent, setIsIvaRetentionAgent] = useState(
+    company.isIvaRetentionAgent ?? true
+  );
+  const [isIslrRetentionAgent, setIsIslrRetentionAgent] = useState(
+    company.isIslrRetentionAgent ?? true
+  );
+  const [defaultIvaRetentionPercent, setDefaultIvaRetentionPercent] = useState<75 | 100>(
+    company.defaultIvaRetentionPercent ?? 75
+  );
+  const [utValueVes, setUtValueVes] = useState(String(company.utValueVes ?? 9.0));
+  const [nextIvaVoucherSeq, setNextIvaVoucherSeq] = useState(
+    String(company.nextIvaVoucherSeq ?? 1)
+  );
+  const [nextIslrVoucherSeq, setNextIslrVoucherSeq] = useState(
+    String(company.nextIslrVoucherSeq ?? 1)
+  );
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,6 +61,13 @@ export const CompanyProfileModal: React.FC = () => {
       setCodigoSada(company.codigoSada);
       setRepresentanteLegal(company.representanteLegal);
       setActividadEconomica(company.actividadEconomica);
+      setIsSpecialTaxpayer(company.isSpecialTaxpayer ?? true);
+      setIsIvaRetentionAgent(company.isIvaRetentionAgent ?? true);
+      setIsIslrRetentionAgent(company.isIslrRetentionAgent ?? true);
+      setDefaultIvaRetentionPercent(company.defaultIvaRetentionPercent ?? 75);
+      setUtValueVes(String(company.utValueVes ?? 9.0));
+      setNextIvaVoucherSeq(String(company.nextIvaVoucherSeq ?? 1));
+      setNextIslrVoucherSeq(String(company.nextIslrVoucherSeq ?? 1));
       setSavedBanner(null);
     }
   }, [isCompanyModalOpen, company]);
@@ -59,9 +85,16 @@ export const CompanyProfileModal: React.FC = () => {
       codigoSada,
       representanteLegal,
       actividadEconomica,
+      isSpecialTaxpayer,
+      isIvaRetentionAgent,
+      isIslrRetentionAgent,
+      defaultIvaRetentionPercent,
+      utValueVes: Math.max(0.01, parseFloat(utValueVes) || 9.0),
+      nextIvaVoucherSeq: Math.max(1, parseInt(nextIvaVoucherSeq, 10) || 1),
+      nextIslrVoucherSeq: Math.max(1, parseInt(nextIslrVoucherSeq, 10) || 1),
     });
     setSavedBanner(
-      'Datos fiscales de la empresa actualizados. El panel principal y todas las tablas Excel (.xlsx) y reportes PDF ahora utilizan este membrete corporativo.'
+      'Datos fiscales y parámetros de Agente de Retención SENIAT (IVA / ISLR) actualizados correctamente.'
     );
     setTimeout(() => {
       setSavedBanner(null);
@@ -303,6 +336,102 @@ export const CompanyProfileModal: React.FC = () => {
                 onChange={(e) => setActividadEconomica(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
               />
+            </div>
+          </div>
+
+          {/* SENIAT Special Taxpayer & Retention Agent Configuration */}
+          <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200/80 pb-2">
+              <span className="font-bold text-amber-950 uppercase tracking-wider text-[11px]">
+                Régimen SENIAT — Sujeto Pasivo Especial y Agente de Retención (IVA / ISLR)
+              </span>
+              <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-amber-200 text-amber-950">
+                SNAT/2025/000054 · Decreto 1.808
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 text-xs text-slate-800">
+              <label className="inline-flex items-center gap-1.5 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isSpecialTaxpayer}
+                  onChange={(e) => setIsSpecialTaxpayer(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600"
+                />
+                <span>Sujeto Pasivo Especial (SPE)</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isIvaRetentionAgent}
+                  onChange={(e) => setIsIvaRetentionAgent(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600"
+                />
+                <span>Agente de Retención IVA</span>
+              </label>
+              <label className="inline-flex items-center gap-1.5 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isIslrRetentionAgent}
+                  onChange={(e) => setIsIslrRetentionAgent(e.target.checked)}
+                  className="rounded border-slate-300 text-sky-600"
+                />
+                <span>Agente de Retención ISLR</span>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                  % Ret. IVA Base
+                </label>
+                <select
+                  value={defaultIvaRetentionPercent}
+                  onChange={(e) =>
+                    setDefaultIvaRetentionPercent(Number(e.target.value) as 75 | 100)
+                  }
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white font-mono font-bold"
+                >
+                  <option value={75}>75% General</option>
+                  <option value={100}>100% Especial</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                  Unidad Tributaria (Bs.)
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={utValueVes}
+                  onChange={(e) => setUtValueVes(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                  Próx. Secuencia IVA
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={nextIvaVoucherSeq}
+                  onChange={(e) => setNextIvaVoucherSeq(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white font-mono"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1 text-[11px]">
+                  Próx. Secuencia ISLR
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={nextIslrVoucherSeq}
+                  onChange={(e) => setNextIslrVoucherSeq(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white font-mono"
+                />
+              </div>
             </div>
           </div>
 

@@ -55,6 +55,8 @@ export interface DraftPurchaseTarget {
   preferredHorizonDays?: RotationHorizonDays;
 }
 
+export type StorageZone = 'DEPOSITO' | 'ANAQUEL';
+
 export interface Product {
   id: string;
   sku: string;
@@ -68,6 +70,9 @@ export interface Product {
   ivaRate: 0 | 8 | 16;
   stockByLocation: Record<string, number>;
   minStockByLocation: Record<string, number>;
+  shelfStockByLocation?: Record<string, number>;
+  minShelfByLocation?: Record<string, number>;
+  lastCostOrigin?: 'CATALOGO' | 'CANAL_DESPOSTE' | 'CORTE_DIRECTO' | 'FACTURA';
   manualRiskByLocation?: Record<string, ManualRiskMode>;
   safetyMultiplierByLocation?: Record<string, number>;
   monthlyUnitsSold: number;
@@ -146,6 +151,8 @@ export interface StockTransfer {
   reference: string;
   fromLocationId: string;
   toLocationId: string;
+  fromZone?: StorageZone;
+  toZone?: StorageZone;
   productId: string;
   productName: string;
   sku: string;
@@ -179,6 +186,9 @@ export interface ChrystalParseResult {
   rows: ChrystalImportedRow[];
 }
 
+export type TaxpayerType = 'ORDINARIO' | 'ESPECIAL' | 'FORMAL';
+export type PersonTaxType = 'PJ_DOMICILIADA' | 'PN_RESIDENTE' | 'PJ_NO_DOMICILIADA';
+
 export interface Supplier {
   id: string;
   rif: string;
@@ -190,6 +200,9 @@ export interface Supplier {
   creditDays: number;
   paymentTerms: string;
   balanceUsd: number;
+  taxpayerType?: TaxpayerType;
+  personType?: PersonTaxType;
+  defaultIslrConceptCode?: string;
 }
 
 export type OcrEngineMode = 'GEMINI_VISION_PRO' | 'TESSERACT_FORENSIC';
@@ -211,6 +224,9 @@ export interface PurchaseInvoiceLine {
   quantity: number;
   unitCostUsd: number;
   lineTotalUsd: number;
+  ivaRate?: 0 | 8 | 16;
+  lineType?: 'BIEN' | 'SERVICIO';
+  islrConceptCode?: string;
 }
 
 export interface IndexedInvoiceAttachment {
@@ -241,6 +257,19 @@ export interface PurchaseInvoice {
   igtfAmountUsd: number;
   totalUsd: number;
   paidAmountUsd: number;
+  exemptAmountUsd?: number;
+  taxableBase16Usd?: number;
+  iva16Usd?: number;
+  taxableBase8Usd?: number;
+  iva8Usd?: number;
+  ivaUndiscriminated?: boolean;
+  hasFormalDefects?: boolean;
+  ivaRetentionId?: string;
+  islrRetentionId?: string;
+  ivaRetainedUsd?: number;
+  islrRetainedUsd?: number;
+  totalRetainedUsd?: number;
+  netPayableUsd?: number;
   status: 'PENDIENTE' | 'ABONADA' | 'PAGADA' | 'VENCIDA';
   ocrEngineUsed: OcrEngineMode;
   forensicAudit: ForensicAuditReport;
@@ -286,6 +315,13 @@ export interface SalesSyncEvent {
     qtySold: number;
     unitPriceUsd: number;
   }>;
+  shelfShortfallAlerts?: Array<{
+    sku: string;
+    productName: string;
+    qtySold: number;
+    deductedFromShelf: number;
+    deductedFromDeposit: number;
+  }>;
   totalUsd: number;
   status: 'PROCESADO' | 'RECHAZADO';
 }
@@ -320,6 +356,13 @@ export interface CompanyFiscalProfile {
   updatedAtVet: string;
   logoBase64?: string;
   brandingName?: string;
+  isSpecialTaxpayer?: boolean;
+  isIvaRetentionAgent?: boolean;
+  isIslrRetentionAgent?: boolean;
+  defaultIvaRetentionPercent?: 75 | 100;
+  utValueVes?: number;
+  nextIvaVoucherSeq?: number;
+  nextIslrVoucherSeq?: number;
 }
 
 export interface UIConfigState {
@@ -336,10 +379,12 @@ export type NavigationTab =
   | 'DASHBOARD'
   | 'CATALOG'
   | 'MULTILOCATION'
+  | 'SHELF_STOCK'
   | 'TRANSFERS'
   | 'CHRYSTAL_IMPORT'
   | 'PRICING'
   | 'INVOICES_OCR'
+  | 'TAX_RETENTIONS'
   | 'SUPPLIERS'
   | 'ACCOUNTS_PAYABLE'
   | 'ABC_ROTATION'
@@ -431,7 +476,16 @@ export type AuditActionType =
   | 'MEAT_YIELD_BATCH_CREATE'
   | 'FRUVER_YIELD_BATCH_CREATE'
   | 'MEAT_YIELD_INVENTORY_LOAD'
-  | 'FRUVER_YIELD_INVENTORY_LOAD';
+  | 'FRUVER_YIELD_INVENTORY_LOAD'
+  | 'MEAT_DIRECT_CUT_LOAD'
+  | 'SHELF_REPLENISH'
+  | 'SHELF_RETURN'
+  | 'CAVA_TO_EXHIBICION_TRANSFER'
+  | 'SALE_SHELF_SHORTFALL_ALERT'
+  | 'SHELF_PHYSICAL_COUNT_ADJUST'
+  | 'TAX_RETENTION_EMIT'
+  | 'TAX_RETENTION_STATUS_CHANGE'
+  | 'TAX_RETENTION_VOID';
 
 export interface AuditLogEntry {
   id: string;
@@ -483,6 +537,9 @@ export interface PlatformBackupPayload {
   auditLogs: AuditLogEntry[];
   sessionHistory: UserSessionRecord[];
   discards?: InventoryDiscardRecord[];
+  retentionVouchers?: TaxRetentionVoucher[];
+  meatDirectPurchases?: MeatDirectCutPurchase[];
+  shelfMovements?: ShelfMovementRecord[];
 }
 
 export interface EncryptedBackupEnvelope {
@@ -560,6 +617,7 @@ export interface MeatYieldBatch {
   receptionDate?: string;
   supplierId?: string;
   supplierName?: string;
+  targetZone?: StorageZone;
   inventoryLoaded?: boolean;
   inventoryLoadedAt?: string;
   animalType: MeatAnimalType;
@@ -646,6 +704,7 @@ export interface FruverBatchRecord {
   receptionDate?: string;
   supplierId?: string;
   supplierName?: string;
+  targetZone?: StorageZone;
   inventoryLoaded?: boolean;
   inventoryLoadedAt?: string;
   productId: string;
@@ -688,10 +747,280 @@ export interface CreateFruverBatchInput {
   receptionDate?: string;
   supplierId?: string;
   supplierName?: string;
-  wastes: Array<{
-    cause: FruverLossCause;
-    weightKg: number;
-    notes?: string;
+    wastes: Array<{
+      cause: FruverLossCause;
+      weightKg: number;
+      notes?: string;
+    }>;
+  }
+
+// ==========================================
+// COMPRA DE CORTES DIRECTOS CÁRNICOS (PIEZA FINAL)
+// ==========================================
+
+export interface MeatDirectCutLine {
+  id: string;
+  sku: string;
+  cutName: string;
+  animalType: MeatAnimalType;
+  tier: MeatCutTier;
+  receivedWeightKg: number;
+  shrinkageKg: number;
+  netSalableWeightKg: number;
+  purchaseCostPerKgUsd: number;
+  lineInvoiceCostUsd: number;
+  effectivePurchaseCostPerKgUsd: number;
+  manualAssignedCostUsd: number;
+  targetMarginPercent: number;
+  retailPriceUsdPerKg: number;
+  retailPriceVesPerKg: number;
+  projectedRevenueUsd: number;
+  carcassReferenceCostPerKgUsd?: number;
+  costDeltaVsCarcassUsd?: number;
+}
+
+export interface MeatDirectCutPurchase {
+  id: string;
+  batchCode: string;
+  invoiceOrGuideRef: string;
+  sadaGuide?: string;
+  receptionDate: string;
+  supplierId: string;
+  supplierName: string;
+  locationId: string;
+  locationName: string;
+  targetZone: StorageZone;
+  cavaOriginNote?: string;
+  lines: MeatDirectCutLine[];
+  totalReceivedWeightKg: number;
+  totalShrinkageKg: number;
+  totalNetSalableWeightKg: number;
+  totalPurchaseCostUsd: number;
+  totalProjectedRevenueUsd: number;
+  projectedGrossProfitUsd: number;
+  projectedMarginPercent: number;
+  bcvRateAtPurchase: number;
+  inventoryLoaded: boolean;
+  inventoryLoadedAt?: string;
+  createdByUserId: string;
+  createdByName: string;
+  createdByRole: UserRole;
+  createdAtVet: string;
+  status: 'REGISTRADO' | 'CONFIRMADO_INVENTARIO';
+}
+
+export interface CreateMeatDirectCutPurchaseInput {
+  batchCode?: string;
+  invoiceOrGuideRef: string;
+  sadaGuide?: string;
+  receptionDate?: string;
+  supplierId: string;
+  supplierName: string;
+  locationId: string;
+  targetZone: StorageZone;
+  cavaOriginNote?: string;
+  lines: Array<{
+    sku?: string;
+    cutName: string;
+    animalType: MeatAnimalType;
+    tier: MeatCutTier;
+    receivedWeightKg: number;
+    shrinkageKg?: number;
+    purchaseCostPerKgUsd: number;
+    manualAssignedCostUsd?: number;
+    targetMarginPercent: number;
+    carcassReferenceCostPerKgUsd?: number;
   }>;
 }
+
+export interface MeatCutCostComparison {
+  cutName: string;
+  animalType: MeatAnimalType;
+  directEffectiveCostPerKgUsd: number;
+  manualAssignedCostUsd: number;
+  carcassAllocatedCostPerKgUsd: number;
+  deltaUsdPerKg: number;
+  deltaPercent: number;
+  recommendation: 'CONVIENE_CORTE_DIRECTO' | 'CONVIENE_CANAL_DESPOSTE' | 'PARIDAD_COSTO';
+}
+
+// ==========================================
+// CONTROL DE INVENTARIO DEPÓSITO/CAVA ↔ ANAQUEL/EXHIBICIÓN
+// ==========================================
+
+export type ShelfMovementType =
+  | 'REPLENISH_TO_SHELF'
+  | 'RETURN_TO_DEPOSIT'
+  | 'CAVA_TO_EXHIBICION'
+  | 'POS_SALE_DEDUCTION'
+  | 'PHYSICAL_COUNT_SYNC'
+  | 'DIRECT_RECEIPT_TO_SHELF';
+
+export interface LocationStockBreakdown {
+  locationId: string;
+  total: number;
+  shelf: number;
+  deposit: number;
+  minShelf: number;
+  isShelfLow: boolean;
+  shelfCoveragePercent: number;
+}
+
+export interface ShelfMovementRecord {
+  id: string;
+  referenceCode: string;
+  movementType: ShelfMovementType;
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: Product['unit'];
+  fromLocationId: string;
+  fromLocationName: string;
+  fromZone: StorageZone;
+  toLocationId: string;
+  toLocationName: string;
+  toZone: StorageZone;
+  quantity: number;
+  shelfBefore: number;
+  shelfAfter: number;
+  depositBefore: number;
+  depositAfter: number;
+  totalAfter: number;
+  notes?: string;
+  performedByUserId: string;
+  performedByName: string;
+  performedByRole: UserRole;
+  managerPinValidated?: boolean;
+  timestampVet: string;
+}
+
+export interface PhysicalCountReconciliationInput {
+  productId: string;
+  locationId: string;
+  countedDepositQty: number;
+  countedShelfQty: number;
+  notes: string;
+  managerPin?: string;
+}
+
+export interface PhysicalCountReconciliationResult {
+  updatedProduct: Product;
+  movementRecord: ShelfMovementRecord;
+  systemDepositBefore: number;
+  systemShelfBefore: number;
+  systemTotalBefore: number;
+  countedTotalAfter: number;
+  depositDiff: number;
+  shelfDiff: number;
+  totalDiff: number;
+  requiresManagerPin: boolean;
+  pinAuthorizedBy?: string;
+}
+
+export interface ShelfReplenishmentSuggestion {
+  productId: string;
+  sku: string;
+  productName: string;
+  category: string;
+  unit: Product['unit'];
+  locationId: string;
+  currentShelf: number;
+  minShelf: number;
+  availableDeposit: number;
+  suggestedMoveQty: number;
+  deficitAfterDeposit: number;
+}
+
+// ==========================================
+// RETENCIONES FISCALES AUTOMÁTICAS VENEZUELA (IVA SNAT/2025/000054 & ISLR D. 1.808)
+// ==========================================
+
+export type TaxRetentionType = 'IVA' | 'ISLR';
+
+export type TaxRetentionStatus =
+  | 'EMITIDO'
+  | 'ENTREGADO'
+  | 'ENTERADO_SENIAT'
+  | 'ANULADO';
+
+export type FilingFortnight = 'PRIMERA_QUINCENA' | 'SEGUNDA_QUINCENA';
+
+export interface IslrConceptRule {
+  code: string;
+  name: string;
+  legalBasis: string;
+  pjRatePercent: number;
+  pnRatePercent: number;
+  pnAppliesSustraendo: boolean;
+  pjMinBaseUt: number;
+  pnThresholdUtFactor: number;
+}
+
+export interface TaxRetentionLineDetail {
+  lineId: string;
+  sku: string;
+  description: string;
+  lineType: 'BIEN' | 'SERVICIO';
+  baseAmountUsd: number;
+  baseAmountVes: number;
+  exemptAmountUsd: number;
+  exemptAmountVes: number;
+  taxRatePercent: number;
+  taxCausadoUsd: number;
+  taxCausadoVes: number;
+  retentionRatePercent: number;
+  sustraendoVes: number;
+  retainedAmountUsd: number;
+  retainedAmountVes: number;
+  conceptCode?: string;
+  conceptName?: string;
+}
+
+export interface TaxRetentionVoucher {
+  id: string;
+  voucherNumber: string;
+  type: TaxRetentionType;
+  legalNormative: string;
+  status: TaxRetentionStatus;
+  issueDate: string;
+  periodYearMonth: string;
+  fortnight: FilingFortnight;
+  fortnightLabel: string;
+  legalDeliveryHint: string;
+  agentRazonSocial: string;
+  agentRif: string;
+  agentAddress: string;
+  supplierId: string;
+  supplierName: string;
+  supplierRif: string;
+  supplierTaxpayerType: TaxpayerType;
+  supplierPersonType: PersonTaxType;
+  invoiceId: string;
+  invoiceNumber: string;
+  controlNumber: string;
+  invoiceIssueDate: string;
+  bcvRateAtIssue: number;
+  utValueVes: number;
+  lines: TaxRetentionLineDetail[];
+  invoiceTotalUsd: number;
+  invoiceTotalVes: number;
+  exemptTotalUsd: number;
+  exemptTotalVes: number;
+  taxableBaseUsd: number;
+  taxableBaseVes: number;
+  taxCausadoTotalUsd: number;
+  taxCausadoTotalVes: number;
+  sustraendoTotalVes: number;
+  retainedTotalUsd: number;
+  retainedTotalVes: number;
+  retentionPercentApplied: number;
+  netPayableAfterAllRetentionsUsd: number;
+  netPayableAfterAllRetentionsVes: number;
+  createdBy: string;
+  createdAtVet: string;
+  voidedAtVet?: string;
+  voidedBy?: string;
+  voidReason?: string;
+}
+
 

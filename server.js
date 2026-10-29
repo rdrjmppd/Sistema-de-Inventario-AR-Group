@@ -737,6 +737,9 @@ ${query}` : String(query);
     }
   });
   const httpServer = http.createServer(app);
+  httpServer.on("error", (err) => {
+    console.error("[Chrystal ERP] HTTP Server socket error captured:", err);
+  });
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
   });

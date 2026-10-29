@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { ArrowLeftRight, CheckCircle2, AlertTriangle, Truck } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useAuth } from '../../context/AuthContext';
+import { StorageZone } from '../../types';
 import { formatUsd } from '../../lib/decimal';
+import { getLocationStockBreakdown } from '../../lib/shelf-stock';
 
 export const StockTransfers: React.FC = () => {
   const { products, locations, transfers, executeStockTransfer } = useInventory();
@@ -10,15 +12,19 @@ export const StockTransfers: React.FC = () => {
 
   const [productId, setProductId] = useState(products[0]?.id || '');
   const [fromLoc, setFromLoc] = useState('loc-val-01');
+  const [fromZone, setFromZone] = useState<StorageZone>('DEPOSITO');
   const [toLoc, setToLoc] = useState('loc-pzo-01');
+  const [toZone, setToZone] = useState<StorageZone>('DEPOSITO');
   const [qty, setQty] = useState('50');
   const [notes, setNotes] = useState('Reposición con Guía SADA autorizada');
   const [statusMsg, setStatusMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const selectedProduct = products.find((p) => p.id === productId);
-  const availableOrigin = selectedProduct
-    ? selectedProduct.stockByLocation[fromLoc] ?? 0
-    : 0;
+  const originBreakdown = selectedProduct
+    ? getLocationStockBreakdown(selectedProduct, fromLoc)
+    : { total: 0, shelf: 0, deposit: 0, minShelf: 0, needsReplenishment: false };
+  const availableOrigin =
+    fromZone === 'ANAQUEL' ? originBreakdown.shelf : originBreakdown.deposit;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,14 +35,16 @@ export const StockTransfers: React.FC = () => {
       toLoc,
       numericQty,
       notes,
-      user?.email || 'rdrj.mppd@gmail.com'
+      user?.email || 'rdrj.mppd@gmail.com',
+      fromZone,
+      toZone
     );
     if (!res.success) {
       setStatusMsg({ type: 'err', text: res.error || 'Error en transferencia.' });
     } else {
       setStatusMsg({
         type: 'ok',
-        text: `Transferencia inter-sede de ${numericQty} unidades ejecutada y asentada en Kardex.`,
+        text: `Transferencia inter-sede de ${numericQty} ${selectedProduct?.unit || 'unidades'} (${fromZone === 'ANAQUEL' ? 'Anaquel' : 'Depósito/Cava'} → ${toZone === 'ANAQUEL' ? 'Exhibición/Anaquel' : 'Depósito/Cava'}) asentada en Kardex.`,
       });
     }
   };
@@ -101,9 +109,9 @@ export const StockTransfers: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-2 gap-2.5">
-            <div>
-              <label className="block font-semibold text-slate-700 mb-1">
-                Sede o Depósito Origen
+            <div className="space-y-1.5">
+              <label className="block font-semibold text-slate-700">
+                Sede / Cava Origen
               </label>
               <select
                 value={fromLoc}
@@ -116,10 +124,18 @@ export const StockTransfers: React.FC = () => {
                   </option>
                 ))}
               </select>
+              <select
+                value={fromZone}
+                onChange={(e) => setFromZone(e.target.value as StorageZone)}
+                className="w-full px-2 py-1.5 border border-slate-200 rounded-lg bg-slate-50 font-semibold text-[11px]"
+              >
+                <option value="DEPOSITO">Zona: Depósito / Nevera Cava</option>
+                <option value="ANAQUEL">Zona: Exhibición / Anaquel</option>
+              </select>
             </div>
-            <div>
-              <label className="block font-semibold text-slate-700 mb-1">
-                Sede o Depósito Destino
+            <div className="space-y-1.5">
+              <label className="block font-semibold text-slate-700">
+                Sede Destino
               </label>
               <select
                 value={toLoc}
@@ -132,22 +148,40 @@ export const StockTransfers: React.FC = () => {
                   </option>
                 ))}
               </select>
+              <select
+                value={toZone}
+                onChange={(e) => setToZone(e.target.value as StorageZone)}
+                className="w-full px-2 py-1.5 border border-sky-200 rounded-lg bg-sky-50 text-sky-900 font-semibold text-[11px]"
+              >
+                <option value="DEPOSITO">Destino: Depósito / Cava</option>
+                <option value="ANAQUEL">Destino: Directo a Exhibición / Anaquel</option>
+              </select>
             </div>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 flex items-center justify-between">
-            <span className="text-slate-600">Stock disponible en origen:</span>
-            <span className="font-mono font-bold text-slate-900">
-              {availableOrigin} {selectedProduct?.unit}
-            </span>
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-600">
+                Disponible en {fromZone === 'ANAQUEL' ? 'Exhibición' : 'Depósito / Cava'}:
+              </span>
+              <span className="font-mono font-bold text-slate-900 tabular-nums">
+                {availableOrigin} {selectedProduct?.unit}
+              </span>
+            </div>
+            <div className="text-[10px] font-mono text-slate-500 flex justify-between">
+              <span>Total sede origen: {originBreakdown.total}</span>
+              <span>
+                Depósito: {originBreakdown.deposit} · Anaquel: {originBreakdown.shelf}
+              </span>
+            </div>
           </div>
 
           <div>
             <label className="block font-semibold text-slate-700 mb-1">Cantidad a Despachar</label>
             <input
               type="number"
-              min="1"
-              step="1"
+              min="0.01"
+              step="any"
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               className="w-full px-2.5 py-2 border border-slate-300 rounded-lg font-mono font-bold"
@@ -168,7 +202,7 @@ export const StockTransfers: React.FC = () => {
 
           <button
             type="submit"
-            className="w-full py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold flex items-center justify-center gap-2 transition shadow-xs"
+            className="w-full min-h-[44px] py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold flex items-center justify-center gap-2 transition shadow-xs cursor-pointer"
           >
             <Truck className="w-4 h-4" />
             Ejecutar Transferencia Inter-Sede
@@ -179,7 +213,7 @@ export const StockTransfers: React.FC = () => {
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-              Bitácora Histórica de Transferencias (Kardex Multi-Sede)
+              Bitácora Histórica de Transferencias (Kardex Multi-Sede &amp; Zonas)
             </h3>
             <span className="text-[11px] font-mono text-slate-500">
               {transfers.length} operaciones registradas
@@ -191,7 +225,7 @@ export const StockTransfers: React.FC = () => {
                 <tr className="bg-slate-900 text-slate-200 text-[11px] font-mono uppercase">
                   <th className="py-2.5 px-3">Guía / Fecha VET</th>
                   <th className="py-2.5 px-3">Producto</th>
-                  <th className="py-2.5 px-3 text-center">Ruta</th>
+                  <th className="py-2.5 px-3 text-center">Ruta (Sede &amp; Zona)</th>
                   <th className="py-2.5 px-3 text-right">Cantidad</th>
                   <th className="py-2.5 px-3 text-right">Valor Costo</th>
                   <th className="py-2.5 px-3 text-center">Estado</th>
@@ -211,18 +245,24 @@ export const StockTransfers: React.FC = () => {
                       <div className="text-[11px] text-slate-500">{trf.notes}</div>
                     </td>
                     <td className="py-2.5 px-3 text-center font-mono text-[11px]">
-                      <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 font-bold">
-                        {getLocName(trf.fromLocationId)}
-                      </span>
-                      <span className="mx-1 text-slate-400">→</span>
-                      <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">
-                        {getLocName(trf.toLocationId)}
-                      </span>
+                      <div>
+                        <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-800 font-bold">
+                          {getLocName(trf.fromLocationId)}
+                        </span>
+                        <span className="mx-1 text-slate-400">→</span>
+                        <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">
+                          {getLocName(trf.toLocationId)}
+                        </span>
+                      </div>
+                      <div className="text-[9px] text-slate-500 mt-0.5">
+                        {trf.fromZone === 'ANAQUEL' ? 'Anaquel' : 'Depósito/Cava'} →{' '}
+                        {trf.toZone === 'ANAQUEL' ? 'Exhibición' : 'Depósito/Cava'}
+                      </div>
                     </td>
-                    <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                    <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 tabular-nums">
                       {trf.quantity}
                     </td>
-                    <td className="py-2.5 px-3 text-right font-mono text-emerald-700 font-semibold">
+                    <td className="py-2.5 px-3 text-right font-mono text-emerald-700 font-semibold tabular-nums">
                       {formatUsd(trf.totalValueUsd)}
                     </td>
                     <td className="py-2.5 px-3 text-center">

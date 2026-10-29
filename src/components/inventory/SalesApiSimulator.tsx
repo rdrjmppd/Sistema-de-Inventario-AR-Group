@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
-import { Webhook, Play, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Webhook, Play, CheckCircle2, AlertTriangle, X } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { formatUsd } from '../../lib/decimal';
 
 export const SalesApiSimulator: React.FC = () => {
-  const { locations, salesEvents, simulatePosWebhookSale } = useInventory();
+  const {
+    locations,
+    salesEvents,
+    posShelfShortfallBanner,
+    dismissPosShelfShortfallBanner,
+    simulatePosWebhookSale,
+  } = useInventory();
   const [locationId, setLocationId] = useState('loc-pzo-01');
   const [payloadJson, setPayloadJson] = useState(
     JSON.stringify(
@@ -32,7 +38,7 @@ export const SalesApiSimulator: React.FC = () => {
       } else {
         setFeedback({
           type: 'ok',
-          message: `Webhook POS procesado (${res.event?.externalPosId}). Stock descontado en tiempo real.`,
+          message: `Webhook POS procesado (${res.event?.externalPosId}). Descuento aplicado primero sobre Anaquel y respaldo sobre Depósito.`,
         });
       }
     } catch {
@@ -50,10 +56,27 @@ export const SalesApiSimulator: React.FC = () => {
           </h1>
         </div>
         <p className="text-xs text-slate-500 mt-0.5">
-          Simulador de eventos de facturación en punto de venta para descuento automático de
-          inventario y actualización de curva ABC.
+          Descuento automático prioritario sobre Anaquel / Exhibición y alerta operativa cuando el
+          ticket toma respaldo del Depósito.
         </p>
       </div>
+
+      {posShelfShortfallBanner && (
+        <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <span className="font-semibold">{posShelfShortfallBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={dismissPosShelfShortfallBanner}
+            className="p-1 rounded hover:bg-amber-200/70 text-amber-800 cursor-pointer"
+            aria-label="Cerrar alerta de anaquel"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3 text-xs">
@@ -138,7 +161,7 @@ export const SalesApiSimulator: React.FC = () => {
                     <span className="font-mono font-bold text-slate-900">
                       {evt.externalPosId}
                     </span>
-                    <span className="font-mono font-bold text-emerald-700">
+                    <span className="font-mono font-bold text-emerald-700 tabular-nums">
                       {formatUsd(evt.totalUsd)}
                     </span>
                   </div>
@@ -148,6 +171,18 @@ export const SalesApiSimulator: React.FC = () => {
                   <div className="text-[11px] text-slate-700">
                     {evt.items.map((i) => `${i.qtySold}x ${i.sku}`).join(', ')}
                   </div>
+                  {evt.shelfShortfallAlerts && evt.shelfShortfallAlerts.length > 0 && (
+                    <div className="mt-1 p-2 rounded bg-amber-50 border border-amber-200 text-[10px] font-mono text-amber-950 space-y-0.5">
+                      <div className="font-bold">
+                        ⚠ Respaldo tomado de Depósito por falta de existencia en Anaquel:
+                      </div>
+                      {evt.shelfShortfallAlerts.map((al) => (
+                        <div key={al.sku}>
+                          • {al.sku}: Anaquel -{al.deductedFromShelf} / Depósito -{al.deductedFromDeposit}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

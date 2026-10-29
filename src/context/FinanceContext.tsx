@@ -5,6 +5,9 @@ import {
   PurchaseInvoice,
   AccountsPayablePayment,
   MonthlyClosureReport,
+  TaxRetentionVoucher,
+  TaxRetentionStatus,
+  UserRole,
 } from '../types';
 import {
   buildBcvRateState,
@@ -12,6 +15,12 @@ import {
   fetchLiveBcvRateFromNetwork,
 } from '../lib/bcv';
 import { toDecimal, round2 } from '../lib/decimal';
+import {
+  calculateInvoiceRetentions,
+  voidRetentionVoucherWithPin,
+} from '../lib/fiscal-retentions';
+import { useUIConfig } from './UIConfigContext';
+import { useAuth } from './AuthContext';
 
 interface FinanceContextType {
   bcvState: BcvRateState;
@@ -27,9 +36,27 @@ interface FinanceContextType {
   setSimulatedHourVet: (hour: number | null) => void;
   updateRates: (spotRate: number, nextRate: number) => void;
   suppliers: Supplier[];
-  addSupplier: (supplier: Omit<Supplier, 'id' | 'balanceUsd'>) => void;
+  addSupplier: (supplier: Omit<Supplier, 'id' | 'balanceUsd'>) => Supplier;
+  updateSupplier: (supplierId: string, updates: Partial<Supplier>) => void;
   invoices: PurchaseInvoice[];
-  registerOcrInvoice: (invoice: PurchaseInvoice, updateCostsCallback?: () => void) => void;
+  registerOcrInvoice: (
+    invoice: PurchaseInvoice,
+    updateCostsCallback?: () => void
+  ) => {
+    invoice: PurchaseInvoice;
+    ivaVoucher: TaxRetentionVoucher | null;
+    islrVoucher: TaxRetentionVoucher | null;
+  };
+  retentionVouchers: TaxRetentionVoucher[];
+  updateRetentionVoucherStatus: (
+    voucherId: string,
+    newStatus: Exclude<TaxRetentionStatus, 'ANULADO'>
+  ) => { success: boolean; error?: string };
+  voidRetentionVoucher: (
+    voucherId: string,
+    managerPin: string,
+    reason: string
+  ) => { success: boolean; voucher?: TaxRetentionVoucher; error?: string };
   payments: AccountsPayablePayment[];
   registerInvoicePayment: (
     invoiceId: string,
@@ -50,6 +77,7 @@ interface FinanceContextType {
     invoices?: PurchaseInvoice[];
     payments?: AccountsPayablePayment[];
     closures?: MonthlyClosureReport[];
+    retentionVouchers?: TaxRetentionVoucher[];
   }) => void;
 }
 
@@ -65,6 +93,8 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     creditDays: 15,
     paymentTerms: 'Crédito 15 Días Indexado BCV',
     balanceUsd: 1842.5,
+    taxpayerType: 'ESPECIAL',
+    personType: 'PJ_DOMICILIADA',
   },
   {
     id: 'sup-002',
@@ -77,6 +107,8 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     creditDays: 7,
     paymentTerms: 'Crédito 7 Días Cadena de Frío',
     balanceUsd: 920.0,
+    taxpayerType: 'ORDINARIO',
+    personType: 'PJ_DOMICILIADA',
   },
   {
     id: 'sup-003',
@@ -89,6 +121,8 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     creditDays: 30,
     paymentTerms: 'Crédito 30 Días Comercial',
     balanceUsd: 540.75,
+    taxpayerType: 'ORDINARIO',
+    personType: 'PJ_DOMICILIADA',
   },
   {
     id: 'sup-004',
@@ -101,6 +135,8 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     creditDays: 15,
     paymentTerms: 'Crédito 15 Días Canal Fría',
     balanceUsd: 0,
+    taxpayerType: 'ORDINARIO',
+    personType: 'PJ_DOMICILIADA',
   },
   {
     id: 'sup-005',
@@ -113,6 +149,90 @@ const INITIAL_SUPPLIERS: Supplier[] = [
     creditDays: 7,
     paymentTerms: 'Crédito 7 Días Flete Incluido',
     balanceUsd: 0,
+    taxpayerType: 'FORMAL',
+    personType: 'PJ_DOMICILIADA',
+  },
+];
+
+const INITIAL_RETENTIONS: TaxRetentionVoucher[] = [
+  {
+    id: 'ret-iva-20260300000001',
+    voucherNumber: '20260300000001',
+    type: 'IVA',
+    legalNormative: 'Providencia Administrativa SNAT/2025/000054 (G.O. N° 43.171)',
+    status: 'ENTREGADO',
+    issueDate: '2026-03-18',
+    periodYearMonth: '202603',
+    fortnight: 'SEGUNDA_QUINCENA',
+    fortnightLabel: '2da Quincena (16 al Fin/03/2026)',
+    legalDeliveryHint:
+      'Entrega obligatoria al proveedor dentro de los dos (2) días hábiles siguientes a la operación (SNAT/2025/000054).',
+    agentRazonSocial: 'HIPER ABASTO POLAR, C.A.',
+    agentRif: 'J-50123456-7',
+    agentAddress: 'AV. INTERCOMUNAL, SECTOR LA MORITA, MARACAY, EDO. ARAGUA, VENEZUELA',
+    supplierId: 'sup-001',
+    supplierName: 'Alimentos Polar Comercial, C.A.',
+    supplierRif: 'J-00006372-9',
+    supplierTaxpayerType: 'ESPECIAL',
+    supplierPersonType: 'PJ_DOMICILIADA',
+    invoiceId: 'inv-2026-001',
+    invoiceNumber: 'FAC-0089412',
+    controlNumber: '00-774129',
+    invoiceIssueDate: '2026-03-18',
+    bcvRateAtIssue: 886.23,
+    utValueVes: 9.0,
+    lines: [
+      {
+        lineId: 'ln-1',
+        sku: 'HAR-PAN-1KG',
+        description: 'Fardo Harina P.A.N. 1Kg (20 Und)',
+        lineType: 'BIEN',
+        baseAmountUsd: 0,
+        baseAmountVes: 0,
+        exemptAmountUsd: 1104.0,
+        exemptAmountVes: 978397.92,
+        taxRatePercent: 0,
+        taxCausadoUsd: 0,
+        taxCausadoVes: 0,
+        retentionRatePercent: 0,
+        sustraendoVes: 0,
+        retainedAmountUsd: 0,
+        retainedAmountVes: 0,
+      },
+      {
+        lineId: 'ln-2',
+        sku: 'ACE-MAZ-1LT',
+        description: 'Caja Aceite Mazeite 1L (12 Und)',
+        lineType: 'BIEN',
+        baseAmountUsd: 564.0,
+        baseAmountVes: 499833.72,
+        exemptAmountUsd: 0,
+        exemptAmountVes: 0,
+        taxRatePercent: 16,
+        taxCausadoUsd: 90.24,
+        taxCausadoVes: 79973.4,
+        retentionRatePercent: 75,
+        sustraendoVes: 0,
+        retainedAmountUsd: 67.68,
+        retainedAmountVes: 59980.05,
+      },
+    ],
+    invoiceTotalUsd: 1758.24,
+    invoiceTotalVes: 1558205.04,
+    exemptTotalUsd: 1104.0,
+    exemptTotalVes: 978397.92,
+    taxableBaseUsd: 564.0,
+    taxableBaseVes: 499833.72,
+    taxCausadoTotalUsd: 90.24,
+    taxCausadoTotalVes: 79973.4,
+    sustraendoTotalVes: 0,
+    retainedTotalUsd: 67.68,
+    retainedTotalVes: 59980.05,
+    retentionPercentApplied: 75,
+    netPayableAfterAllRetentionsUsd: 1690.56,
+    netPayableAfterAllRetentionsVes: 1498224.99,
+    createdBy: 'rdrj.mppd@gmail.com',
+    createdAtVet: '18/03/2026 11:20',
   },
 ];
 
@@ -137,6 +257,8 @@ const INITIAL_INVOICES: PurchaseInvoice[] = [
         quantity: 60,
         unitCostUsd: 18.4,
         lineTotalUsd: 1104.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
       },
       {
         id: 'ln-2',
@@ -145,12 +267,22 @@ const INITIAL_INVOICES: PurchaseInvoice[] = [
         quantity: 20,
         lineTotalUsd: 564.0,
         unitCostUsd: 28.2,
+        ivaRate: 16,
+        lineType: 'BIEN',
       },
     ],
     subtotalUsd: 1668.0,
     ivaAmountUsd: 90.24,
     igtfAmountUsd: 0,
     totalUsd: 1758.24,
+    exemptAmountUsd: 1104.0,
+    taxableBase16Usd: 564.0,
+    iva16Usd: 90.24,
+    ivaRetentionId: 'ret-iva-20260300000001',
+    ivaRetainedUsd: 67.68,
+    islrRetainedUsd: 0,
+    totalRetainedUsd: 67.68,
+    netPayableUsd: 1690.56,
     paidAmountUsd: 500.0,
     status: 'ABONADA',
     ocrEngineUsed: 'GEMINI_VISION_PRO',
@@ -190,12 +322,19 @@ const INITIAL_INVOICES: PurchaseInvoice[] = [
         quantity: 34,
         unitCostUsd: 27.0,
         lineTotalUsd: 918.0,
+        ivaRate: 0,
+        lineType: 'BIEN',
       },
     ],
     subtotalUsd: 918.0,
     ivaAmountUsd: 0,
     igtfAmountUsd: 0,
     totalUsd: 918.0,
+    exemptAmountUsd: 918.0,
+    ivaRetainedUsd: 0,
+    islrRetainedUsd: 0,
+    totalRetainedUsd: 0,
+    netPayableUsd: 918.0,
     paidAmountUsd: 0,
     status: 'VENCIDA',
     ocrEngineUsed: 'TESSERACT_FORENSIC',
@@ -232,11 +371,14 @@ const INITIAL_CLOSURES: MonthlyClosureReport[] = [
 const STORAGE_KEY_INVOICES = 'chrystal_erp_invoices_v1';
 const STORAGE_KEY_SUPPLIERS = 'chrystal_erp_suppliers_v1';
 const STORAGE_KEY_CLOSURES = 'chrystal_erp_closures_v1';
+const STORAGE_KEY_RETENTIONS = 'chrystal_erp_retentions_v1';
 
 export const FinanceContext = createContext<FinanceContextType | undefined>(undefined);
 
 export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Initialize with verified live BCV rates (886.23 Spot / 887.30 Portal BCV) and immediately sync live on mount
+  const { config, updateCompanyProfile } = useUIConfig();
+  const { user } = useAuth();
+
   const [spotRate, setSpotRate] = useState<number>(886.23);
   const [nextDayRate, setNextDayRate] = useState<number>(887.3);
   const [telemetry, setTelemetry] = useState<{
@@ -319,12 +461,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [simulatedHourVet, bcvState.activeRate]
   );
 
-  // Sync live with www.bcv.org.ve on startup
   useEffect(() => {
-    refreshLiveBcvRate(false);
-    // Periodic auto-sync every 5 minutes
+    refreshLiveBcvRate(false).catch(() => {});
     const autoSyncTimer = setInterval(() => {
-      refreshLiveBcvRate(false);
+      refreshLiveBcvRate(false).catch(() => {});
     }, 300_000);
     return () => clearInterval(autoSyncTimer);
   }, []);
@@ -347,6 +487,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       // ignore
     }
     return INITIAL_INVOICES;
+  });
+
+  const [retentionVouchers, setRetentionVouchers] = useState<TaxRetentionVoucher[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_RETENTIONS);
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return INITIAL_RETENTIONS;
   });
 
   const [payments, setPayments] = useState<AccountsPayablePayment[]>([
@@ -402,6 +552,14 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   useEffect(() => {
     try {
+      localStorage.setItem(STORAGE_KEY_RETENTIONS, JSON.stringify(retentionVouchers));
+    } catch {
+      // ignore
+    }
+  }, [retentionVouchers]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_KEY_CLOSURES, JSON.stringify(closures));
     } catch {
       // ignore
@@ -418,25 +576,191 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }));
   };
 
-  const addSupplier = (data: Omit<Supplier, 'id' | 'balanceUsd'>) => {
+  const addSupplier = (data: Omit<Supplier, 'id' | 'balanceUsd'>): Supplier => {
     const newSup: Supplier = {
+      taxpayerType: 'ORDINARIO',
+      personType: 'PJ_DOMICILIADA',
       ...data,
-      id: `sup-${Date.now()}`,
+      id: `sup-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       balanceUsd: 0,
     };
     setSuppliers((prev) => [...prev, newSup]);
+    return newSup;
   };
 
-  const registerOcrInvoice = (invoice: PurchaseInvoice, updateCostsCallback?: () => void) => {
-    setInvoices((prev) => [invoice, ...prev]);
+  const updateSupplier = (supplierId: string, updates: Partial<Supplier>) => {
+    setSuppliers((prev) =>
+      prev.map((s) => (s.id === supplierId ? { ...s, ...updates } : s))
+    );
+  };
+
+  const registerOcrInvoice = (
+    invoice: PurchaseInvoice,
+    updateCostsCallback?: () => void
+  ) => {
+    const matchedSupplier = suppliers.find((s) => s.id === invoice.supplierId);
+    const existingIvaCount = retentionVouchers.filter((v) => v.type === 'IVA').length;
+    const existingIslrCount = retentionVouchers.filter((v) => v.type === 'ISLR').length;
+
+    const nextIvaSeq = Math.max(
+      config.companyProfile.nextIvaVoucherSeq ?? 1,
+      existingIvaCount + 1
+    );
+    const nextIslrSeq = Math.max(
+      config.companyProfile.nextIslrVoucherSeq ?? 1,
+      existingIslrCount + 1
+    );
+
+    const calc = calculateInvoiceRetentions({
+      invoice,
+      supplier: matchedSupplier,
+      companyProfile: config.companyProfile,
+      nextIvaSeq,
+      nextIslrSeq,
+      createdBy: user?.email || 'rdrj.mppd@gmail.com',
+    });
+
+    const finalInvoice = calc.updatedInvoice;
+    const newVouchers: TaxRetentionVoucher[] = [];
+    if (calc.ivaVoucher) newVouchers.push(calc.ivaVoucher);
+    if (calc.islrVoucher) newVouchers.push(calc.islrVoucher);
+
+    setInvoices((prev) => [finalInvoice, ...prev]);
+
+    if (newVouchers.length > 0) {
+      setRetentionVouchers((prev) => [...newVouchers, ...prev]);
+      updateCompanyProfile({
+        nextIvaVoucherSeq: calc.nextIvaSeqAfter,
+        nextIslrVoucherSeq: calc.nextIslrSeqAfter,
+      });
+    }
+
+    const netOwedToSupplier =
+      finalInvoice.netPayableUsd !== undefined
+        ? finalInvoice.netPayableUsd
+        : finalInvoice.totalUsd;
+
     setSuppliers((prev) =>
       prev.map((s) =>
-        s.id === invoice.supplierId
-          ? { ...s, balanceUsd: round2(toDecimal(s.balanceUsd).plus(invoice.totalUsd)) }
+        s.id === finalInvoice.supplierId
+          ? {
+              ...s,
+              balanceUsd: round2(toDecimal(s.balanceUsd).plus(netOwedToSupplier)),
+            }
           : s
       )
     );
+
     if (updateCostsCallback) updateCostsCallback();
+
+    return {
+      invoice: finalInvoice,
+      ivaVoucher: calc.ivaVoucher,
+      islrVoucher: calc.islrVoucher,
+    };
+  };
+
+  const updateRetentionVoucherStatus = (
+    voucherId: string,
+    newStatus: Exclude<TaxRetentionStatus, 'ANULADO'>
+  ): { success: boolean; error?: string } => {
+    const found = retentionVouchers.find((v) => v.id === voucherId);
+    if (!found) {
+      return { success: false, error: 'Comprobante de retención no encontrado.' };
+    }
+    if (found.status === 'ANULADO') {
+      return {
+        success: false,
+        error: 'Un comprobante ANULADO es inmutable y no puede reactivarse.',
+      };
+    }
+
+    setRetentionVouchers((prev) =>
+      prev.map((v) => (v.id === voucherId ? { ...v, status: newStatus } : v))
+    );
+    return { success: true };
+  };
+
+  const voidRetentionVoucher = (
+    voucherId: string,
+    managerPin: string,
+    reason: string
+  ): { success: boolean; voucher?: TaxRetentionVoucher; error?: string } => {
+    const target = retentionVouchers.find((v) => v.id === voucherId);
+    if (!target) {
+      return { success: false, error: 'Comprobante fiscal no encontrado.' };
+    }
+
+    try {
+      const caracas = getCaracasNow();
+      const voided = voidRetentionVoucherWithPin({
+        voucher: target,
+        actor: {
+          uid: user?.uid || 'sys-admin',
+          displayName: user?.displayName || 'Gerencia Fiscal',
+          role: user?.role || UserRole.GERENTE,
+          pin: user?.pin,
+        },
+        managerPin,
+        reason,
+        voidedAtVet: `${caracas.dateFormatted} ${caracas.timeFormatted}`,
+      });
+
+      setRetentionVouchers((prev) =>
+        prev.map((v) => (v.id === voucherId ? voided : v))
+      );
+
+      // Revertir el descuento sobre el neto a pagar de la factura y restituir saldo CxP del proveedor
+      setInvoices((prev) =>
+        prev.map((inv) => {
+          if (inv.id !== target.invoiceId) return inv;
+          const prevIvaRet = inv.ivaRetainedUsd || 0;
+          const prevIslrRet = inv.islrRetainedUsd || 0;
+          const nextIvaRet = target.type === 'IVA' ? 0 : prevIvaRet;
+          const nextIslrRet = target.type === 'ISLR' ? 0 : prevIslrRet;
+          const nextTotalRet = round2(toDecimal(nextIvaRet).plus(nextIslrRet));
+          const nextNetPayable = Math.max(
+            0,
+            round2(toDecimal(inv.totalUsd).minus(nextTotalRet))
+          );
+          const nextStatus =
+            inv.status === 'PAGADA' && toDecimal(inv.paidAmountUsd).lt(nextNetPayable)
+              ? inv.paidAmountUsd > 0
+                ? 'ABONADA'
+                : 'PENDIENTE'
+              : inv.status;
+
+          return {
+            ...inv,
+            ivaRetainedUsd: nextIvaRet,
+            islrRetainedUsd: nextIslrRet,
+            totalRetainedUsd: nextTotalRet,
+            netPayableUsd: nextNetPayable,
+            status: nextStatus,
+          };
+        })
+      );
+
+      setSuppliers((prev) =>
+        prev.map((s) =>
+          s.id === target.supplierId
+            ? {
+                ...s,
+                balanceUsd: round2(
+                  toDecimal(s.balanceUsd).plus(target.retainedTotalUsd)
+                ),
+              }
+            : s
+        )
+      );
+
+      return { success: true, voucher: voided };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Error al anular comprobante.',
+      };
+    }
   };
 
   const registerInvoicePayment = (
@@ -449,11 +773,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const inv = invoices.find((i) => i.id === invoiceId);
     if (!inv) return { success: false, error: 'Factura no encontrada.' };
 
-    const pending = round2(toDecimal(inv.totalUsd).minus(inv.paidAmountUsd));
+    const effectivePayable =
+      inv.netPayableUsd !== undefined ? inv.netPayableUsd : inv.totalUsd;
+    const pending = Math.max(
+      0,
+      round2(toDecimal(effectivePayable).minus(inv.paidAmountUsd))
+    );
     if (amountUsd <= 0 || amountUsd > pending) {
       return {
         success: false,
-        error: `El abono debe ser mayor a $0.00 y no exceder el saldo pendiente ($${pending.toFixed(2)}).`,
+        error: `El abono debe ser mayor a $0.00 y no exceder el neto pendiente a pagar ($${pending.toFixed(2)}).`,
       };
     }
 
@@ -477,8 +806,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setInvoices((prev) =>
       prev.map((item) => {
         if (item.id !== invoiceId) return item;
+        const itemNet =
+          item.netPayableUsd !== undefined ? item.netPayableUsd : item.totalUsd;
         const newPaid = round2(toDecimal(item.paidAmountUsd).plus(amountUsd));
-        const isPaid = toDecimal(newPaid).gte(item.totalUsd);
+        const isPaid = toDecimal(newPaid).gte(itemNet);
         return {
           ...item,
           paidAmountUsd: newPaid,
@@ -510,11 +841,16 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
       (acc, inv) => acc.plus(inv.totalUsd),
       toDecimal(0)
     );
+    const totalNetPayable = invoices.reduce(
+      (acc, inv) =>
+        acc.plus(inv.netPayableUsd !== undefined ? inv.netPayableUsd : inv.totalUsd),
+      toDecimal(0)
+    );
     const totalPaid = invoices.reduce(
       (acc, inv) => acc.plus(inv.paidAmountUsd),
       toDecimal(0)
     );
-    const pendingPayables = totalPurchases.minus(totalPaid);
+    const pendingPayables = DecimalMaxZero(totalNetPayable.minus(totalPaid));
     const valuationVes = round2(
       toDecimal(inventoryValuationUsd).times(bcvState.activeRate)
     );
@@ -543,10 +879,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setInvoices([]);
     setPayments([]);
     setClosures([]);
+    setRetentionVouchers([]);
     try {
       localStorage.setItem(STORAGE_KEY_SUPPLIERS, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_INVOICES, JSON.stringify([]));
       localStorage.setItem(STORAGE_KEY_CLOSURES, JSON.stringify([]));
+      localStorage.setItem(STORAGE_KEY_RETENTIONS, JSON.stringify([]));
     } catch {
       // ignore
     }
@@ -557,6 +895,7 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     invoices?: PurchaseInvoice[];
     payments?: AccountsPayablePayment[];
     closures?: MonthlyClosureReport[];
+    retentionVouchers?: TaxRetentionVoucher[];
   }) => {
     if (data.suppliers) {
       setSuppliers(data.suppliers);
@@ -585,6 +924,17 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // ignore
       }
     }
+    if (data.retentionVouchers) {
+      setRetentionVouchers(data.retentionVouchers);
+      try {
+        localStorage.setItem(
+          STORAGE_KEY_RETENTIONS,
+          JSON.stringify(data.retentionVouchers)
+        );
+      } catch {
+        // ignore
+      }
+    }
   };
 
   return (
@@ -599,8 +949,12 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
         updateRates,
         suppliers,
         addSupplier,
+        updateSupplier,
         invoices,
         registerOcrInvoice,
+        retentionVouchers,
+        updateRetentionVoucherStatus,
+        voidRetentionVoucher,
         payments,
         registerInvoicePayment,
         closures,
@@ -613,6 +967,10 @@ export const FinanceProvider: React.FC<{ children: React.ReactNode }> = ({ child
     </FinanceContext.Provider>
   );
 };
+
+function DecimalMaxZero(val: ReturnType<typeof toDecimal>) {
+  return val.lt(0) ? toDecimal(0) : val;
+}
 
 export const useFinance = () => {
   const ctx = useContext(FinanceContext);
