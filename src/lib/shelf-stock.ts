@@ -17,8 +17,10 @@ import {
   ShelfReplenishmentSuggestion,
   StorageZone,
   UserRole,
+  TotpSecurityConfig,
 } from '../types';
 import { Decimal, round2, toDecimal } from './decimal';
+import { verifyManagerGovernanceAuth } from './totp-governance';
 
 export const DEFAULT_MANAGER_AUTHORIZATION_PINS = ['102030', '203040'];
 
@@ -489,6 +491,7 @@ export function reconcileLocationPhysicalCount(params: {
   input: PhysicalCountReconciliationInput;
   actor: { uid: string; displayName: string; role: UserRole; pin?: string };
   validManagerPins?: string[];
+  totpConfig?: TotpSecurityConfig | null;
   timestampVet: string;
 }): PhysicalCountReconciliationResult {
   const {
@@ -497,6 +500,7 @@ export function reconcileLocationPhysicalCount(params: {
     input,
     actor,
     validManagerPins = DEFAULT_MANAGER_AUTHORIZATION_PINS,
+    totpConfig,
     timestampVet,
   } = params;
 
@@ -530,12 +534,17 @@ export function reconcileLocationPhysicalCount(params: {
     }
 
     const suppliedPin = (input.managerPin || '').trim();
-    if (!suppliedPin || !allowedPins.has(suppliedPin)) {
+    const totpCheck = verifyManagerGovernanceAuth({
+      submittedCredential: suppliedPin,
+      totpConfig,
+      validFallbackPins: Array.from(allowedPins),
+    });
+    if (!suppliedPin || !totpCheck.authorized) {
       throw new Error(
-        `La diferencia de conteo (${tolerance.totalDiff > 0 ? '+' : ''}${tolerance.totalDiff} ${product.unit} / ${tolerance.relativeDiffPercent}%) supera la tolerancia de ±2% o ±1 unidad. Ingrese un PIN de Gerente válido.`
+        `La diferencia de conteo (${tolerance.totalDiff > 0 ? '+' : ''}${tolerance.totalDiff} ${product.unit} / ${tolerance.relativeDiffPercent}%) supera la tolerancia de ±2% o ±1 unidad. Ingrese un Token TOTP dinámico o PIN de Gerente válido.`
       );
     }
-    pinAuthorizedBy = actor.displayName;
+    pinAuthorizedBy = `${actor.displayName} (${totpCheck.methodUsed === 'MANAGER_PIN_FALLBACK' ? 'PIN' : 'TOTP'})`;
   }
 
   const updatedProduct: Product = {

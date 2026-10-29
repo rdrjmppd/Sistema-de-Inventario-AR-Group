@@ -12,10 +12,15 @@ import {
   Sliders,
   Sparkles,
   PackageCheck,
+  MessageSquareShare,
+  ScanBarcode,
+  TrendingUp,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
-import { Product, RotationHorizonDays } from '../../types';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
+import { Product, RotationHorizonDays, SupplierPurchaseOrder } from '../../types';
+import { BarcodeScannerModal } from '../common/BarcodeScannerModal';
 import {
   ROTATION_HORIZONS_DAYS,
   simulatePurchaseByRotationHorizon,
@@ -37,6 +42,9 @@ export const PurchaseOrdersCenter: React.FC = () => {
     registerPostPurchaseManualReceipt,
   } = useInventory();
   const { bcvState, suppliers } = useFinance();
+  const { computeQuincenaDemandForecast, dispatchPurchaseOrderToSupplierBrm } =
+    useOperationsBrm();
+  const [isRecScannerOpen, setIsRecScannerOpen] = useState(false);
 
   // Selected SKU, Sede/Depósito and Rotation Horizon (7, 15, 30, 45, 60 days)
   const [selectedProductId, setSelectedProductId] = useState<string>(
@@ -103,6 +111,26 @@ export const PurchaseOrdersCenter: React.FC = () => {
   }, [selectedProduct, selectedLocation, locations, bcvState.activeRate, includeSafetyBuffer]);
 
   const currentSimulation = allHorizonsMap ? allHorizonsMap[horizonDays] : null;
+
+  const quincenaForecast = useMemo(() => {
+    if (!selectedProduct || !selectedLocation) return null;
+    return computeQuincenaDemandForecast(selectedProduct.id, selectedLocation.id, horizonDays);
+  }, [selectedProduct, selectedLocation, horizonDays, computeQuincenaDemandForecast]);
+
+  const handleDispatchOrderViaBrm = async (po: SupplierPurchaseOrder) => {
+    const res = await dispatchPurchaseOrderToSupplierBrm(po, false);
+    if (!res.success) {
+      setFeedback({
+        type: 'err',
+        text: res.error || 'No se pudo despachar la Orden de Compra por WhatsApp BRM.',
+      });
+      return;
+    }
+    setFeedback({
+      type: 'ok',
+      text: `Orden de Compra ${po.orderNumber} despachada por WhatsApp BRM a ${po.supplierName}.`,
+    });
+  };
 
   // Synchronize when redirected from an Alert ("Reponer / Recomprar en Compras")
   useEffect(() => {
@@ -422,6 +450,33 @@ export const PurchaseOrdersCenter: React.FC = () => {
           </div>
 
           {/* 5 Horizon Selector Buttons: 7, 15, 30, 45, 60 Days */}
+          {quincenaForecast && (
+            <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="flex items-start gap-2">
+                <TrendingUp className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold text-indigo-950">
+                    Predicción Estacional Quincena Venezolana (15 y 30) &amp; Fin de Semana ({horizonDays}d)
+                  </div>
+                  <div className="text-indigo-800 tabular-nums">
+                    Factor Pico: <strong>{quincenaForecast.quincenaMultiplier}×</strong> · Demanda Proyectada:{' '}
+                    <strong>{quincenaForecast.projectedDemandHorizon} {selectedProduct?.unit}</strong> · Pedido Recomendado:{' '}
+                    <strong>{quincenaForecast.recommendedOrderQty} {selectedProduct?.unit}</strong>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setManualOrderQty(String(Math.max(1, quincenaForecast.recommendedOrderQty)))
+                }
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold shrink-0 cursor-pointer"
+              >
+                Aplicar Sugerido Quincena
+              </button>
+            </div>
+          )}
+
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs">
               <span className="font-bold text-slate-700">
@@ -956,22 +1011,35 @@ export const PurchaseOrdersCenter: React.FC = () => {
                           {isPending ? 'PENDIENTE DE ENTREGA' : 'RECIBIDO CONFORME'}
                         </span>
                       </td>
-                      <td className="py-2.5 px-3 text-center">
-                        {isPending ? (
+                       <td className="py-2.5 px-3 text-center">
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => handleConfirmDelivery(po.id)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition shadow-xs cursor-pointer"
+                            onClick={() => {
+                              handleDispatchOrderViaBrm(po).catch(() => {});
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-[11px] transition cursor-pointer"
+                            title="Enviar Orden de Compra al proveedor vía WhatsApp BRM"
                           >
-                            <ClipboardCheck className="w-3.5 h-3.5" />
-                            <span>Confirmar Entrega</span>
+                            <MessageSquareShare className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>WhatsApp BRM</span>
                           </button>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-700 font-semibold">
-                            <PackageCheck className="w-3.5 h-3.5" />+{po.receivedQty} {po.unit} en
-                            stock
-                          </span>
-                        )}
+                          {isPending ? (
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmDelivery(po.id)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] transition shadow-xs cursor-pointer"
+                            >
+                              <ClipboardCheck className="w-3.5 h-3.5" />
+                              <span>Confirmar Entrega</span>
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-700 font-semibold">
+                              <PackageCheck className="w-3.5 h-3.5" />+{po.receivedQty} {po.unit} en
+                              stock
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -988,9 +1056,19 @@ export const PurchaseOrdersCenter: React.FC = () => {
           onSubmit={handleManualPostPurchaseSubmit}
           className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3 text-xs"
         >
-          <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-slate-800 border-b border-slate-100 pb-2">
-            <PlusCircle className="w-4 h-4 text-emerald-600" />
-            <span>5. Carga Manual de Nuevos Productos que Llegan Post-Pedido / Compra</span>
+          <div className="flex items-center justify-between gap-2 font-bold uppercase tracking-wider text-slate-800 border-b border-slate-100 pb-2">
+            <div className="flex items-center gap-2">
+              <PlusCircle className="w-4 h-4 text-emerald-600" />
+              <span>5. Carga Manual Post-Pedido / Compra</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsRecScannerOpen(true)}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+            >
+              <ScanBarcode className="w-3.5 h-3.5" />
+              Escanear PWA
+            </button>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -1216,6 +1294,27 @@ export const PurchaseOrdersCenter: React.FC = () => {
           )}
         </div>
       </div>
+
+      <BarcodeScannerModal
+        isOpen={isRecScannerOpen}
+        onClose={() => setIsRecScannerOpen(false)}
+        title="Escáner PWA Recepción de Mercancía en Andén"
+        products={products}
+        locationId={recLocationId}
+        defaultZone="DEPOSITO"
+        onSelectSingleProduct={({ product, rawCode, effectiveQuantity }) => {
+          if (product) {
+            setIsNewProductMode(false);
+            setExistingRecProductId(product.id);
+            setRecQty(String(effectiveQuantity));
+            setRecCostUsd(String(product.costUsd));
+          } else {
+            setIsNewProductMode(true);
+            setRecBarcode(rawCode);
+          }
+          setIsRecScannerOpen(false);
+        }}
+      />
     </div>
   );
 };

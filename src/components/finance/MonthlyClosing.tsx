@@ -1,17 +1,23 @@
 import React, { useState } from 'react';
-import { Lock, FileText, CheckCircle2 } from 'lucide-react';
+import { Lock, FileText, CheckCircle2, FileSpreadsheet, Printer } from 'lucide-react';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useAuth } from '../../context/AuthContext';
 import { useUIConfig } from '../../context/UIConfigContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
 import { exportMonthlyClosurePdf } from '../../lib/pdf-exporter';
+import {
+  buildSeniatSalesBookWorkbook,
+  triggerWorkbookDownload,
+} from '../../lib/seniat-exporter';
 
 export const MonthlyClosing: React.FC = () => {
   const { closures, generateMonthlyClosure } = useFinance();
   const { products } = useInventory();
   const { user } = useAuth();
   const { config } = useUIConfig();
+  const { fiscalZReports } = useOperationsBrm();
 
   const [period, setPeriod] = useState('2026-03');
   const [banner, setBanner] = useState<string | null>(null);
@@ -53,20 +59,62 @@ export const MonthlyClosing: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <input
             type="month"
             value={period}
             onChange={(e) => setPeriod(e.target.value)}
-            className="px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-mono bg-white"
+            className="min-h-[44px] px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-mono bg-white"
           />
           <button
             type="button"
+            onClick={() => {
+              const periodYm = period.replace('-', '');
+              const wb = buildSeniatSalesBookWorkbook({
+                zReports: fiscalZReports,
+                companyProfile: config.companyProfile,
+                periodYearMonth: periodYm,
+              });
+              triggerWorkbookDownload(wb, `Libro_Especial_Ventas_SENIAT_${periodYm}.xlsx`);
+              setBanner(`Libro Especial de Ventas SENIAT (${period}) exportado con éxito.`);
+            }}
+            className="min-h-[44px] px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Libro Ventas Reportes Z (.XLSX)
+          </button>
+          <button
+            type="button"
             onClick={handleExecuteClosing}
-            className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition"
+            className="min-h-[44px] px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition cursor-pointer"
           >
             Ejecutar Cierre {period}
           </button>
+        </div>
+      </div>
+
+      {/* Consolidado de Reportes Z Fiscales SENIAT del Período */}
+      <div className="bg-slate-900 text-white rounded-xl p-4 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2.5">
+          <Printer className="w-5 h-5 text-sky-400 shrink-0" />
+          <div>
+            <div className="font-bold">
+              Cierres Fiscales Diarios Certificados (Reportes Z — Providencia SNAT/2024/000102)
+            </div>
+            <div className="text-slate-400">
+              {fiscalZReports.filter((z) => z.reportType === 'REPORTE_Z_DIARIO').length} Reportes Z registrados · Débito Fiscal IVA 16%/8% + IGTF 3% listos para Libro de Ventas SENIAT.
+            </div>
+          </div>
+        </div>
+        <div className="font-mono font-bold text-sm text-emerald-400 tabular-nums">
+          Total Fiscal Z:{' '}
+          {formatVes(
+            round2(
+              fiscalZReports
+                .filter((z) => z.reportType === 'REPORTE_Z_DIARIO')
+                .reduce((acc, z) => acc.plus(z.grandTotalFiscalVes), toDecimal(0))
+            )
+          )}
         </div>
       </div>
 

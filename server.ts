@@ -47,6 +47,89 @@ interface CachedBcvResponse {
 let cachedBcvQuote: CachedBcvResponse | null = null;
 const CACHE_TTL_MS = 45_000;
 
+const PENDING_QUEUE_PATH = path.join(process.cwd(), 'pending_queue.json');
+const hasAdminCredentials = Boolean(
+  process.env.GOOGLE_APPLICATION_CREDENTIALS &&
+    fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+);
+
+interface OfflineDelegatedQueueItem {
+  queueId: string;
+  channel: 'BRM_WHATSAPP' | 'FISCAL_Z_SYNC';
+  createdAtVet: string;
+  payload: Record<string, unknown>;
+}
+
+let inMemoryOfflineQueue: OfflineDelegatedQueueItem[] = [];
+const processedBrmMessageIds = new Set<string>();
+
+let brmServerSession: {
+  state: 'CONNECTED' | 'QR_READY' | 'DISCONNECTED' | 'CLOUD_STANDBY';
+  activeMode: 'QR_SOCKET_BRIDGE' | 'CLOUD_API_WEBHOOK' | 'WA_ME_DIRECT_LEDGER';
+  corporatePhoneE164: string;
+  qrPayloadData?: string;
+  qrGeneratedAtVet?: string;
+  lastHeartbeatVet: string;
+} = {
+  state: process.env.WHATSAPP_CLOUD_TOKEN ? 'CLOUD_STANDBY' : 'DISCONNECTED',
+  activeMode: process.env.WHATSAPP_CLOUD_TOKEN ? 'CLOUD_API_WEBHOOK' : 'WA_ME_DIRECT_LEDGER',
+  corporatePhoneE164: process.env.BRM_CORPORATE_PHONE_E164 || '+582432345678',
+  lastHeartbeatVet: '08:00:00',
+};
+
+function readPendingOfflineQueueSafe(): OfflineDelegatedQueueItem[] {
+  let records: OfflineDelegatedQueueItem[] = [...inMemoryOfflineQueue];
+  try {
+    if (fs.existsSync(PENDING_QUEUE_PATH)) {
+      const raw = fs.readFileSync(PENDING_QUEUE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        records = parsed;
+        inMemoryOfflineQueue = parsed;
+      }
+    }
+  } catch {
+    // Fallback to in-memory queue when container filesystem is ephemeral/read-only
+  }
+  return records;
+}
+
+function appendPendingOfflineQueueSafe(item: OfflineDelegatedQueueItem): void {
+  const current = readPendingOfflineQueueSafe();
+  const next = [item, ...current].slice(0, 500);
+  inMemoryOfflineQueue = next;
+  try {
+    fs.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), 'utf8');
+  } catch {
+    // Non-fatal in serverless read-only containers; inMemoryOfflineQueue preserves state
+  }
+}
+
+function removePendingOfflineQueueIdsSafe(queueIds: string[]): number {
+  const idSet = new Set(queueIds);
+  const current = readPendingOfflineQueueSafe();
+  const next = current.filter((item) => !idSet.has(item.queueId));
+  const removedCount = current.length - next.length;
+  inMemoryOfflineQueue = next;
+  try {
+    fs.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), 'utf8');
+  } catch {
+    // Non-fatal in serverless read-only containers
+  }
+  return removedCount;
+}
+
+function normalizeServerPhoneE164(raw: string): string {
+  const trimmed = String(raw || '').trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return '';
+  if (trimmed.startsWith('+') && digits.length >= 10 && digits.length <= 15) return `+${digits}`;
+  if (digits.length === 11 && digits.startsWith('0')) return `+58${digits.slice(1)}`;
+  if (digits.length === 10 && /^(412|414|424|416|426|2\d{2})/.test(digits)) return `+58${digits}`;
+  if (digits.startsWith('58') && digits.length === 12) return `+${digits}`;
+  return digits.length >= 10 ? `+${digits}` : '';
+}
+
 function toDecimal(value: number | string | Decimal | null | undefined): Decimal {
   if (value === null || value === undefined || value === '') {
     return new Decimal(0);
@@ -756,6 +839,305 @@ async function startServer() {
           err instanceof Error
             ? err.message
             : 'Error interno al procesar la consulta en PolarBot.',
+      });
+    }
+  });
+
+  // ============================================================================
+  // BRM WHATSAPP PROVEEDORES — MODO HÍBRIDO TRIPLE (PATRÓN PURO APURE ERP)
+  // Aislamiento Socket/Puente vs. Persistencia + Cola Delegada (hasAdminCredentials)
+  // ============================================================================
+  app.get('/api/brm/whatsapp/status', (_req, res) => {
+    const nowCaracas = getCaracasNow();
+    const queue = readPendingOfflineQueueSafe();
+    brmServerSession.lastHeartbeatVet = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+
+    res.json({
+      ...brmServerSession,
+      hasAdminCredentials,
+      pendingOfflineQueueCount: queue.length,
+    });
+  });
+
+  app.post('/api/brm/whatsapp/qr', (req, res) => {
+    const { action = 'GENERATE_QR', corporatePhoneE164 } = req.body || {};
+    const nowCaracas = getCaracasNow();
+    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+
+    if (corporatePhoneE164) {
+      const norm = normalizeServerPhoneE164(corporatePhoneE164);
+      if (norm) brmServerSession.corporatePhoneE164 = norm;
+    }
+
+    if (action === 'CONFIRM_PAIRING') {
+      brmServerSession = {
+        ...brmServerSession,
+        state: 'CONNECTED',
+        activeMode: 'QR_SOCKET_BRIDGE',
+        qrPayloadData: undefined,
+        lastHeartbeatVet: nowStamp,
+      };
+    } else if (action === 'USE_CLOUD_WEBHOOK') {
+      brmServerSession = {
+        ...brmServerSession,
+        state: 'CLOUD_STANDBY',
+        activeMode: 'CLOUD_API_WEBHOOK',
+        qrPayloadData: undefined,
+        lastHeartbeatVet: nowStamp,
+      };
+    } else {
+      const nonce = crypto.randomBytes(8).toString('hex').toUpperCase();
+      brmServerSession = {
+        ...brmServerSession,
+        state: 'QR_READY',
+        activeMode: 'QR_SOCKET_BRIDGE',
+        qrPayloadData: `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`,
+        qrGeneratedAtVet: nowStamp,
+        lastHeartbeatVet: nowStamp,
+      };
+    }
+
+    res.json({
+      ...brmServerSession,
+      hasAdminCredentials,
+      pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+    });
+  });
+
+  app.post('/api/brm/whatsapp/disconnect', (_req, res) => {
+    const nowCaracas = getCaracasNow();
+    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+    brmServerSession = {
+      state: 'DISCONNECTED',
+      activeMode: 'WA_ME_DIRECT_LEDGER',
+      corporatePhoneE164: brmServerSession.corporatePhoneE164,
+      qrPayloadData: undefined,
+      qrGeneratedAtVet: undefined,
+      lastHeartbeatVet: nowStamp,
+    };
+
+    res.json({
+      ok: true,
+      session: {
+        ...brmServerSession,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+      },
+    });
+  });
+
+  app.post('/api/brm/whatsapp/send', (req, res) => {
+    // Alcance léxico superior obligatorio (Cláusula D)
+    let messageId = '';
+    let normalizedDest = '';
+    let transportUsed: 'QR_SOCKET_BRIDGE' | 'CLOUD_API_WEBHOOK' | 'WA_ME_DIRECT_LEDGER' =
+      'WA_ME_DIRECT_LEDGER';
+    let deliveryStatus: 'EN_COLA_OFFLINE' | 'ENVIADO' | 'ENTREGADO' = 'ENVIADO';
+
+    try {
+      const {
+        supplierId = '',
+        supplierName = 'Proveedor BRM',
+        supplierRif = '',
+        phone = '',
+        category = 'MENSAJE_OPERATIVO_BRM',
+        bodyText = '',
+        attachmentFileName,
+        clientMessageId,
+      } = req.body || {};
+
+      normalizedDest = normalizeServerPhoneE164(phone);
+      if (!normalizedDest) {
+        res.status(400).json({ error: 'Número telefónico inválido para estándar E.164.' });
+        return;
+      }
+
+      if (normalizedDest === normalizeServerPhoneE164(brmServerSession.corporatePhoneE164)) {
+        res.status(409).json({
+          error: 'Exclusión determinista activa: no se permite enviar mensajes al propio número corporativo.',
+        });
+        return;
+      }
+
+      messageId =
+        String(clientMessageId || '').trim() ||
+        `wamid.SRV.${Date.now()}.${crypto.randomBytes(3).toString('hex')}`;
+
+      if (processedBrmMessageIds.has(messageId)) {
+        res.json({
+          ok: true,
+          duplicateIgnored: true,
+          messageId,
+          phoneE164: normalizedDest,
+        });
+        return;
+      }
+      processedBrmMessageIds.add(messageId);
+
+      if (brmServerSession.state === 'CONNECTED') {
+        transportUsed = 'QR_SOCKET_BRIDGE';
+        deliveryStatus = 'ENTREGADO';
+      } else if (brmServerSession.state === 'CLOUD_STANDBY') {
+        transportUsed = 'CLOUD_API_WEBHOOK';
+        deliveryStatus = 'ENVIADO';
+      } else {
+        transportUsed = 'WA_ME_DIRECT_LEDGER';
+        deliveryStatus = hasAdminCredentials ? 'ENVIADO' : 'EN_COLA_OFFLINE';
+      }
+
+      const nowCaracas = getCaracasNow();
+      const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+
+      if (!hasAdminCredentials) {
+        try {
+          appendPendingOfflineQueueSafe({
+            queueId: `q-${messageId}`,
+            channel: 'BRM_WHATSAPP',
+            createdAtVet: nowStamp,
+            payload: {
+              messageId,
+              supplierId,
+              supplierName,
+              supplierRif,
+              phoneE164: normalizedDest,
+              category,
+              bodyText,
+              attachmentFileName,
+              transportUsed,
+              deliveryStatus,
+            },
+          });
+        } catch {
+          // Aislado para no afectar respuesta HTTP 200 al usuario
+        }
+      }
+
+      res.json({
+        ok: true,
+        duplicateIgnored: false,
+        messageId,
+        phoneE164: normalizedDest,
+        transportUsed,
+        deliveryStatus,
+        hasAdminCredentials,
+        timestampVet: nowStamp,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Error procesando envío BRM WhatsApp.',
+      });
+    }
+  });
+
+  app.post('/api/brm/whatsapp/webhook', (req, res) => {
+    let incomingMessageId = '';
+    try {
+      const signatureHeader = String(req.headers['x-hub-signature-256'] || '');
+      const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || '';
+      if (webhookSecret && signatureHeader) {
+        const expected =
+          'sha256=' +
+          crypto
+            .createHmac('sha256', webhookSecret)
+            .update(JSON.stringify(req.body || {}))
+            .digest('hex');
+        if (signatureHeader !== expected) {
+          res.status(401).json({ error: 'Firma de webhook inválida.' });
+          return;
+        }
+      }
+
+      const payload = req.body || {};
+      incomingMessageId =
+        String(payload.messageId || '').trim() ||
+        `wamid.WHK.${Date.now()}.${crypto.randomBytes(3).toString('hex')}`;
+
+      if (processedBrmMessageIds.has(incomingMessageId)) {
+        res.status(200).json({ ok: true, duplicateIgnored: true, messageId: incomingMessageId });
+        return;
+      }
+      processedBrmMessageIds.add(incomingMessageId);
+
+      const nowCaracas = getCaracasNow();
+      appendPendingOfflineQueueSafe({
+        queueId: `q-in-${incomingMessageId}`,
+        channel: 'BRM_WHATSAPP',
+        createdAtVet: `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`,
+        payload: {
+          ...payload,
+          messageId: incomingMessageId,
+          status: 'PENDIENTE_VERIFICACION',
+        },
+      });
+
+      res.status(200).json({
+        ok: true,
+        duplicateIgnored: false,
+        messageId: incomingMessageId,
+        queuedForPreAudit: true,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Error en recepción de webhook BRM.',
+      });
+    }
+  });
+
+  app.get('/api/brm/offline-queue', (_req, res) => {
+    const items = readPendingOfflineQueueSafe();
+    res.json({
+      hasAdminCredentials,
+      count: items.length,
+      items,
+    });
+  });
+
+  app.post('/api/brm/offline-queue/ack', (req, res) => {
+    const queueIds = Array.isArray(req.body?.queueIds) ? req.body.queueIds : [];
+    const removed = removePendingOfflineQueueIdsSafe(queueIds);
+    res.json({
+      ok: true,
+      removed,
+      remaining: readPendingOfflineQueueSafe().length,
+    });
+  });
+
+  // ============================================================================
+  // CONECTOR PUENTE DE IMPRESORAS FISCALES HOMOLOGADAS SENIAT (REPORTE X / Z)
+  // ============================================================================
+  app.post('/api/v1/pos/fiscal-z-sync', (req, res) => {
+    let queueId = '';
+    try {
+      const body = req.body || {};
+      const { printerSerial = '', zNumber = '', closureDate = '' } = body;
+      if (!printerSerial || !zNumber) {
+        res.status(400).json({ error: 'Serial fiscal y número de Reporte Z son obligatorios.' });
+        return;
+      }
+
+      const nowCaracas = getCaracasNow();
+      queueId = `qz-${printerSerial}-${zNumber}-${Date.now()}`;
+
+      if (!hasAdminCredentials) {
+        appendPendingOfflineQueueSafe({
+          queueId,
+          channel: 'FISCAL_Z_SYNC',
+          createdAtVet: `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`,
+          payload: body,
+        });
+      }
+
+      res.status(200).json({
+        ok: true,
+        queueId,
+        printerSerial,
+        zNumber,
+        closureDate,
+        delegatedOfflineQueue: !hasAdminCredentials,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Error sincronizando cierre fiscal Z.',
       });
     }
   });

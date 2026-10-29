@@ -61,6 +61,7 @@ export interface Product {
   id: string;
   sku: string;
   barcode: string;
+  pluCode?: string;
   name: string;
   category: string;
   unit: 'UND' | 'KG' | 'LT' | 'CAJA' | 'BULTO';
@@ -203,6 +204,12 @@ export interface Supplier {
   taxpayerType?: TaxpayerType;
   personType?: PersonTaxType;
   defaultIslrConceptCode?: string;
+  whatsappE164?: string;
+  bankNameVes?: string;
+  bankAccountVes?: string;
+  pagoMovilPhone?: string;
+  zelleAccount?: string;
+  onTimeDeliveryScore?: number;
 }
 
 export type OcrEngineMode = 'GEMINI_VISION_PRO' | 'TESSERACT_FORENSIC';
@@ -396,7 +403,11 @@ export type NavigationTab =
   | 'AUDIT_HISTORY'
   | 'INVENTORY_DISCARDS'
   | 'MEAT_YIELD'
-  | 'FRUVER_YIELD';
+  | 'FRUVER_YIELD'
+  | 'FEFO_COLD_CHAIN'
+  | 'PRODUCTION_RECIPES'
+  | 'BRM_WHATSAPP'
+  | 'BANK_RECONCILIATION';
 
 export type DiscardReason =
   | 'VENCIMIENTO_CADUCIDAD'
@@ -485,7 +496,23 @@ export type AuditActionType =
   | 'SHELF_PHYSICAL_COUNT_ADJUST'
   | 'TAX_RETENTION_EMIT'
   | 'TAX_RETENTION_STATUS_CHANGE'
-  | 'TAX_RETENTION_VOID';
+  | 'TAX_RETENTION_VOID'
+  | 'SENIAT_PORTAL_EXPORT'
+  | 'SCALE_BARCODE_DECODE'
+  | 'PWA_BARCODE_SCAN'
+  | 'TOTP_TOKEN_ENROLL'
+  | 'TOTP_TOKEN_AUTHORIZE'
+  | 'FEFO_LOT_REGISTER'
+  | 'FEFO_EXPIRED_OVERRIDE'
+  | 'COLD_CHAIN_TEMP_LOG'
+  | 'PRODUCTION_RECIPE_CREATE'
+  | 'PRODUCTION_ORDER_EXECUTE'
+  | 'BRM_WHATSAPP_SEND'
+  | 'BRM_WHATSAPP_INVOICE_PRELOAD'
+  | 'BRM_WHATSAPP_SESSION_RESET'
+  | 'BANK_STATEMENT_IMPORT'
+  | 'BANK_PAYMENT_CONCILE'
+  | 'FISCAL_Z_REPORT_SYNC';
 
 export interface AuditLogEntry {
   id: string;
@@ -540,6 +567,16 @@ export interface PlatformBackupPayload {
   retentionVouchers?: TaxRetentionVoucher[];
   meatDirectPurchases?: MeatDirectCutPurchase[];
   shelfMovements?: ShelfMovementRecord[];
+  fefoLots?: FefoPerishableLot[];
+  coldChainLogs?: ColdChainTemperatureLog[];
+  productionRecipes?: ProductionRecipeBom[];
+  productionOrders?: InternalProductionOrder[];
+  brmMessages?: BrmWhatsappMessage[];
+  brmPreInvoices?: BrmSupplierPreInvoice[];
+  bankStatementLines?: BankStatementLine[];
+  preConciliationItems?: PaymentPreConciliationItem[];
+  fiscalZReports?: FiscalZReportRecord[];
+  totpConfig?: TotpSecurityConfig;
 }
 
 export interface EncryptedBackupEnvelope {
@@ -1024,3 +1061,336 @@ export interface TaxRetentionVoucher {
 }
 
 
+// ==========================================
+// EVOLUCIÓN V4.0 — LAS 10 MEJORAS & MÓDULO BRM WHATSAPP PROVEEDORES
+// ==========================================
+
+// 1. Exportador Portal SENIAT (.TXT IVA, .XML ISLR, Libro de Compras)
+export interface SeniatTxtValidationIssue {
+  voucherNumber: string;
+  invoiceNumber: string;
+  field: string;
+  message: string;
+  severity: 'ERROR' | 'ADVERTENCIA';
+}
+
+export interface SeniatPortalExportBundle {
+  periodYearMonth: string;
+  fortnight?: FilingFortnight;
+  fileName: string;
+  mimeType: string;
+  content: string;
+  recordsCount: number;
+  totalRetainedVes: number;
+  totalTaxableBaseVes: number;
+  validationIssues: SeniatTxtValidationIssue[];
+}
+
+// 2. Balanzas Electrónicas EAN-13 Peso Variable (Prefijos 20 / 21)
+export type ScaleBarcodeMode = 'WEIGHT_GRAMS_20' | 'PRICE_CENTS_21';
+
+export interface DecodedScaleBarcode {
+  rawBarcode: string;
+  isScaleVariableBarcode: boolean;
+  prefix: '20' | '21' | '22' | 'STANDARD';
+  mode: ScaleBarcodeMode | 'STANDARD_EAN';
+  pluCode: string;
+  weightKg: number;
+  encodedTotalUsd?: number;
+  checksumValid: boolean;
+  expectedCheckDigit: number;
+}
+
+// 3. Escáner Móvil PWA por Cámara & Lector Láser
+export interface BarcodeScanRecord {
+  id: string;
+  rawCode: string;
+  matchedProductId?: string;
+  matchedSku?: string;
+  matchedProductName?: string;
+  decodedWeightKg?: number;
+  scannedQty: number;
+  zone: StorageZone;
+  locationId: string;
+  source: 'CAMERA_PWA' | 'HARDWARE_WEDGE' | 'MANUAL_ENTRY';
+  scannedAtVet: string;
+  synced: boolean;
+}
+
+// 4. Módulo BRM WhatsApp Proveedores (Patrón Híbrido Triple Puro Apure ERP)
+export type BrmConnectionMode =
+  | 'QR_SOCKET_BRIDGE'
+  | 'CLOUD_API_WEBHOOK'
+  | 'WA_ME_DIRECT_LEDGER';
+
+export type BrmSessionState =
+  | 'CONNECTED'
+  | 'QR_READY'
+  | 'DISCONNECTED'
+  | 'CLOUD_STANDBY';
+
+export type BrmDeliveryStatus =
+  | 'EN_COLA_OFFLINE'
+  | 'ENVIADO'
+  | 'ENTREGADO'
+  | 'LEIDO'
+  | 'FALLIDO';
+
+export type BrmDocumentCategory =
+  | 'ORDEN_COMPRA'
+  | 'FACTURA_ENTRANTE_PROVEEDOR'
+  | 'SOPORTE_PAGO_CXP'
+  | 'COMPROBANTE_RETENCION_IVA'
+  | 'COMPROBANTE_RETENCION_ISLR'
+  | 'HOMOLOGACION_EXPEDIENTE'
+  | 'MENSAJE_OPERATIVO_BRM';
+
+export interface BrmWhatsappSessionStatus {
+  state: BrmSessionState;
+  activeMode: BrmConnectionMode;
+  corporatePhoneE164: string;
+  qrPayloadData?: string;
+  qrGeneratedAtVet?: string;
+  hasAdminCredentials: boolean;
+  pendingOfflineQueueCount: number;
+  lastHeartbeatVet: string;
+}
+
+export interface BrmWhatsappMessage {
+  id: string;
+  messageId: string; // Idempotency key
+  supplierId: string;
+  supplierName: string;
+  supplierRif: string;
+  phoneE164: string;
+  direction: 'OUTBOUND_TO_SUPPLIER' | 'INBOUND_FROM_SUPPLIER';
+  category: BrmDocumentCategory;
+  bodyText: string;
+  relatedEntityId?: string;
+  attachmentFileName?: string;
+  deliveryStatus: BrmDeliveryStatus;
+  transportUsed: BrmConnectionMode;
+  waMeDeepLink?: string;
+  createdBy: string;
+  timestampVet: string;
+}
+
+export interface BrmSupplierPreInvoice {
+  id: string;
+  messageId: string;
+  supplierId: string;
+  supplierName: string;
+  supplierRif: string;
+  phoneE164: string;
+  invoiceNumber: string;
+  controlNumber: string;
+  declaredSubtotalUsd: number;
+  declaredIvaUsd: number;
+  declaredIgtfUsd: number;
+  declaredTotalUsd: number;
+  sha256Hash: string;
+  pHashVisual: string;
+  ocrVerdict: 'AUTENTICO_ALTA_CONFIANZA' | 'SOSPECHOSO_REVISION_HUMANA' | 'ALERTA_FRAUDE_EDICION_O_IA';
+  ocrConfidenceScore: number;
+  status: 'PENDIENTE_VERIFICACION' | 'CONFIRMADA_RECEPCION_FISICA' | 'RECHAZADA_DISCREPANCIA';
+  receivedAtVet: string;
+  confirmedBy?: string;
+  confirmedAtVet?: string;
+  linkedInvoiceId?: string;
+}
+
+// 5. Control FEFO de Perecederos & Telemetría Cadena de Frío SADA
+export type FefoAlertLevel =
+  | 'VENCIDO_BLOQUEADO'
+  | 'CRITICO_PROMOCION_1_3D'
+  | 'PREVENTIVO_4_7D'
+  | 'VIGENTE_OPTIMO';
+
+export interface FefoPerishableLot {
+  id: string;
+  lotCode: string;
+  productId: string;
+  sku: string;
+  productName: string;
+  category: string;
+  unit: Product['unit'];
+  locationId: string;
+  locationName: string;
+  zone: StorageZone;
+  quantityRemaining: number;
+  unitCostUsd: number;
+  receptionDate: string;
+  expirationDate: string;
+  daysUntilExpiration: number;
+  alertLevel: FefoAlertLevel;
+  suggestedDiscountPercent: number;
+  suggestedAction: 'BLOQUEAR_Y_DESCARGAR' | 'TRANSFORMAR_RECETA_O_PROMO' | 'PRIORIZAR_SALIDA_EXHIBICION' | 'MANTENER_ROTACION';
+  blockedForSale: boolean;
+  managerOverrideAuthorizedBy?: string;
+}
+
+export type ColdEquipmentType = 'CAVA_CARNICOS' | 'CONGELADOR_PROTEINA' | 'VITRINA_EXHIBICION' | 'CUARTO_FRIO_FRUVER';
+
+export interface ColdChainTemperatureLog {
+  id: string;
+  locationId: string;
+  locationName: string;
+  equipmentName: string;
+  equipmentType: ColdEquipmentType;
+  recordedTempCelsius: number;
+  minAllowedCelsius: number;
+  maxAllowedCelsius: number;
+  isOutOfRange: boolean;
+  source: 'MANUAL_SUPERVISOR' | 'IOT_WEBHOOK_SENSOR';
+  recordedBy: string;
+  recordedAtVet: string;
+  correctiveAction?: string;
+}
+
+// 6. Recetario de Transformación Interna (BOM) & Subproductos
+export interface RecipeIngredientLine {
+  productId: string;
+  sku: string;
+  productName: string;
+  unit: Product['unit'];
+  quantityRequiredPerBatch: number;
+  preferredSourceZone: StorageZone;
+}
+
+export interface ProductionRecipeBom {
+  id: string;
+  code: string;
+  name: string;
+  department: 'CARNICERIA' | 'CHARCUTERIA' | 'FRUVER';
+  outputProductId?: string;
+  outputSku: string;
+  outputProductName: string;
+  outputUnit: Product['unit'];
+  expectedOutputQty: number;
+  packagingAndCondimentsCostUsd: number;
+  targetMarginPercent: number;
+  ingredients: RecipeIngredientLine[];
+  active: boolean;
+}
+
+export interface InternalProductionOrder {
+  id: string;
+  orderCode: string;
+  recipeId: string;
+  recipeName: string;
+  locationId: string;
+  locationName: string;
+  targetOutputZone: StorageZone;
+  batchesMultiplier: number;
+  actualOutputQty: number;
+  rawMaterialsCostUsd: number;
+  packagingCostUsd: number;
+  totalBatchCostUsd: number;
+  unitElaboratedCostUsd: number;
+  suggestedPvpUsd: number;
+  suggestedPvpVes: number;
+  fefoLotsConsumed: string[];
+  executedBy: string;
+  executedAtVet: string;
+}
+
+// 7. Conciliación Bancaria Bimonetaria Automatizada + Bandeja Pre-Conciliación OCR
+export interface BankStatementLine {
+  id: string;
+  bankName: string;
+  accountCurrency: 'VES' | 'USD';
+  transactionDate: string;
+  reference: string;
+  description: string;
+  amount: number;
+  amountUsdEquivalent: number;
+  bcvRateAtTx: number;
+  igtfAppliedUsd: number;
+  direction: 'DEBITO_EGRESO' | 'CREDITO_INGRESO';
+  reconciliationStatus: 'PENDIENTE' | 'CONCILIADO_EXACTO' | 'CONCILIADO_TOLERANCIA';
+  matchedPaymentId?: string;
+  matchedInvoiceId?: string;
+}
+
+export interface PaymentPreConciliationItem {
+  id: string;
+  supplierId: string;
+  supplierName: string;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  method: AccountsPayablePayment['method'];
+  currency: 'VES' | 'USD';
+  amountOriginal: number;
+  bcvRateUsed: number;
+  amountUsd: number;
+  igtfUsd: number;
+  reference: string;
+  sha256Hash: string;
+  pHashVisual: string;
+  ocrVerdict: 'AUTENTICO_ALTA_CONFIANZA' | 'SOSPECHOSO_REVISION_HUMANA' | 'ALERTA_FRAUDE_EDICION_O_IA';
+  ocrScore: number;
+  status: 'pendiente_verificacion' | 'CONCILIADO_EN_LIBRO' | 'RECHAZADO_FRAUDE_O_DUPLICADO';
+  submittedBy: string;
+  submittedAtVet: string;
+  verifiedBy?: string;
+  verifiedAtVet?: string;
+}
+
+// 8. Motor Predictivo de Demanda por Quincenas (15 / 30) y Estacionalidad
+export interface DemandForecastSummary {
+  productId: string;
+  sku: string;
+  productName: string;
+  category: string;
+  locationId: string;
+  baseDailyVelocity: number;
+  quincenaMultiplier: number;
+  weekendMultiplier: number;
+  seasonalCategoryFactor: number;
+  effectiveDailyDemand: number;
+  projectedDemandHorizon: number;
+  horizonDays: RotationHorizonDays;
+  isUpcomingQuincenaWindow: boolean;
+  recommendedOrderQty: number;
+}
+
+// 9. Gobernanza Gerencial con Token Dinámico TOTP Offline / QR 30s
+export interface TotpSecurityConfig {
+  enabled: boolean;
+  allowPinFallback: boolean;
+  secretBase32: string;
+  issuer: string;
+  accountLabel: string;
+  enrolledBy?: string;
+  enrolledAtVet?: string;
+}
+
+// 10. Impresoras Fiscales Homologadas SENIAT & Cierre Diario X / Z
+export interface FiscalZReportRecord {
+  id: string;
+  zNumber: string;
+  printerSerial: string;
+  printerBrand: 'THE_FACTORY_HKA' | 'BEMATECH' | 'PNP' | 'IMPRENTA_DIGITAL';
+  locationId: string;
+  locationName: string;
+  closureDate: string;
+  reportType: 'REPORTE_X_PARCIAL' | 'REPORTE_Z_DIARIO';
+  invoicesCount: number;
+  creditNotesCount: number;
+  exemptSalesUsd: number;
+  taxableBase16Usd: number;
+  iva16CollectedUsd: number;
+  taxableBase8Usd: number;
+  iva8CollectedUsd: number;
+  igtfBaseForeignUsd: number;
+  igtf3CollectedUsd: number;
+  grandTotalFiscalUsd: number;
+  grandTotalFiscalVes: number;
+  bcvRateClosure: number;
+  erpPosTotalUsd: number;
+  discrepancyUsd: number;
+  hmacVerified: boolean;
+  source: 'API_PUENTE_FISCAL' | 'CARGA_AUDITADA_CIERRE';
+  registeredBy: string;
+  registeredAtVet: string;
+}

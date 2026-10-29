@@ -40,6 +40,8 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
+import { deriveProductPlu5, encodeScaleBarcode } from '../../lib/scale-barcode';
 import {
   RES_STANDARD_CUTS,
   CERDO_STANDARD_CUTS,
@@ -118,6 +120,9 @@ export const MeatYieldView: React.FC = () => {
     meatDirectPurchases,
     registerAndLoadMeatDirectPurchase,
   } = useInventory();
+  const { defaultScaleMode, setDefaultScaleMode } = useOperationsBrm();
+  const [scaleSampleWeightKg, setScaleSampleWeightKg] = useState<number>(1.25);
+  const [scaleSelectedSku, setScaleSelectedSku] = useState<string>('RES-SOLOMO');
   const { bcvState, suppliers, addSupplier } = useFinance();
 
   // Selector de Sesión Operativa: Canal/Desposte vs. Compra de Cortes Directos
@@ -1996,6 +2001,123 @@ export const MeatYieldView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Emisor de Etiquetas Balanza Electrónica Carnicería EAN-13 (Prefijos 20 Peso / 21 Importe) */}
+      <div className="bg-slate-900 text-white rounded-2xl p-5 border border-slate-800 shadow-lg space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-bold mb-1">
+              <Barcode className="w-3.5 h-3.5" />
+              Integración Balanzas Electrónicas Carnicería &amp; Charcutería (EAN-13)
+            </div>
+            <h2 className="text-base font-bold">
+              Generador de Etiquetas Peso-Precio Variable (`20` Gramos / `21` Importe USD)
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setDefaultScaleMode('WEIGHT_GRAMS_20')}
+              className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold transition cursor-pointer ${
+                defaultScaleMode === 'WEIGHT_GRAMS_20'
+                  ? 'bg-amber-500 text-slate-950'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Prefijo 20 (Peso Kg)
+            </button>
+            <button
+              type="button"
+              onClick={() => setDefaultScaleMode('PRICE_CENTS_21')}
+              className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold transition cursor-pointer ${
+                defaultScaleMode === 'PRICE_CENTS_21'
+                  ? 'bg-sky-500 text-slate-950'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+            >
+              Prefijo 21 (Importe $)
+            </button>
+          </div>
+        </div>
+
+        {(() => {
+          const meatProducts = products.filter(
+            (p) =>
+              p.unit === 'KG' ||
+              p.category.toLowerCase().includes('carn') ||
+              p.sku.startsWith('RES-') ||
+              p.sku.startsWith('CER-') ||
+              p.sku.startsWith('POL-')
+          );
+          const activeProd =
+            meatProducts.find((p) => p.sku === scaleSelectedSku) ||
+            meatProducts[0] ||
+            products[0];
+          const plu5 = activeProd
+            ? deriveProductPlu5(activeProd)
+            : '10001';
+          const unitPriceUsd = activeProd?.priceUsd || 8.5;
+          const trayTotalUsd = round2(toDecimal(scaleSampleWeightKg).times(unitPriceUsd));
+          const ean13 = encodeScaleBarcode({
+            pluCode: plu5,
+            mode: defaultScaleMode,
+            weightKg: scaleSampleWeightKg,
+            totalPriceUsd: trayTotalUsd,
+          });
+
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center bg-slate-950/70 border border-slate-800 rounded-xl p-4 text-xs">
+              <div>
+                <label className="block text-slate-400 font-bold mb-1">
+                  Corte / Pieza en Catálogo (PLU 5d)
+                </label>
+                <select
+                  value={activeProd?.sku || ''}
+                  onChange={(e) => setScaleSelectedSku(e.target.value)}
+                  className="w-full min-h-[44px] px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-semibold"
+                >
+                  {(meatProducts.length > 0 ? meatProducts : products).map((p) => (
+                    <option key={p.id} value={p.sku}>
+                      {p.sku} — {p.name} (PLU {deriveProductPlu5(p)} · ${p.priceUsd.toFixed(2)}/Kg)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-400 font-bold mb-1">
+                  Peso Bandeja / Empaque (Kg)
+                </label>
+                <input
+                  type="number"
+                  step="0.005"
+                  min="0.05"
+                  max="99.99"
+                  value={scaleSampleWeightKg}
+                  onChange={(e) => setScaleSampleWeightKg(Math.max(0.01, Number(e.target.value) || 0.5))}
+                  className="w-full min-h-[44px] px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white font-mono font-bold tabular-nums"
+                />
+              </div>
+
+              <div className="bg-white text-slate-950 rounded-xl p-3.5 border-2 border-amber-400 shadow-sm">
+                <div className="flex items-center justify-between text-[11px] font-bold uppercase text-slate-500">
+                  <span>PLU {plu5}</span>
+                  <span>
+                    {scaleSampleWeightKg.toFixed(3)} Kg · ${trayTotalUsd.toFixed(2)}
+                  </span>
+                </div>
+                <div className="font-mono text-lg font-extrabold tracking-widest text-center my-1 tabular-nums">
+                  {ean13}
+                </div>
+                <div className="text-[10px] text-center text-slate-500 font-mono">
+                  EAN-13 Homologado Caja POS Chrystal®
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 };

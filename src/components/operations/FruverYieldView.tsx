@@ -46,6 +46,8 @@ import { round2, toDecimal } from '../../lib/decimal';
 import { useAuth } from '../../context/AuthContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
+import { deriveProductPlu5, encodeScaleBarcode } from '../../lib/scale-barcode';
 import {
   FRUVER_LOSS_CAUSE_LABELS,
   FRUVER_STANDARD_PRODUCTS,
@@ -57,6 +59,8 @@ export const FruverYieldView: React.FC = () => {
   const { user, hasPermission } = useAuth();
   const { locations, products, addOrUpdateProduct, logAuditEvent, createManualPurchaseOrder } = useInventory();
   const { bcvState, suppliers, addSupplier } = useFinance();
+  const { defaultScaleMode } = useOperationsBrm();
+  const [fruverScaleWeightKg, setFruverScaleWeightKg] = useState<number>(0.85);
 
   // Custom standard products catalog with user-created additions
   const [customCatalog, setCustomCatalog] = useState(FRUVER_STANDARD_PRODUCTS);
@@ -1089,6 +1093,57 @@ export const FruverYieldView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Etiqueta Balanza Electrónica Fruver EAN-13 */}
+      <div className="bg-emerald-950 text-white rounded-2xl p-5 border border-emerald-800 shadow-md">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold mb-1">
+              <Barcode className="w-3.5 h-3.5" />
+              Etiquetado Balanza Autoservicio Fruver EAN-13 ({defaultScaleMode === 'PRICE_CENTS_21' ? 'Prefijo 21 Importe' : 'Prefijo 20 Peso'})
+            </div>
+            <div className="text-sm font-bold">
+              Rubro Seleccionado: {selectedProductSku} · Peso Bolsa Prueba (Kg):
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="number"
+              step="0.01"
+              min="0.05"
+              max="50"
+              value={fruverScaleWeightKg}
+              onChange={(e) => setFruverScaleWeightKg(Math.max(0.05, Number(e.target.value) || 0.5))}
+              className="w-28 min-h-[44px] px-3 py-2 rounded-xl bg-emerald-900 border border-emerald-700 text-white font-mono font-bold tabular-nums"
+            />
+            {(() => {
+              const catalogMatch = products.find((p) => p.sku === selectedProductSku);
+              const plu5 = catalogMatch
+                ? deriveProductPlu5(catalogMatch)
+                : deriveProductPlu5({ sku: selectedProductSku, barcode: selectedProductSku });
+              const pvpUsd = catalogMatch?.priceUsd || round2(costPerKgUsd * 1.35);
+              const totalUsd = round2(toDecimal(fruverScaleWeightKg).times(pvpUsd));
+              const ean13 = encodeScaleBarcode({
+                pluCode: plu5,
+                mode: defaultScaleMode,
+                weightKg: fruverScaleWeightKg,
+                totalPriceUsd: totalUsd,
+              });
+              return (
+                <div className="bg-white text-slate-950 px-4 py-2 rounded-xl border-2 border-emerald-400 font-mono">
+                  <div className="text-[10px] font-bold text-slate-500">
+                    PLU {plu5} · {fruverScaleWeightKg.toFixed(3)} Kg · ${totalUsd.toFixed(2)}
+                  </div>
+                  <div className="text-base font-extrabold tracking-widest tabular-nums">
+                    {ean13}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

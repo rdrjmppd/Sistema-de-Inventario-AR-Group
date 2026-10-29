@@ -172,6 +172,69 @@ import {
   generateIslrRetentionPdfDocument,
   generateQuincenalRetentionsPdfDocument,
 } from './retention-pdf';
+import {
+  formatSeniatCompactRif,
+  isValidSeniatCompactRif,
+  buildSeniatIvaTxtExport,
+  buildSeniatIslrXmlExport,
+  buildSeniatPurchaseBookWorkbook,
+  buildSeniatSalesBookWorkbook,
+} from './seniat-exporter';
+import {
+  computeEan13CheckDigit,
+  deriveProductPlu5,
+  encodeScaleBarcode,
+  decodeScaleBarcode,
+  resolveCatalogProductFromBarcode,
+} from './scale-barcode';
+import {
+  appendScanToSessionQueue,
+  summarizeScanQueueByProduct,
+} from './barcode-scanner';
+import {
+  normalizePhoneE164,
+  isValidPhoneE164,
+  isCorporateSelfPhone,
+  resolveHybridBrmTransport,
+  appendIdempotentBrmMessage,
+  formatBrmPurchaseOrderTemplate,
+  formatBrmPaymentAndRetentionsBundleTemplate,
+  registerIncomingBrmPreInvoice,
+  resetBrmWhatsappSessionCleanly,
+  DEFAULT_CORPORATE_BRM_PHONE_E164,
+} from './brm-whatsapp';
+import {
+  computeDaysUntilExpiration,
+  classifyFefoLotStatus,
+  createFefoPerishableLot,
+  sortLotsByFefo,
+  consumeLotsStrictFefo,
+  buildColdChainTemperatureLog,
+  moveFefoLotToShelf,
+} from './fefo-coldchain';
+import { executeInternalProductionOrder } from './recipe-bom';
+import {
+  parseBankStatementCsv,
+  submitPaymentToPreConciliation,
+  autoReconcileBankStatement,
+} from './bank-reconciliation';
+import {
+  isVenezuelanQuincenaPeakDay,
+  isRetailWeekendPeakDay,
+  forecastVenezuelanRetailDemand,
+} from './demand-predictor';
+import {
+  DEFAULT_TOTP_CONFIG,
+  generateBase32TotpSecret,
+  generateTotpCode,
+  buildTotpOtpAuthUri,
+  buildEphemeralApprovalQrPayload,
+  verifyManagerGovernanceAuth,
+} from './totp-governance';
+import {
+  computeFiscalPayloadSignature,
+  processFiscalZClosure,
+} from './fiscal-printer';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -4093,4 +4156,1060 @@ test('50. Branded SENIAT Retention PDF Engine & Multi-Tab Routing: IVA, ISLR, Vo
   );
   assert.equal(quincenalDoc.getNumberOfPages(), 1);
   assert.ok(quincenalDoc.output().startsWith('%PDF-'));
+});
+
+test('51. Portal SENIAT .TXT IVA, .XML ISLR & Libros Oficiales .XLSX: Pre-validador, formato compacto de RIF, 16 columnas tabuladas y prueba de estrés de 500 comprobantes', () => {
+  assert.equal(formatSeniatCompactRif('j-50123456-7'), 'J501234567');
+  assert.equal(isValidSeniatCompactRif('J501234567'), true);
+  assert.equal(isValidSeniatCompactRif('INVALID'), false);
+
+  const company = resolveCompanyProfile(DEFAULT_COMPANY_PROFILE);
+
+  // Prueba de estrés: 500 comprobantes IVA + 120 comprobantes ISLR en el período 202610
+  const stressVouchers: TaxRetentionVoucher[] = [];
+  for (let i = 1; i <= 500; i++) {
+    stressVouchers.push({
+      id: `v-iva-${i}`,
+      voucherNumber: `202610${String(i).padStart(8, '0')}`,
+      type: 'IVA',
+      legalNormative: 'Providencia SNAT/2025/000054',
+      status: i === 500 ? 'ANULADO' : 'EMITIDO',
+      periodYearMonth: '202610',
+      fortnight: 'SEGUNDA_QUINCENA',
+      fortnightLabel: '2da Quincena Octubre 2026',
+      legalDeliveryHint: '3 días hábiles',
+      agentRazonSocial: company.razonSocial,
+      agentRif: company.rif,
+      agentAddress: company.direccionFiscal,
+      issueDate: '2026-10-28',
+      invoiceId: `inv-${i}`,
+      invoiceNumber: `FAC-${10000 + i}`,
+      controlNumber: `00-${20000 + i}`,
+      invoiceIssueDate: '2026-10-27',
+      supplierId: 'sup-01',
+      supplierName: 'Alimentos Polar Comercial, C.A.',
+      supplierRif: 'J-00006372-9',
+      supplierTaxpayerType: 'ESPECIAL',
+      supplierPersonType: 'PJ_DOMICILIADA',
+      bcvRateAtIssue: 50.0,
+      utValueVes: 9.0,
+      invoiceTotalUsd: 126.0,
+      invoiceTotalVes: 6300.0,
+      exemptTotalUsd: 10.0,
+      exemptTotalVes: 500.0,
+      taxableBaseUsd: 100.0,
+      taxableBaseVes: 5000.0,
+      taxCausadoTotalUsd: 16.0,
+      taxCausadoTotalVes: 800.0,
+      retentionPercentApplied: 75,
+      sustraendoTotalVes: 0,
+      retainedTotalUsd: 12.0,
+      retainedTotalVes: 600.0,
+      netPayableAfterAllRetentionsUsd: 114.0,
+      netPayableAfterAllRetentionsVes: 5700.0,
+      lines: [
+        {
+          lineId: `ln-iva-${i}`,
+          sku: 'SKU-IVA',
+          description: 'Compra gravada 16%',
+          lineType: 'BIEN',
+          exemptAmountUsd: 10.0,
+          exemptAmountVes: 500.0,
+          baseAmountUsd: 100.0,
+          baseAmountVes: 5000.0,
+          taxRatePercent: 16,
+          taxCausadoUsd: 16.0,
+          taxCausadoVes: 800.0,
+          retentionRatePercent: 75,
+          sustraendoVes: 0,
+          retainedAmountVes: 600.0,
+          retainedAmountUsd: 12.0,
+        },
+      ],
+      createdBy: 'rdrj.mppd@gmail.com',
+      createdAtVet: '2026-10-28 10:00',
+    });
+  }
+
+  for (let j = 1; j <= 120; j++) {
+    stressVouchers.push({
+      id: `v-islr-${j}`,
+      voucherNumber: `202610${String(5000 + j).padStart(8, '0')}`,
+      type: 'ISLR',
+      legalNormative: 'Decreto 1.808',
+      status: 'EMITIDO',
+      periodYearMonth: '202610',
+      fortnight: 'SEGUNDA_QUINCENA',
+      fortnightLabel: '2da Quincena Octubre 2026',
+      legalDeliveryHint: 'Mensual',
+      agentRazonSocial: company.razonSocial,
+      agentRif: company.rif,
+      agentAddress: company.direccionFiscal,
+      issueDate: '2026-10-28',
+      invoiceId: `inv-srv-${j}`,
+      invoiceNumber: `SRV-${j}`,
+      controlNumber: `00-99${j}`,
+      invoiceIssueDate: '2026-10-27',
+      supplierId: 'sup-02',
+      supplierName: 'Transporte Frigorífico Nacional, C.A.',
+      supplierRif: 'J-31224455-6',
+      supplierTaxpayerType: 'ORDINARIO',
+      supplierPersonType: 'PJ_DOMICILIADA',
+      bcvRateAtIssue: 50.0,
+      utValueVes: 9.0,
+      invoiceTotalUsd: 200.0,
+      invoiceTotalVes: 10000.0,
+      exemptTotalUsd: 0,
+      exemptTotalVes: 0,
+      taxableBaseUsd: 200.0,
+      taxableBaseVes: 10000.0,
+      taxCausadoTotalUsd: 0,
+      taxCausadoTotalVes: 0,
+      retentionPercentApplied: 3,
+      sustraendoTotalVes: 0,
+      retainedTotalUsd: 6.0,
+      retainedTotalVes: 300.0,
+      netPayableAfterAllRetentionsUsd: 194.0,
+      netPayableAfterAllRetentionsVes: 9700.0,
+      lines: [
+        {
+          lineId: `ln-islr-${j}`,
+          sku: 'SRV-01',
+          description: 'Flete Refrigerado',
+          lineType: 'SERVICIO',
+          conceptCode: 'SRV-FLETE',
+          exemptAmountUsd: 0,
+          exemptAmountVes: 0,
+          baseAmountUsd: 200.0,
+          baseAmountVes: 10000.0,
+          taxRatePercent: 0,
+          taxCausadoUsd: 0,
+          taxCausadoVes: 0,
+          retentionRatePercent: 3,
+          sustraendoVes: 0,
+          retainedAmountVes: 300.0,
+          retainedAmountUsd: 6.0,
+        },
+      ],
+      createdBy: 'rdrj.mppd@gmail.com',
+      createdAtVet: '2026-10-28 11:00',
+    });
+  }
+
+  const ivaTxt = buildSeniatIvaTxtExport({
+    vouchers: stressVouchers,
+    companyProfile: company,
+    periodYearMonth: '202610',
+    fortnight: 'SEGUNDA_QUINCENA',
+  });
+
+  // 499 vigentes (el #500 está ANULADO y se excluye del TXT)
+  assert.equal(ivaTxt.recordsCount, 499);
+  assert.equal(ivaTxt.totalRetainedVes, 499 * 600);
+  assert.equal(ivaTxt.validationIssues.filter((x) => x.severity === 'ERROR').length, 0);
+  const firstRowCols = ivaTxt.content.split('\r\n')[0].split('\t');
+  assert.equal(firstRowCols.length, 16);
+  assert.equal(firstRowCols[0], formatSeniatCompactRif(company.rif));
+  assert.equal(firstRowCols[5], 'J000063729');
+  assert.equal(firstRowCols[12], '20261000000001');
+
+  const islrXml = buildSeniatIslrXmlExport({
+    vouchers: stressVouchers,
+    companyProfile: company,
+    periodYearMonth: '202610',
+  });
+  assert.equal(islrXml.recordsCount, 120);
+  assert.equal(islrXml.totalRetainedVes, 120 * 300);
+  assert.ok(islrXml.content.includes('<RelacionRetencionesISLR'));
+  assert.ok(islrXml.content.includes('<RifRetenido>J312244556</RifRetenido>'));
+
+  const purchaseWb = buildSeniatPurchaseBookWorkbook({
+    invoices: [],
+    vouchers: stressVouchers,
+    companyProfile: company,
+    periodYearMonth: '202610',
+  });
+  assert.ok(purchaseWb.SheetNames.includes('Libro Compras SENIAT'));
+});
+
+test('52. Balanzas Electrónicas EAN-13 (Prefijos 20 Peso y 21 Importe): Dígito verificador Módulo 10, peso inverso Decimal.js y prueba de estrés de 1.000 etiquetas', () => {
+  const sampleMeatProduct: Product = {
+    id: 'prd-meat-01',
+    sku: 'RES-SOLOMO-KG',
+    pluCode: '10425',
+    barcode: '7591234567890',
+    name: 'Solomo de Cuerito AA',
+    category: 'Carnicería y Proteínas',
+    unit: 'KG',
+    costUsd: 6.5,
+    targetMarginPercent: 25,
+    priceUsd: 8.67,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 50 },
+    minStockByLocation: { 'loc-pzo-01': 10 },
+    monthlyUnitsSold: 120,
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  assert.equal(deriveProductPlu5(sampleMeatProduct), '10425');
+
+  // 1. Etiqueta Prefijo 20 (Peso en gramos: 1.375 Kg -> 01375)
+  const label20 = encodeScaleBarcode({
+    pluCode: '10425',
+    mode: 'WEIGHT_GRAMS_20',
+    weightKg: 1.375,
+  });
+  assert.equal(label20.length, 13);
+  assert.ok(label20.startsWith('201042501375'));
+
+  const resolved20 = resolveCatalogProductFromBarcode(label20, [sampleMeatProduct]);
+  assert.equal(resolved20.decoded.checksumValid, true);
+  assert.equal(resolved20.decoded.isScaleVariableBarcode, true);
+  assert.equal(resolved20.product?.id, 'prd-meat-01');
+  assert.equal(resolved20.effectiveQuantity, 1.375);
+
+  // 2. Etiqueta Prefijo 21 (Importe total en centavos USD: $17.34 / $8.67 = 2.000 Kg exactos)
+  const label21 = encodeScaleBarcode({
+    pluCode: '10425',
+    mode: 'PRICE_CENTS_21',
+    totalPriceUsd: 17.34,
+  });
+  assert.equal(label21.length, 13);
+  assert.ok(label21.startsWith('211042501734'));
+
+  const resolved21 = resolveCatalogProductFromBarcode(label21, [sampleMeatProduct]);
+  assert.equal(resolved21.decoded.checksumValid, true);
+  assert.equal(resolved21.effectiveQuantity, 2);
+
+  // 3. Prueba de estrés de 1.000 etiquetas aleatorias de balanza sin deriva IEEE-754
+  for (let i = 1; i <= 1000; i++) {
+    const grams = 50 + (i * 37) % 15000; // entre 0.050 Kg y 15.049 Kg
+    const weightKg = Number((grams / 1000).toFixed(3));
+    const code = encodeScaleBarcode({
+      pluCode: String(10000 + (i % 999)),
+      mode: 'WEIGHT_GRAMS_20',
+      weightKg,
+    });
+    const dec = decodeScaleBarcode(code);
+    assert.equal(dec.checksumValid, true);
+    assert.equal(dec.weightKg, weightKg);
+    assert.equal(computeEan13CheckDigit(code.slice(0, 12)), Number(code[12]));
+  }
+});
+
+test('53. Escáner Móvil PWA & Pistolas USB/Bluetooth: Acumulación offline de lecturas estándar y etiquetas de balanza por zona', () => {
+  const catalog: Product[] = [
+    {
+      id: 'p-1',
+      sku: 'HAR-PAN-1KG',
+      barcode: '7591001100105',
+      name: 'Harina P.A.N. 1Kg',
+      category: 'Víveres Secos',
+      unit: 'UND',
+      costUsd: 1.0,
+      targetMarginPercent: 20,
+      priceUsd: 1.25,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 100 },
+      minStockByLocation: { 'loc-pzo-01': 20 },
+      monthlyUnitsSold: 300,
+      abcClass: 'A',
+      supplierId: 'sup-01',
+      lastUpdatedVet: '2026-10-29',
+    },
+    {
+      id: 'p-2',
+      sku: 'QUESO-PAISA-KG',
+      pluCode: '20550',
+      barcode: '7592055000001',
+      name: 'Queso Blanco Paisa Kg',
+      category: 'Charcutería y Lácteos',
+      unit: 'KG',
+      costUsd: 5.2,
+      targetMarginPercent: 25,
+      priceUsd: 6.93,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 30 },
+      minStockByLocation: { 'loc-pzo-01': 5 },
+      monthlyUnitsSold: 80,
+      abcClass: 'A',
+      supplierId: 'sup-02',
+      lastUpdatedVet: '2026-10-29',
+    },
+  ];
+
+  let queue = appendScanToSessionQueue({
+    existingQueue: [],
+    rawCode: '7591001100105',
+    products: catalog,
+    locationId: 'loc-pzo-01',
+    zone: 'ANAQUEL',
+    source: 'CAMERA_PWA',
+  }).updatedQueue;
+
+  queue = appendScanToSessionQueue({
+    existingQueue: queue,
+    rawCode: '7591001100105',
+    products: catalog,
+    locationId: 'loc-pzo-01',
+    zone: 'ANAQUEL',
+    source: 'HARDWARE_WEDGE',
+    overrideQty: 4,
+  }).updatedQueue;
+
+  const cheeseScaleCode = encodeScaleBarcode({
+    pluCode: '20550',
+    mode: 'WEIGHT_GRAMS_20',
+    weightKg: 0.685,
+  });
+
+  queue = appendScanToSessionQueue({
+    existingQueue: queue,
+    rawCode: cheeseScaleCode,
+    products: catalog,
+    locationId: 'loc-pzo-01',
+    zone: 'ANAQUEL',
+    source: 'CAMERA_PWA',
+  }).updatedQueue;
+
+  const summary = summarizeScanQueueByProduct(queue);
+  assert.equal(summary.length, 2);
+  const harinaSummary = summary.find((s) => s.productId === 'p-1')!;
+  const quesoSummary = summary.find((s) => s.productId === 'p-2')!;
+  assert.equal(harinaSummary.totalScannedQty, 5);
+  assert.equal(quesoSummary.totalScannedQty, 0.685);
+});
+
+test('54. Módulo BRM WhatsApp Proveedores (Puro Apure ERP): E.164, bloqueo anti-loop, idempotencia de 500 webhooks, modo híbrido triple y doble compuerta OCR', () => {
+  // 1. Normalización E.164 venezolana
+  assert.equal(normalizePhoneE164('0414-3459910'), '+584143459910');
+  assert.equal(normalizePhoneE164('4121234567'), '+584121234567');
+  assert.equal(isValidPhoneE164('+584143459910'), true);
+  assert.equal(isCorporateSelfPhone('0243-2345678', DEFAULT_CORPORATE_BRM_PHONE_E164), true);
+
+  const mockSupplier = {
+    id: 'sup-brm-01',
+    rif: 'J-30998877-1',
+    name: 'Frigorífico Industrial Los Llanos, C.A.',
+    category: 'Carnicería',
+    contactName: 'Ing. José Gregorio',
+    phone: '0414-3459910',
+    whatsappE164: '+584143459910',
+    email: 'ventas@losllanos.com.ve',
+    address: 'Barinas, Edo. Barinas',
+    creditDays: 15,
+    paymentTerms: 'Crédito 15 días',
+    balanceUsd: 1200,
+  };
+
+  // 2. Bloqueo determinista Anti-Loop si el teléfono del proveedor coincide con la línea corporativa
+  assert.throws(() => {
+    appendIdempotentBrmMessage({
+      existingMessages: [],
+      supplier: { ...mockSupplier, whatsappE164: DEFAULT_CORPORATE_BRM_PHONE_E164 },
+      corporatePhoneE164: DEFAULT_CORPORATE_BRM_PHONE_E164,
+      direction: 'OUTBOUND_TO_SUPPLIER',
+      category: 'ORDEN_COMPRA',
+      bodyText: 'Prueba loop',
+      session: { state: 'CONNECTED', activeMode: 'QR_SOCKET_BRIDGE', hasAdminCredentials: true },
+      createdBy: 'Gerencia',
+      timestampVet: '2026-10-29 12:00',
+    });
+  }, /BLOQUEO ANTI-LOOP BRM/);
+
+  // 3. Modo Híbrido Triple + Cola Offline Delegada cuando hasAdminCredentials === false
+  assert.equal(
+    resolveHybridBrmTransport({ state: 'CONNECTED', activeMode: 'QR_SOCKET_BRIDGE' }),
+    'QR_SOCKET_BRIDGE'
+  );
+  assert.equal(
+    resolveHybridBrmTransport({ state: 'DISCONNECTED', activeMode: 'WA_ME_DIRECT_LEDGER' }),
+    'WA_ME_DIRECT_LEDGER'
+  );
+
+  // 4. Prueba de estrés de idempotencia: 500 reintentos del mismo messageId crean exactamente 1 registro
+  let ledger: ReturnType<typeof appendIdempotentBrmMessage>['updatedMessages'] = [];
+  for (let i = 0; i < 500; i++) {
+    const res = appendIdempotentBrmMessage({
+      existingMessages: ledger,
+      messageId: 'wamid.STRESS.UNIQUE.001',
+      supplier: mockSupplier,
+      corporatePhoneE164: DEFAULT_CORPORATE_BRM_PHONE_E164,
+      direction: 'OUTBOUND_TO_SUPPLIER',
+      category: 'COMPROBANTE_RETENCION_IVA',
+      bodyText: 'Despacho de comprobante SENIAT',
+      session: { state: 'DISCONNECTED', activeMode: 'WA_ME_DIRECT_LEDGER', hasAdminCredentials: false },
+      createdBy: 'Tesorería',
+      timestampVet: '2026-10-29 12:05',
+    });
+    ledger = res.updatedMessages;
+    if (i > 0) assert.equal(res.wasDuplicateIgnored, true);
+  }
+  assert.equal(ledger.length, 1);
+  assert.equal(ledger[0].deliveryStatus, 'EN_COLA_OFFLINE');
+
+  // 5. Doble Compuerta Factura Entrante OCR (PENDIENTE_VERIFICACION + detección de reutilización SHA-256)
+  const firstPre = registerIncomingBrmPreInvoice({
+    existingPreInvoices: [],
+    existingHashes: [],
+    supplier: mockSupplier,
+    invoiceNumber: 'FAC-LLANOS-881',
+    controlNumber: '00-776655',
+    declaredSubtotalUsd: 1000,
+    declaredIvaUsd: 160,
+    declaredTotalUsd: 1160,
+    receivedAtVet: '2026-10-29 12:10',
+  });
+  assert.equal(firstPre.preInvoice.status, 'PENDIENTE_VERIFICACION');
+  assert.equal(firstPre.preInvoice.ocrVerdict, 'AUTENTICO_ALTA_CONFIANZA');
+
+  const duplicateHashAttempt = registerIncomingBrmPreInvoice({
+    existingPreInvoices: firstPre.updatedPreInvoices,
+    existingHashes: [firstPre.preInvoice.sha256Hash],
+    messageId: 'wamid.NEW.MSG.SAME.IMAGE',
+    supplier: mockSupplier,
+    invoiceNumber: 'FAC-LLANOS-881',
+    controlNumber: '00-776655',
+    declaredSubtotalUsd: 1000,
+    declaredIvaUsd: 160,
+    declaredTotalUsd: 1160,
+    receivedAtVet: '2026-10-29 12:15',
+  });
+  assert.equal(duplicateHashAttempt.preInvoice.ocrVerdict, 'ALERTA_FRAUDE_EDICION_O_IA');
+
+  // 6. Plantillas y desvinculación limpia Anti-Split Brain
+  const bundle = formatBrmPaymentAndRetentionsBundleTemplate({
+    supplier: mockSupplier,
+    invoiceNumber: 'FAC-LLANOS-881',
+    payment: {
+      amountUsd: 1040,
+      amountVes: 52000,
+      bcvRateUsed: 50,
+      method: 'TRANSFERENCIA_VES',
+      reference: '99887766',
+      paidAtVet: '2026-10-29',
+    },
+  });
+  assert.ok(bundle.messageBody.includes('FAC-LLANOS-881'));
+  assert.ok(
+    formatBrmPurchaseOrderTemplate({
+      order: {
+        id: 'po-1',
+        orderNumber: 'OC-2026-0099',
+        productId: 'p-1',
+        sku: 'RES-CANAL',
+        productName: 'Canal de Res AA',
+        unit: 'KG',
+        locationId: 'loc-pzo-01',
+        locationCode: 'PZO-01',
+        locationName: 'Sede Alta Vista',
+        supplierId: mockSupplier.id,
+        supplierName: mockSupplier.name,
+        orderedQty: 450,
+        unitCostUsd: 4.1,
+        totalCostUsd: 1845,
+        totalCostVes: 92250,
+        bcvRateAtOrder: 50,
+        status: 'PENDIENTE_ENTREGA',
+        createdAtVet: '2026-10-29',
+        createdBy: 'Compras',
+      },
+    }).includes('OC-2026-0099')
+  );
+
+  const resetSession = resetBrmWhatsappSessionCleanly(
+    {
+      state: 'QR_READY',
+      activeMode: 'QR_SOCKET_BRIDGE',
+      corporatePhoneE164: DEFAULT_CORPORATE_BRM_PHONE_E164,
+      qrPayloadData: 'OLD_QR',
+      pendingOfflineQueueCount: 0,
+      hasAdminCredentials: false,
+      lastHeartbeatVet: '2026-10-29 11:00',
+    },
+    '2026-10-29 12:30'
+  );
+  assert.equal(resetSession.state, 'DISCONNECTED');
+  assert.equal(resetSession.qrPayloadData, undefined);
+});
+
+test('55. Control FEFO de Perecederos & Cadena de Frío SADA: Semáforo de 4 niveles, prioridad estricta FEFO, bloqueo de vencidos y gobernanza TOTP', () => {
+  const prod: Product = {
+    id: 'prd-lact-01',
+    sku: 'YOG-GRIEGO-1L',
+    barcode: '7598881112223',
+    name: 'Yogurt Griego Natural 1L',
+    category: 'Lácteos y Refrigerados',
+    unit: 'UND',
+    costUsd: 2.5,
+    targetMarginPercent: 30,
+    priceUsd: 3.57,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 30 },
+    shelfStockByLocation: { 'loc-pzo-01': 10 },
+    minStockByLocation: { 'loc-pzo-01': 8 },
+    monthlyUnitsSold: 90,
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  assert.equal(computeDaysUntilExpiration('2026-10-31', '2026-10-29'), 2);
+  assert.equal(classifyFefoLotStatus(2).alertLevel, 'CRITICO_PROMOCION_1_3D');
+  assert.equal(classifyFefoLotStatus(2).suggestedDiscountPercent, 25);
+  assert.equal(classifyFefoLotStatus(-1).blockedForSale, true);
+
+  const lotSoon = createFefoPerishableLot({
+    lotCode: 'LOT-SOON',
+    product: prod,
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    zone: 'DEPOSITO',
+    quantity: 8,
+    receptionDate: '2026-10-20',
+    expirationDate: '2026-10-31',
+    referenceDateIso: '2026-10-29',
+  });
+  const lotLater = createFefoPerishableLot({
+    lotCode: 'LOT-LATER',
+    product: prod,
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    zone: 'DEPOSITO',
+    quantity: 12,
+    receptionDate: '2026-10-25',
+    expirationDate: '2026-11-15',
+    referenceDateIso: '2026-10-29',
+  });
+  const lotExpired = createFefoPerishableLot({
+    lotCode: 'LOT-EXPIRED',
+    product: prod,
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    zone: 'DEPOSITO',
+    quantity: 5,
+    receptionDate: '2026-10-01',
+    expirationDate: '2026-10-27',
+    referenceDateIso: '2026-10-29',
+  });
+
+  const sorted = sortLotsByFefo([lotLater, lotSoon]);
+  assert.equal(sorted[0].lotCode, 'LOT-SOON');
+
+  // Consumir 10 unidades debe agotar LOT-SOON (8) y tomar 2 de LOT-LATER
+  const consumed = consumeLotsStrictFefo({
+    lots: [lotLater, lotSoon],
+    productId: prod.id,
+    locationId: 'loc-pzo-01',
+    quantityNeeded: 10,
+    referenceDateIso: '2026-10-29',
+  });
+  assert.deepEqual(consumed.consumedLotCodes, ['LOT-SOON', 'LOT-LATER']);
+  assert.equal(consumed.updatedLots.find((l) => l.lotCode === 'LOT-SOON')?.quantityRemaining, 0);
+  assert.equal(consumed.updatedLots.find((l) => l.lotCode === 'LOT-LATER')?.quantityRemaining, 10);
+
+  // Lote vencido se bloquea sin TOTP/PIN, pero pasa con código TOTP dinámico válido
+  assert.throws(() => {
+    consumeLotsStrictFefo({
+      lots: [lotExpired],
+      productId: prod.id,
+      locationId: 'loc-pzo-01',
+      quantityNeeded: 2,
+      referenceDateIso: '2026-10-29',
+    });
+  }, /BLOQUEO SANITARIO FEFO/);
+
+  const validTotp = generateTotpCode(DEFAULT_TOTP_CONFIG.secretBase32, Date.now(), 30);
+  const unlocked = consumeLotsStrictFefo({
+    lots: [lotExpired],
+    productId: prod.id,
+    locationId: 'loc-pzo-01',
+    quantityNeeded: 2,
+    referenceDateIso: '2026-10-29',
+    managerCredentialForExpired: validTotp,
+    totpConfig: DEFAULT_TOTP_CONFIG,
+  });
+  assert.equal(unlocked.quantitySatisfiedFromLots, 2);
+
+  // Mover lote de Cava a Exhibición preserva Total = Depósito + Anaquel (30)
+  const moved = moveFefoLotToShelf({
+    lotId: lotLater.id,
+    lots: [lotLater],
+    products: [prod],
+    qtyToMove: 5,
+    updatedAtVet: '2026-10-29 14:00',
+  });
+  const afterBd = getLocationStockBreakdown(moved.updatedProducts[0], 'loc-pzo-01');
+  assert.equal(afterBd.total, 30);
+  assert.equal(afterBd.shelf, 15);
+  assert.equal(afterBd.deposit, 15);
+
+  // Cadena de frío SADA detecta excursión térmica fuera de [-2, +4] °C
+  const tempAlert = buildColdChainTemperatureLog({
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    equipmentName: 'Cava Cárnica Principal #1',
+    equipmentType: 'CAVA_CARNICOS',
+    recordedTempCelsius: 7.4,
+    recordedBy: 'Supervisor Cava',
+  });
+  assert.equal(tempAlert.isOutOfRange, true);
+});
+
+test('56. Recetario de Transformación & Producción Interna BOM: Consumo Cava + Exhibición con prioridad FEFO, costo absorbido Decimal.js e invariante de stock', () => {
+  const recorteRes: Product = {
+    id: 'prd-rec-res',
+    sku: 'RES-RECORTE-8020',
+    barcode: '759001',
+    name: 'Recorte de Res Magro 80/20',
+    category: 'Carnicería y Proteínas',
+    unit: 'KG',
+    costUsd: 4.5,
+    targetMarginPercent: 25,
+    priceUsd: 6.0,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 20 },
+    shelfStockByLocation: { 'loc-pzo-01': 6 }, // Depósito = 14, Anaquel = 6
+    minStockByLocation: { 'loc-pzo-01': 5 },
+    monthlyUnitsSold: 100,
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  const tocinoCerdo: Product = {
+    id: 'prd-toc-cer',
+    sku: 'CER-TOCINO-KG',
+    barcode: '759002',
+    name: 'Tocino de Cerdo Fresco',
+    category: 'Carnicería y Proteínas',
+    unit: 'KG',
+    costUsd: 3.2,
+    targetMarginPercent: 25,
+    priceUsd: 4.27,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 10 },
+    shelfStockByLocation: { 'loc-pzo-01': 2 }, // Depósito = 8, Anaquel = 2
+    minStockByLocation: { 'loc-pzo-01': 2 },
+    monthlyUnitsSold: 40,
+    abcClass: 'B',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  const fefoLot = createFefoPerishableLot({
+    lotCode: 'LOT-REC-URGENTE',
+    product: recorteRes,
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    zone: 'DEPOSITO',
+    quantity: 10,
+    receptionDate: '2026-10-26',
+    expirationDate: '2026-10-31',
+    referenceDateIso: '2026-10-29',
+  });
+
+  // Solicitar 16 Kg de Recorte de Res (toma 14 de Cava/Depósito + 2 de Exhibición/Anaquel) + 4 Kg de Tocino
+  const prodRes = executeInternalProductionOrder({
+    recipe: {
+      id: 'rcp-burger-01',
+      code: 'BOM-BURGER-ANGUS',
+      name: 'Bandeja Hamburguesa Artesanal de la Casa',
+      department: 'CARNICERIA',
+      outputSku: 'ELAB-HAMBURGUESA-KG',
+      outputProductName: 'Hamburguesa Artesanal Especial Kg',
+      outputUnit: 'KG',
+      expectedOutputQty: 19.5,
+      packagingAndCondimentsCostUsd: 4.95,
+      targetMarginPercent: 30,
+      ingredients: [
+        {
+          productId: recorteRes.id,
+          sku: recorteRes.sku,
+          productName: recorteRes.name,
+          unit: 'KG',
+          quantityRequiredPerBatch: 16,
+          preferredSourceZone: 'DEPOSITO',
+        },
+        {
+          productId: tocinoCerdo.id,
+          sku: tocinoCerdo.sku,
+          productName: tocinoCerdo.name,
+          unit: 'KG',
+          quantityRequiredPerBatch: 4,
+          preferredSourceZone: 'DEPOSITO',
+        },
+      ],
+      active: true,
+    },
+    batchesMultiplier: 1,
+    actualOutputQty: 19.5,
+    locationId: 'loc-pzo-01',
+    locationName: 'Sede Alta Vista',
+    targetOutputZone: 'ANAQUEL',
+    products: [recorteRes, tocinoCerdo],
+    fefoLots: [fefoLot],
+    bcvRate: 50,
+    executedBy: 'Jefe de Carnicería',
+    executedAtVet: '2026-10-29 15:00',
+    referenceDateIso: '2026-10-29',
+  });
+
+  // Costo materia prima = (16 * 4.50) + (4 * 3.20) = 72.00 + 12.80 = 84.80 + 4.95 empaque = 89.75 / 19.5 Kg = $4.60/Kg
+  assert.equal(prodRes.orderRecord.rawMaterialsCostUsd, 84.8);
+  assert.equal(prodRes.orderRecord.totalBatchCostUsd, 89.75);
+  assert.equal(prodRes.orderRecord.unitElaboratedCostUsd, 4.6);
+  assert.deepEqual(prodRes.orderRecord.fefoLotsConsumed, ['LOT-REC-URGENTE']);
+
+  const afterRecorte = prodRes.updatedProducts.find((p) => p.id === recorteRes.id)!;
+  const bdRec = getLocationStockBreakdown(afterRecorte, 'loc-pzo-01');
+  assert.equal(bdRec.total, 4);
+  assert.equal(bdRec.deposit, 0);
+  assert.equal(bdRec.shelf, 4);
+
+  const createdBurger = prodRes.updatedProducts.find((p) => p.sku === 'ELAB-HAMBURGUESA-KG')!;
+  const bdBurger = getLocationStockBreakdown(createdBurger, 'loc-pzo-01');
+  assert.equal(bdBurger.total, 19.5);
+  assert.equal(bdBurger.shelf, 19.5);
+  assert.equal(bdBurger.deposit, 0);
+});
+
+test('57. Conciliación Bancaria Bimonetaria (VES/USD + IGTF 3%) y Bandeja de Pre-Conciliación @OCR: Detección de captura duplicada y cruce automático', () => {
+  const csvSample = [
+    'Fecha;Referencia;Descripcion;Monto;Tipo',
+    '2026-10-29;000984512;PAGO PROVEEDOR ALIMENTOS POLAR;-52000,00;DEBITO',
+    '2026-10-29;000774411;TRANSFERENCIA FLETE;-15000,00;DEBITO',
+  ].join('\n');
+
+  const linesVes = parseBankStatementCsv({
+    rawCsvText: csvSample,
+    bankName: 'Banesco Cuenta Corriente VES',
+    accountCurrency: 'VES',
+    bcvRate: 50.0,
+  });
+  assert.equal(linesVes.length, 2);
+  assert.equal(linesVes[0].amount, 52000);
+  assert.equal(linesVes[0].amountUsdEquivalent, 1040);
+
+  const linesUsd = parseBankStatementCsv({
+    rawCsvText: '2026-10-29,ZELLE-884422,PAGO ZELLE PROVEEDOR,-500.00,DEBITO',
+    bankName: 'Banesco Panamá USD',
+    accountCurrency: 'USD',
+    bcvRate: 50.0,
+  });
+  assert.equal(linesUsd[0].igtfAppliedUsd, 15.0); // 3% IGTF sobre $500
+
+  // Pre-conciliación OCR: primera carga legítima, segunda reutilizada -> ALERTA_FRAUDE_EDICION_O_IA
+  const firstPrePay = submitPaymentToPreConciliation({
+    existingItems: [],
+    supplierId: 'sup-01',
+    supplierName: 'Alimentos Polar',
+    invoiceId: 'inv-01',
+    invoiceNumber: 'FAC-001',
+    method: 'ZELLE_USD',
+    currency: 'USD',
+    amountOriginal: 500,
+    bcvRateUsed: 50,
+    reference: 'ZELLE-884422',
+    submittedBy: 'Analista Tesorería',
+    submittedAtVet: '2026-10-29 15:10',
+  });
+  assert.equal(firstPrePay.status, 'pendiente_verificacion');
+  assert.equal(firstPrePay.igtfUsd, 15.0);
+  assert.equal(firstPrePay.ocrVerdict, 'AUTENTICO_ALTA_CONFIANZA');
+
+  const reusedPrePay = submitPaymentToPreConciliation({
+    existingItems: [firstPrePay],
+    supplierId: 'sup-01',
+    supplierName: 'Alimentos Polar',
+    method: 'ZELLE_USD',
+    currency: 'USD',
+    amountOriginal: 500,
+    bcvRateUsed: 50,
+    reference: 'ZELLE-884422',
+    submittedBy: 'Analista Tesorería',
+    submittedAtVet: '2026-10-29 15:12',
+  });
+  assert.equal(reusedPrePay.ocrVerdict, 'ALERTA_FRAUDE_EDICION_O_IA');
+
+  // Auto-reconciliación exacta por sufijo de referencia y monto USD equivalente
+  const matchRes = autoReconcileBankStatement({
+    statementLines: linesVes,
+    payments: [
+      {
+        id: 'pay-01',
+        invoiceId: 'inv-01',
+        amountUsd: 1040,
+        amountVes: 52000,
+        bcvRateUsed: 50,
+        method: 'TRANSFERENCIA_VES',
+        reference: '984512',
+        paidAtVet: '2026-10-29',
+        registeredBy: 'Tesorería',
+      },
+    ],
+  });
+  assert.equal(matchRes.exactMatchesCount, 1);
+  assert.equal(matchRes.pendingCount, 1);
+  assert.equal(matchRes.reconciledLines[0].reconciliationStatus, 'CONCILIADO_EXACTO');
+});
+
+test('58. Motor Predictivo de Demanda por Quincenas Venezolanas (15 y 30) y Fines de Semana: Monotonicidad de horizontes y factor pico', () => {
+  assert.equal(isVenezuelanQuincenaPeakDay(new Date(Date.UTC(2026, 9, 15))), true);
+  assert.equal(isVenezuelanQuincenaPeakDay(new Date(Date.UTC(2026, 9, 30))), true);
+  assert.equal(isVenezuelanQuincenaPeakDay(new Date(Date.UTC(2026, 9, 8))), false);
+  assert.equal(isRetailWeekendPeakDay(new Date(Date.UTC(2026, 9, 31))), true); // Sábado
+
+  const meatSku: Product = {
+    id: 'prd-fc-01',
+    sku: 'RES-PULPA-NEGRA',
+    barcode: '759555',
+    name: 'Pulpa Negra Especial Kg',
+    category: 'Carnicería y Proteínas',
+    unit: 'KG',
+    costUsd: 6.2,
+    targetMarginPercent: 25,
+    priceUsd: 8.27,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 12 },
+    minStockByLocation: { 'loc-pzo-01': 10 },
+    monthlyUnitsSold: 150, // 5 Kg/día base
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  // Ventana con quincena + fin de semana (29 oct al 4 nov) supera ventana entre semana normal (5 oct al 11 oct)
+  const peakWindow = forecastVenezuelanRetailDemand({
+    product: meatSku,
+    locationId: 'loc-pzo-01',
+    horizonDays: 7,
+    referenceDateIso: '2026-10-29',
+  });
+  const normalWindow = forecastVenezuelanRetailDemand({
+    product: meatSku,
+    locationId: 'loc-pzo-01',
+    horizonDays: 7,
+    referenceDateIso: '2026-10-05',
+  });
+  assert.equal(peakWindow.isUpcomingQuincenaWindow, true);
+  assert.ok(peakWindow.projectedDemandHorizon > normalWindow.projectedDemandHorizon);
+
+  // Monotonicidad estricta en [7, 15, 30, 45, 60] días
+  let prevProjected = 0;
+  for (const h of ROTATION_HORIZONS_DAYS) {
+    const fc = forecastVenezuelanRetailDemand({
+      product: meatSku,
+      locationId: 'loc-pzo-01',
+      horizonDays: h,
+      referenceDateIso: '2026-10-29',
+    });
+    assert.ok(fc.projectedDemandHorizon > prevProjected);
+    prevProjected = fc.projectedDemandHorizon;
+  }
+});
+
+test('59. Gobernanza Gerencial con Token Dinámico TOTP Offline (RFC 6238): Ventana ±30s, QR efímero y compatibilidad transversal en Sinceración, Bajas y Anulación SENIAT', () => {
+  const customSecret = generateBase32TotpSecret(20);
+  assert.equal(customSecret.length, 20);
+
+  const fixedNowMs = 1_793_300_000_000;
+  const cfg = {
+    ...DEFAULT_TOTP_CONFIG,
+    secretBase32: customSecret,
+    enabled: true,
+    allowPinFallback: false, // Estricto solo TOTP
+  };
+
+  const otpAuth = buildTotpOtpAuthUri(cfg);
+  assert.ok(otpAuth.startsWith('otpauth://totp/'));
+
+  const currentCode = generateTotpCode(customSecret, fixedNowMs, 30);
+  assert.match(currentCode, /^\d{6}$/);
+
+  // 1. Código actual y ventana -30s autorizan; PIN fijo se rechaza cuando allowPinFallback === false
+  assert.equal(
+    verifyManagerGovernanceAuth({
+      submittedCredential: currentCode,
+      totpConfig: cfg,
+      nowMs: fixedNowMs,
+    }).authorized,
+    true
+  );
+  assert.equal(
+    verifyManagerGovernanceAuth({
+      submittedCredential: currentCode,
+      totpConfig: cfg,
+      nowMs: fixedNowMs + 30_000,
+    }).authorized,
+    true
+  );
+  assert.equal(
+    verifyManagerGovernanceAuth({
+      submittedCredential: '203040',
+      totpConfig: cfg,
+      nowMs: fixedNowMs,
+    }).authorized,
+    false
+  );
+
+  // 2. Payload QR efímero de 30s autoriza limpiamente
+  const qrToken = buildEphemeralApprovalQrPayload(customSecret, fixedNowMs);
+  const qrVerify = verifyManagerGovernanceAuth({
+    submittedCredential: qrToken,
+    totpConfig: cfg,
+    nowMs: fixedNowMs,
+  });
+  assert.equal(qrVerify.authorized, true);
+  assert.equal(qrVerify.methodUsed, 'TOTP_EPHEMERAL_QR');
+
+  // 3. Compatibilidad directa de código TOTP en Sinceración de Anaquel fuera de tolerancia y Anulación SENIAT
+  const liveCodeForDefault = generateTotpCode(DEFAULT_TOTP_CONFIG.secretBase32, Date.now(), 30);
+  const prodSync: Product = {
+    id: 'p-sync-totp',
+    sku: 'ACE-MAZ-1LT',
+    barcode: '759999',
+    name: 'Aceite Mazeite 1L',
+    category: 'Víveres',
+    unit: 'UND',
+    costUsd: 2.5,
+    targetMarginPercent: 25,
+    priceUsd: 3.33,
+    ivaRate: 16,
+    stockByLocation: { 'loc-pzo-01': 100 },
+    shelfStockByLocation: { 'loc-pzo-01': 20 },
+    minStockByLocation: { 'loc-pzo-01': 15 },
+    monthlyUnitsSold: 120,
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  const syncWithTotp = reconcileLocationPhysicalCount({
+    product: prodSync,
+    locationName: 'Sede Alta Vista',
+    input: {
+      productId: prodSync.id,
+      locationId: 'loc-pzo-01',
+      countedDepositQty: 60,
+      countedShelfQty: 20, // -20 unidades (-20% -> exige autorización)
+      notes: 'Conteo físico auditado con TOTP',
+      managerPin: liveCodeForDefault,
+    },
+    actor: {
+      uid: 'usr-03',
+      displayName: 'Auditor Piso',
+      role: UserRole.ANALISTA,
+    },
+    totpConfig: DEFAULT_TOTP_CONFIG,
+    timestampVet: '2026-10-29 16:00',
+  });
+  assert.equal(syncWithTotp.countedTotalAfter, 80);
+});
+
+test('60. Conector Impresoras Fiscales Homologadas SENIAT (SNAT/2024/000102) & Navegación Completa v4.0: Firma HMAC, IVA 16%/8%, IGTF 3%, idempotencia Z y Libro de Ventas .XLSX', () => {
+  // Verificar que las 4 nuevas vistas empresariales están registradas en el enrutador principal
+  assert.ok(VALID_NAVIGATION_TABS.includes('FEFO_COLD_CHAIN'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('PRODUCTION_RECIPES'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('BRM_WHATSAPP'));
+  assert.ok(VALID_NAVIGATION_TABS.includes('BANK_RECONCILIATION'));
+
+  const posProduct: Product = {
+    id: 'prd-z-01',
+    sku: 'ARR-PRI-1KG',
+    barcode: '759111',
+    name: 'Arroz Primor 1Kg',
+    category: 'Víveres',
+    unit: 'UND',
+    costUsd: 1.0,
+    targetMarginPercent: 25,
+    priceUsd: 1.33,
+    ivaRate: 0,
+    stockByLocation: { 'loc-pzo-01': 50 },
+    shelfStockByLocation: { 'loc-pzo-01': 10 }, // Depósito 40, Anaquel 10
+    minStockByLocation: { 'loc-pzo-01': 10 },
+    monthlyUnitsSold: 200,
+    abcClass: 'A',
+    supplierId: 'sup-01',
+    lastUpdatedVet: '2026-10-29',
+  };
+
+  const validHmac = computeFiscalPayloadSignature('Z1F0009841', '0501', '2026-10-29');
+
+  const zRes = processFiscalZClosure({
+    input: {
+      zNumber: '0501',
+      printerSerial: 'Z1F0009841',
+      printerBrand: 'THE_FACTORY_HKA',
+      locationId: 'loc-pzo-01',
+      locationName: 'Sede Alta Vista',
+      closureDate: '2026-10-29',
+      reportType: 'REPORTE_Z_DIARIO',
+      invoicesCount: 210,
+      exemptSalesUsd: 500.0,
+      taxableBase16Usd: 1000.0, // IVA 16% = 160.00
+      taxableBase8Usd: 250.0, // IVA 8% = 20.00
+      igtfBaseForeignUsd: 400.0, // IGTF 3% = 12.00
+      bcvRateClosure: 50.0,
+      source: 'API_PUENTE_FISCAL',
+      providedSignature: validHmac,
+      soldItemsForShelfDeduction: [{ sku: 'ARR-PRI-1KG', qtySold: 14 }], // Agota 10 de Anaquel + 4 de Depósito
+      registeredBy: 'Puente Fiscal HKA',
+      registeredAtVet: '2026-10-29 21:00',
+    },
+    existingZReports: [],
+    salesEvents: [],
+    products: [posProduct],
+  });
+
+  // Gran Total USD = 500 + 1000 + 160 + 250 + 20 + 12 = 1942.00 USD -> Bs. 97,100.00
+  assert.equal(zRes.zRecord.iva16CollectedUsd, 160.0);
+  assert.equal(zRes.zRecord.iva8CollectedUsd, 20.0);
+  assert.equal(zRes.zRecord.igtf3CollectedUsd, 12.0);
+  assert.equal(zRes.zRecord.grandTotalFiscalUsd, 1942.0);
+  assert.equal(zRes.zRecord.grandTotalFiscalVes, 97100.0);
+  assert.equal(zRes.zRecord.hmacVerified, true);
+  assert.equal(zRes.shelfShortfallCount, 1);
+
+  const afterStock = getLocationStockBreakdown(zRes.updatedProducts[0], 'loc-pzo-01');
+  assert.equal(afterStock.total, 36);
+  assert.equal(afterStock.shelf, 0);
+  assert.equal(afterStock.deposit, 36);
+
+  // Candado de idempotencia impide duplicar el mismo Reporte Z + Serial Fiscal
+  assert.throws(() => {
+    processFiscalZClosure({
+      input: {
+        zNumber: '0501',
+        printerSerial: 'Z1F0009841',
+        printerBrand: 'THE_FACTORY_HKA',
+        locationId: 'loc-pzo-01',
+        locationName: 'Sede Alta Vista',
+        closureDate: '2026-10-29',
+        reportType: 'REPORTE_Z_DIARIO',
+        invoicesCount: 210,
+        exemptSalesUsd: 500,
+        taxableBase16Usd: 1000,
+        taxableBase8Usd: 250,
+        igtfBaseForeignUsd: 400,
+        bcvRateClosure: 50,
+        source: 'API_PUENTE_FISCAL',
+        registeredBy: 'Puente Fiscal HKA',
+        registeredAtVet: '2026-10-29 21:05',
+      },
+      existingZReports: zRes.updatedZReports,
+      salesEvents: [],
+      products: zRes.updatedProducts,
+    });
+  }, /IDEMPOTENCIA FISCAL/);
+
+  // Libro Especial de Ventas SENIAT (.xlsx) se genera sin errores
+  const salesWb = buildSeniatSalesBookWorkbook({
+    zReports: zRes.updatedZReports,
+    companyProfile: DEFAULT_COMPANY_PROFILE,
+    periodYearMonth: '202610',
+  });
+  assert.ok(salesWb.SheetNames.includes('Libro Ventas Reportes Z'));
 });

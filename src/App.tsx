@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { UIConfigProvider } from './context/UIConfigContext';
 import { InventoryProvider } from './context/InventoryContext';
 import { FinanceProvider } from './context/FinanceContext';
+import { OperationsBrmProvider } from './context/OperationsBrmContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Layout } from './components/layout/Layout';
 import { Footer } from './components/layout/Footer';
@@ -43,6 +44,30 @@ const ShelfStockManager = React.lazy(() =>
 const RetentionsCenter = React.lazy(() =>
   import('./components/finance/RetentionsCenter').then((m) => ({
     default: m.default || m.RetentionsCenter,
+  }))
+);
+
+const FefoColdChainCenter = React.lazy(() =>
+  import('./components/operations/FefoColdChainCenter').then((m) => ({
+    default: m.default || m.FefoColdChainCenter,
+  }))
+);
+
+const ProductionRecipesView = React.lazy(() =>
+  import('./components/operations/ProductionRecipesView').then((m) => ({
+    default: m.default || m.ProductionRecipesView,
+  }))
+);
+
+const BrmWhatsappCenter = React.lazy(() =>
+  import('./components/finance/BrmWhatsappCenter').then((m) => ({
+    default: m.default || m.BrmWhatsappCenter,
+  }))
+);
+
+const BankReconciliationCenter = React.lazy(() =>
+  import('./components/finance/BankReconciliationCenter').then((m) => ({
+    default: m.default || m.BankReconciliationCenter,
   }))
 );
 
@@ -161,10 +186,14 @@ export const VALID_NAVIGATION_TABS: NavigationTab[] = [
   'INVENTORY_DISCARDS',
   'MEAT_YIELD',
   'FRUVER_YIELD',
+  'FEFO_COLD_CHAIN',
+  'PRODUCTION_RECIPES',
   'CHRYSTAL_IMPORT',
   'PRICING',
   'INVOICES_OCR',
   'TAX_RETENTIONS',
+  'BRM_WHATSAPP',
+  'BANK_RECONCILIATION',
   'SUPPLIERS',
   'ACCOUNTS_PAYABLE',
   'ABC_ROTATION',
@@ -241,10 +270,14 @@ const MainShell: React.FC = () => {
         {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
         {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
         {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
+        {activeTab === 'FEFO_COLD_CHAIN' && <FefoColdChainCenter />}
+        {activeTab === 'PRODUCTION_RECIPES' && <ProductionRecipesView />}
         {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
         {activeTab === 'PRICING' && <PricingCalculator />}
         {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
         {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter />}
+        {activeTab === 'BRM_WHATSAPP' && <BrmWhatsappCenter />}
+        {activeTab === 'BANK_RECONCILIATION' && <BankReconciliationCenter />}
         {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
         {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
         {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
@@ -266,7 +299,9 @@ export const App: React.FC = () => {
         <UIConfigProvider>
           <FinanceProvider>
             <InventoryProvider>
-              <MainShell />
+              <OperationsBrmProvider>
+                <MainShell />
+              </OperationsBrmProvider>
             </InventoryProvider>
           </FinanceProvider>
         </UIConfigProvider>

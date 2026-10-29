@@ -11,9 +11,11 @@ import {
   ClipboardCheck,
   PlusCircle,
   Clock,
+  TrendingUp,
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { ManualRiskMode, NavigationTab, Product } from '../../types';
 import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
 
@@ -36,6 +38,7 @@ export const PurchaseSuggestions: React.FC<PurchaseSuggestionsProps> = ({ onNavi
     registerPostPurchaseManualReceipt,
   } = useInventory();
   const { suppliers } = useFinance();
+  const { computeQuincenaDemandForecast } = useOperationsBrm();
 
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -343,6 +346,31 @@ export const PurchaseSuggestions: React.FC<PurchaseSuggestionsProps> = ({ onNavi
             </button>
           </div>
         </form>
+
+        {(() => {
+          const fc = computeQuincenaDemandForecast(riskProductId, riskLocationId, 15);
+          if (!fc) return null;
+          return (
+            <div className="p-3 rounded-xl bg-indigo-50/80 border border-indigo-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-indigo-950">
+                <TrendingUp className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span>
+                  <strong>Pronóstico Quincenal (15d):</strong> Velocidad pico{' '}
+                  <strong className="font-mono">{fc.quincenaMultiplier}×</strong> · Demanda estimada:{' '}
+                  <strong className="font-mono">{fc.projectedDemandHorizon}</strong> · Pedido sugerido:{' '}
+                  <strong className="font-mono text-indigo-700">{fc.recommendedOrderQty}</strong>
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCustomReorderPoint(String(Math.max(10, Math.ceil(fc.projectedDemandHorizon))))}
+                className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[11px] cursor-pointer"
+              >
+                Usar como Punto Pedido 15d
+              </button>
+            </div>
+          );
+        })()}
       </div>
 
       {/* SECTION 2: Active Risk Alerts -> Generate Pending Supplier Purchase Order */}

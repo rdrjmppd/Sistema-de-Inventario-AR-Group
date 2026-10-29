@@ -17,6 +17,7 @@ import {
   TaxpayerType,
   TaxRetentionLineDetail,
   TaxRetentionVoucher,
+  TotpSecurityConfig,
   UserRole,
 } from '../types';
 import {
@@ -26,6 +27,7 @@ import {
   toDecimal,
 } from './decimal';
 import { getCaracasNow } from './bcv';
+import { verifyManagerGovernanceAuth } from './totp-governance';
 
 export const DEFAULT_UT_VALUE_VES = 9.0;
 export const DEFAULT_MANAGER_RETENTION_PINS = ['102030', '203040'];
@@ -724,6 +726,7 @@ export function voidRetentionVoucherWithPin(params: {
   managerPin: string;
   reason: string;
   validPins?: string[];
+  totpConfig?: TotpSecurityConfig | null;
   voidedAtVet: string;
 }): TaxRetentionVoucher {
   const {
@@ -732,6 +735,7 @@ export function voidRetentionVoucherWithPin(params: {
     managerPin,
     reason,
     validPins = DEFAULT_MANAGER_RETENTION_PINS,
+    totpConfig,
     voidedAtVet,
   } = params;
 
@@ -750,9 +754,15 @@ export function voidRetentionVoucherWithPin(params: {
     allowedPins.add(actor.pin);
   }
 
-  if (!managerPin || !allowedPins.has(managerPin.trim())) {
+  const authCheck = verifyManagerGovernanceAuth({
+    submittedCredential: (managerPin || '').trim(),
+    totpConfig,
+    validFallbackPins: Array.from(allowedPins),
+  });
+
+  if (!managerPin || !authCheck.authorized) {
     throw new Error(
-      'PIN Gerencial inválido. Solo Gerencia o SuperAdmin pueden anular un comprobante fiscal SENIAT.'
+      'Token TOTP o PIN Gerencial inválido. Solo Gerencia o SuperAdmin pueden anular un comprobante fiscal SENIAT.'
     );
   }
 

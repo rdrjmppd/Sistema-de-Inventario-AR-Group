@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useInventory } from '../../context/InventoryContext';
 import { useAuth } from '../../context/AuthContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import {
   createEncryptedBackup,
   decryptAndValidateBackup,
@@ -31,6 +32,7 @@ export const BackupRestoreManager: React.FC = () => {
     restoreFullPlatformState,
   } = useInventory();
   const { user } = useAuth();
+  const { exportOperationsBrmSnapshot, restoreOperationsBrmSnapshot } = useOperationsBrm();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,7 +54,12 @@ export const BackupRestoreManager: React.FC = () => {
     setExportSuccess(false);
 
     try {
-      const payload = exportPlatformBackupPayload();
+      const basePayload = exportPlatformBackupPayload();
+      const brmSnapshot = exportOperationsBrmSnapshot();
+      const payload: PlatformBackupPayload = {
+        ...basePayload,
+        ...brmSnapshot,
+      };
       const secret = customSecretKey.trim() || undefined;
       const envelope = await createEncryptedBackup(payload, secret);
 
@@ -120,6 +127,7 @@ export const BackupRestoreManager: React.FC = () => {
 
     const res = restoreFullPlatformState(restoreCandidate);
     if (res.success) {
+      restoreOperationsBrmSnapshot(restoreCandidate);
       setRestoreSuccess(true);
       setRestoreCandidate(null);
       setFileNameLoaded(null);

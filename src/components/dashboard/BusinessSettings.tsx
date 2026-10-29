@@ -8,19 +8,48 @@ import {
   Warehouse,
   Plus,
   CheckCircle2,
+  KeyRound,
+  QrCode,
+  RefreshCw,
   RotateCcw,
+  Scale,
   Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useUIConfig } from '../../context/UIConfigContext';
-import { UserRole } from '../../types';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
+import { ScaleBarcodeMode, UserRole } from '../../types';
 import { DEFAULT_COMPANY_PROFILE } from '../../lib/excel-exporter';
+import {
+  buildEphemeralApprovalQrPayload,
+  buildTotpOtpAuthUri,
+  generateTotpCode,
+  getTotpRemainingSeconds,
+} from '../../lib/totp-governance';
 
 export const BusinessSettings: React.FC = () => {
   const { users, createUser, toggleUserActive } = useAuth();
   const { locations, setIsAddLocationModalOpen, setLocationToDelete } = useInventory();
   const { config, updateCompanyProfile, resetCompanyProfileToDefault } = useUIConfig();
+  const {
+    totpConfig,
+    updateTotpConfig,
+    regenerateTotpSecret,
+    defaultScaleMode,
+    setDefaultScaleMode,
+  } = useOperationsBrm();
+
+  const [totpTickMs, setTotpTickMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setTotpTickMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const liveTotpCode = generateTotpCode(totpConfig.secretBase32, totpTickMs, 30);
+  const liveTotpRemSec = getTotpRemainingSeconds(totpTickMs, 30);
+  const otpAuthUri = buildTotpOtpAuthUri(totpConfig);
+  const ephemeralQrToken = buildEphemeralApprovalQrPayload(totpConfig.secretBase32, totpTickMs);
 
   const company = config.companyProfile || DEFAULT_COMPANY_PROFILE;
 
@@ -290,6 +319,155 @@ export const BusinessSettings: React.FC = () => {
             </button>
           </div>
         </form>
+      </div>
+
+      {/* Gobernanza Gerencial TOTP Offline (RFC 6238) + Estándar Balanzas EAN-13 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="bg-slate-900 text-white border border-slate-800 rounded-xl p-5 shadow-md space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[11px] font-bold mb-1.5">
+                <KeyRound className="w-3.5 h-3.5" />
+                RFC 6238 · Token Dinámico Offline (30s)
+              </div>
+              <h2 className="text-sm font-bold">
+                Gobernanza Gerencial TOTP (Google Authenticator &amp; QR Efímero)
+              </h2>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Protege sincera­ciones fuera de tolerancia, descartes de merma, lotes vencidos y anulaciones SENIAT sin depender de internet.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => regenerateTotpSecret()}
+              className="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
+              Rotar Semilla
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/70 border border-slate-800 rounded-xl p-3.5">
+            <div>
+              <div className="text-[11px] text-slate-400 uppercase font-bold">
+                Token TOTP Vigente (6 dígitos)
+              </div>
+              <div className="text-2xl font-mono font-extrabold tracking-widest text-emerald-400 mt-1 tabular-nums">
+                {liveTotpCode.slice(0, 3)} {liveTotpCode.slice(3)}
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1 tabular-nums">
+                Expira en <strong className="text-amber-300">{liveTotpRemSec}s</strong> · Ventana ±30s
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-400 uppercase font-bold">
+                Semilla Base32 (Google Auth)
+              </div>
+              <div className="text-xs font-mono font-bold text-sky-300 break-all mt-1">
+                {totpConfig.secretBase32}
+              </div>
+              <div className="text-[10px] font-mono text-slate-400 truncate mt-1" title={ephemeralQrToken}>
+                <QrCode className="w-3 h-3 inline mr-1 text-amber-400" />
+                {ephemeralQrToken}
+              </div>
+            </div>
+          </div>
+
+          <div className="text-[11px] font-mono bg-slate-800/80 border border-slate-700 rounded-lg p-2.5 text-slate-300 break-all">
+            {otpAuthUri}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={totpConfig.enabled}
+                onChange={(e) => updateTotpConfig({ enabled: e.target.checked })}
+                className="w-4 h-4 rounded accent-emerald-500"
+              />
+              <span className="font-semibold">Activar Validación TOTP 6 Dígitos</span>
+            </label>
+
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={totpConfig.allowPinFallback}
+                onChange={(e) => updateTotpConfig({ allowPinFallback: e.target.checked })}
+                className="w-4 h-4 rounded accent-amber-500"
+              />
+              <span className="text-slate-300">
+                Permitir PIN Contingencia (`203040` / `102030`)
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-[11px] font-bold mb-1.5">
+                <Scale className="w-3.5 h-3.5" />
+                Balanzas Electrónicas Carnicería, Charcutería &amp; Fruver
+              </div>
+              <h2 className="text-sm font-bold text-slate-900">
+                Estándar Predeterminado de Etiquetas Peso-Precio EAN-13
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Compatible con Bizerba, Toledo, Systel y Aclas. Ambos prefijos (`20` Peso y `21` Importe) se decodifican automáticamente en caja y conteo físico.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2.5 text-xs">
+            <label
+              className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                defaultScaleMode === 'WEIGHT_GRAMS_20'
+                  ? 'bg-sky-50 border-sky-400 text-slate-900'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+              }`}
+            >
+              <input
+                type="radio"
+                name="scaleMode"
+                checked={defaultScaleMode === 'WEIGHT_GRAMS_20'}
+                onChange={() => setDefaultScaleMode('WEIGHT_GRAMS_20' as ScaleBarcodeMode)}
+                className="mt-1 accent-sky-600"
+              />
+              <div>
+                <div className="font-bold">
+                  Prefijo `20` — Peso Exacto en Gramos (`20 + PLU 5d + Gramos 5d + Checksum`)
+                </div>
+                <div className="text-slate-500 mt-0.5">
+                  Recomendado para inventario exacto por kilogramo en Carnicería y Fruver (ej. `01250` = `1.250 kg`).
+                </div>
+              </div>
+            </label>
+
+            <label
+              className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                defaultScaleMode === 'PRICE_CENTS_21'
+                  ? 'bg-sky-50 border-sky-400 text-slate-900'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+              }`}
+            >
+              <input
+                type="radio"
+                name="scaleMode"
+                checked={defaultScaleMode === 'PRICE_CENTS_21'}
+                onChange={() => setDefaultScaleMode('PRICE_CENTS_21' as ScaleBarcodeMode)}
+                className="mt-1 accent-sky-600"
+              />
+              <div>
+                <div className="font-bold">
+                  Prefijo `21` — Importe Total en Centavos (`21 + PLU 5d + Centavos 5d + Checksum`)
+                </div>
+                <div className="text-slate-500 mt-0.5">
+                  Calcula el peso inverso exacto con `Decimal.js` dividiendo el importe de etiqueta entre el PVP vigente del SKU.
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
       </div>
 
 

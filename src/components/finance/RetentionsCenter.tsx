@@ -5,8 +5,11 @@ import {
   CheckCircle2,
   Download,
   FileCheck2,
+  FileCode2,
+  FileSpreadsheet,
   FileText,
   Lock,
+  MessageSquareShare,
   Search,
   ShieldAlert,
   Stamp,
@@ -16,20 +19,30 @@ import { TaxRetentionStatus, TaxRetentionType, TaxRetentionVoucher } from '../..
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useUIConfig } from '../../context/UIConfigContext';
+import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { formatUsd, formatVes, round2, toDecimal } from '../../lib/decimal';
 import {
   exportQuincenalRetentionsPdf,
   exportRetentionVoucherPdf,
 } from '../../lib/retention-pdf';
+import {
+  buildSeniatIslrXmlExport,
+  buildSeniatIvaTxtExport,
+  buildSeniatPurchaseBookWorkbook,
+  triggerBrowserTextDownload,
+  triggerWorkbookDownload,
+} from '../../lib/seniat-exporter';
 
 export const RetentionsCenter: React.FC = () => {
   const {
+    invoices,
     retentionVouchers,
     updateRetentionVoucherStatus,
     voidRetentionVoucher,
   } = useFinance();
   const { logAuditEvent } = useInventory();
   const { config, setIsCompanyModalOpen } = useUIConfig();
+  const { dispatchPaymentAndRetentionsBundleBrm } = useOperationsBrm();
 
   const [typeFilter, setTypeFilter] = useState<'ALL' | TaxRetentionType>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | TaxRetentionStatus>('ALL');
@@ -155,6 +168,113 @@ export const RetentionsCenter: React.FC = () => {
 
   const cp = config.companyProfile;
 
+  const activePeriodYearMonth = useMemo(() => {
+    const sample =
+      filteredVouchers.find((v) => v.periodYearMonth)?.periodYearMonth ||
+      retentionVouchers[0]?.periodYearMonth;
+    if (sample && /^\d{6}$/.test(sample)) return sample;
+    const now = new Date();
+    return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }, [filteredVouchers, retentionVouchers]);
+
+  const handleExportSeniatIvaTxt = () => {
+    const selectedFortnight =
+      periodFilter !== 'ALL'
+        ? filteredVouchers.find((v) => v.fortnightLabel === periodFilter)?.fortnight
+        : undefined;
+    const bundle = buildSeniatIvaTxtExport({
+      vouchers: retentionVouchers,
+      companyProfile: cp,
+      periodYearMonth: activePeriodYearMonth,
+      fortnight: selectedFortnight,
+    });
+    const blockingErrors = bundle.validationIssues.filter((i) => i.severity === 'ERROR');
+    if (blockingErrors.length > 0) {
+      setFeedback({
+        type: 'err',
+        text: `Pre-validador SENIAT detectó ${blockingErrors.length} error(es): ${blockingErrors[0].message}`,
+      });
+      return;
+    }
+    triggerBrowserTextDownload(bundle);
+    logAuditEvent(
+      'SENIAT_PORTAL_EXPORT',
+      'PORTAL_SENIAT',
+      `Exportado archivo plano IVA .TXT (${bundle.fileName}) con ${bundle.recordsCount} registros por Bs. ${bundle.totalRetainedVes.toFixed(2)}.`,
+      { fileName: bundle.fileName, recordsCount: bundle.recordsCount }
+    );
+    setFeedback({
+      type: 'ok',
+      text: `Archivo SENIAT IVA .TXT generado (${bundle.recordsCount} líneas · Retenido ${formatVes(bundle.totalRetainedVes)}).`,
+    });
+  };
+
+  const handleExportSeniatIslrXml = () => {
+    const bundle = buildSeniatIslrXmlExport({
+      vouchers: retentionVouchers,
+      companyProfile: cp,
+      periodYearMonth: activePeriodYearMonth,
+    });
+    const blockingErrors = bundle.validationIssues.filter((i) => i.severity === 'ERROR');
+    if (blockingErrors.length > 0) {
+      setFeedback({
+        type: 'err',
+        text: `Pre-validador XML ISLR detectó ${blockingErrors.length} error(es): ${blockingErrors[0].message}`,
+      });
+      return;
+    }
+    triggerBrowserTextDownload(bundle);
+    logAuditEvent(
+      'SENIAT_PORTAL_EXPORT',
+      'PORTAL_SENIAT',
+      `Exportada Relación Mensual ISLR .XML (${bundle.fileName}) con ${bundle.recordsCount} detalles por Bs. ${bundle.totalRetainedVes.toFixed(2)}.`,
+      { fileName: bundle.fileName, recordsCount: bundle.recordsCount }
+    );
+    setFeedback({
+      type: 'ok',
+      text: `Relación Mensual ISLR .XML generada (${bundle.recordsCount} detalles · Retenido ${formatVes(bundle.totalRetainedVes)}).`,
+    });
+  };
+
+  const handleExportPurchaseBookXlsx = () => {
+    const wb = buildSeniatPurchaseBookWorkbook({
+      invoices,
+      vouchers: retentionVouchers,
+      companyProfile: cp,
+      periodYearMonth: activePeriodYearMonth,
+    });
+    const fileName = `Libro_Especial_Compras_SENIAT_${activePeriodYearMonth}.xlsx`;
+    triggerWorkbookDownload(wb, fileName);
+    logAuditEvent(
+      'SENIAT_PORTAL_EXPORT',
+      'LIBRO_COMPRAS',
+      `Exportado Libro Especial de Compras SENIAT (${fileName}).`,
+      { fileName, period: activePeriodYearMonth }
+    );
+    setFeedback({
+      type: 'ok',
+      text: `Libro Especial de Compras SENIAT descargado (${fileName}).`,
+    });
+  };
+
+  const handleSendVoucherViaBrm = async (v: TaxRetentionVoucher) => {
+    const res = await dispatchPaymentAndRetentionsBundleBrm({
+      invoiceId: v.invoiceId,
+      openWaMeWindow: false,
+    });
+    if (!res.success) {
+      setFeedback({
+        type: 'err',
+        text: res.error || 'No se pudo despachar el comprobante por WhatsApp BRM.',
+      });
+      return;
+    }
+    setFeedback({
+      type: 'ok',
+      text: `Comprobante ${v.voucherNumber} despachado por WhatsApp BRM a ${v.supplierName} y marcado como ENTREGADO.`,
+    });
+  };
+
   return (
     <div className="space-y-6">
       {/* Encabezado Fiscal */}
@@ -181,6 +301,30 @@ export const RetentionsCenter: React.FC = () => {
             >
               <Building2 className="w-4 h-4 text-sky-400" />
               Parámetros Fiscales SPE
+            </button>
+            <button
+              type="button"
+              onClick={handleExportSeniatIvaTxt}
+              className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold shadow transition"
+            >
+              <FileCode2 className="w-4 h-4" />
+              Portal SENIAT .TXT (IVA)
+            </button>
+            <button
+              type="button"
+              onClick={handleExportSeniatIslrXml}
+              className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow transition"
+            >
+              <FileCode2 className="w-4 h-4" />
+              Portal SENIAT .XML (ISLR)
+            </button>
+            <button
+              type="button"
+              onClick={handleExportPurchaseBookXlsx}
+              className="min-h-[44px] inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow transition"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              Libro de Compras .XLSX
             </button>
             <button
               type="button"
@@ -425,6 +569,20 @@ export const RetentionsCenter: React.FC = () => {
                           PDF Oficial
                         </button>
 
+                        {v.status !== 'ANULADO' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleSendVoucherViaBrm(v).catch(() => {});
+                            }}
+                            className="min-h-[44px] px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1 transition"
+                            title="Despachar comprobante y soporte de pago al proveedor vía WhatsApp BRM"
+                          >
+                            <MessageSquareShare className="w-3.5 h-3.5" />
+                            WhatsApp BRM
+                          </button>
+                        )}
+
                         {v.status === 'EMITIDO' && (
                           <button
                             type="button"
@@ -521,7 +679,7 @@ export const RetentionsCenter: React.FC = () => {
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1">
                 <Lock className="w-3.5 h-3.5 text-slate-500" />
-                PIN Gerencial (`203040`) o SuperAdmin (`102030`)
+                Token Dinámico TOTP (6 dígitos) o PIN Contingencia (`203040` / `102030`)
               </label>
               <input
                 type="password"

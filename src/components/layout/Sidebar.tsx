@@ -22,6 +22,10 @@ import {
   Apple,
   Store,
   Receipt,
+  Snowflake,
+  ChefHat,
+  MessageSquare,
+  Landmark,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -129,6 +133,34 @@ const NAV_ITEMS: NavItem[] = [
     ],
   },
   {
+    id: 'FEFO_COLD_CHAIN',
+    defaultLabel: 'FEFO & Cadena de Frío',
+    group: 'OPERACIONES',
+    icon: Snowflake,
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.OBSERVADOR,
+      UserRole.SUPERVISOR_CARNICERIA,
+      UserRole.SUPERVISOR_FRUVER,
+      UserRole.SUPERVISOR_PASILLO,
+    ],
+  },
+  {
+    id: 'PRODUCTION_RECIPES',
+    defaultLabel: 'Recetario & Producción BOM',
+    group: 'OPERACIONES',
+    icon: ChefHat,
+    allowedRoles: [
+      UserRole.SUPERADMIN,
+      UserRole.GERENTE,
+      UserRole.ANALISTA,
+      UserRole.SUPERVISOR_CARNICERIA,
+      UserRole.SUPERVISOR_FRUVER,
+    ],
+  },
+  {
     id: 'CHRYSTAL_IMPORT',
     labelKey: 'module_chrystal',
     defaultLabel: 'Importador Chrystal®',
@@ -164,6 +196,20 @@ const NAV_ITEMS: NavItem[] = [
     defaultLabel: 'Retenciones IVA / ISLR',
     group: 'FINANZAS & OCR',
     icon: Receipt,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
+  },
+  {
+    id: 'BRM_WHATSAPP',
+    defaultLabel: 'BRM Proveedores WhatsApp',
+    group: 'FINANZAS & OCR',
+    icon: MessageSquare,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
+  },
+  {
+    id: 'BANK_RECONCILIATION',
+    defaultLabel: 'Conciliación Bancos & OCR',
+    group: 'FINANZAS & OCR',
+    icon: Landmark,
     allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
   },
   {

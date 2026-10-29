@@ -11,6 +11,7 @@ import {
   Lock,
   PackageCheck,
   Plus,
+  ScanBarcode,
   Search,
   ShieldCheck,
   Snowflake,
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Product, StorageZone } from '../../types';
 import { useInventory } from '../../context/InventoryContext';
+import { BarcodeScannerModal } from '../common/BarcodeScannerModal';
 import {
   buildShelfReplenishmentPickList,
   evaluatePhysicalCountTolerance,
@@ -53,6 +55,7 @@ export const ShelfStockManager: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'COLD_CHAIN' | 'LOW_SHELF'>('ALL');
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
 
   // Modal: Reposición o Retorno rápido en misma sede
   const [moveModal, setMoveModal] = useState<{
@@ -300,6 +303,14 @@ export const ShelfStockManager: React.FC = () => {
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={() => setIsScannerOpen(true)}
+              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-bold shadow transition"
+            >
+              <ScanBarcode className="w-4 h-4" />
+              Escanear PWA / Balanza
+            </button>
             <button
               type="button"
               onClick={() => setIsAddLocationModalOpen(true)}
@@ -1077,14 +1088,14 @@ export const ShelfStockManager: React.FC = () => {
             {liveSyncTolerance.requiresManagerPin && (
               <div>
                 <label className="block text-xs font-semibold text-amber-900 mb-1">
-                  PIN de Autorización Gerente (`203040`) o SuperAdmin (`102030`)
+                  Token Dinámico TOTP (6 dígitos) o PIN Contingencia (`203040` / `102030`)
                 </label>
                 <input
                   type="password"
                   required
                   value={syncManagerPin}
                   onChange={(e) => setSyncManagerPin(e.target.value)}
-                  placeholder="Ingrese PIN gerencial..."
+                  placeholder="Ingrese código TOTP 6 dígitos o PIN..."
                   className="w-full min-h-[44px] px-3.5 py-2 border border-amber-400 rounded-xl text-sm font-mono"
                 />
               </div>
@@ -1121,6 +1132,41 @@ export const ShelfStockManager: React.FC = () => {
           </form>
         </div>
       )}
+      <BarcodeScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        title={`Escáner PWA Conteo Físico & Reposición (${activeLocation?.code || 'Sede'})`}
+        products={products}
+        locationId={activeLocation?.id || 'loc-pzo-01'}
+        defaultZone="ANAQUEL"
+        onSelectSingleProduct={({ product, effectiveQuantity }) => {
+          if (!product || !activeLocation) return;
+          setSearchQuery(product.sku);
+          setMoveModal({ product, direction: 'TO_SHELF' });
+          setMoveQty(String(round2(effectiveQuantity)));
+          setMoveNotes('Reposición rápida desde escáner PWA');
+          setIsScannerOpen(false);
+        }}
+        onApplyBatchCount={(items) => {
+          if (!activeLocation || items.length === 0) return;
+          const first = items[0];
+          const prod = products.find((p) => p.id === first.productId);
+          if (prod) {
+            const b = getLocationStockBreakdown(prod, activeLocation.id);
+            setSyncModalProduct(prod);
+            if (first.zone === 'ANAQUEL') {
+              setCountedDepositStr(String(b.deposit));
+              setCountedShelfStr(String(first.totalScannedQty));
+            } else {
+              setCountedDepositStr(String(first.totalScannedQty));
+              setCountedShelfStr(String(b.shelf));
+            }
+            setSyncNotes(`Conteo cíclico por lote desde Escáner Móvil PWA (${items.length} SKU escaneado)`);
+            setSyncManagerPin('');
+          }
+          setIsScannerOpen(false);
+        }}
+      />
     </div>
   );
 };

@@ -15,6 +15,8 @@ import { toDecimal, round2, formatUsd, formatVes } from './decimal';
 import { getCaracasNow } from './bcv';
 import { resolveCompanyProfile } from './excel-exporter';
 import { BRAND_NAME, HIPER_ABASTO_POLAR_LOGO_DATA_URI } from './brand-assets';
+import { verifyManagerGovernanceAuth } from './totp-governance';
+import { TotpSecurityConfig } from '../types';
 
 export interface DiscardReasonCatalogItem {
   code: DiscardReason;
@@ -275,6 +277,7 @@ export function authorizeInventoryDiscardWithPin(params: {
   discards: InventoryDiscardRecord[];
   products: Product[];
   actor: UserProfile | null;
+  totpConfig?: TotpSecurityConfig | null;
   timestampVet?: string;
 }): {
   success: boolean;
@@ -282,7 +285,7 @@ export function authorizeInventoryDiscardWithPin(params: {
   updatedProducts?: Product[];
   error?: string;
 } {
-  const { discardId, managerPin, discards, products, actor } = params;
+  const { discardId, managerPin, discards, products, actor, totpConfig } = params;
 
   if (!actor || (actor.role !== UserRole.GERENTE && actor.role !== UserRole.SUPERADMIN)) {
     return {
@@ -293,16 +296,19 @@ export function authorizeInventoryDiscardWithPin(params: {
   }
 
   const cleanPin = (managerPin || '').trim();
-  const isValidManagerPin =
-    cleanPin === '203040' ||
-    cleanPin === '102030' ||
-    (actor.pin && cleanPin === actor.pin.trim());
+  const fallbackPins = ['203040', '102030'];
+  if (actor.pin) fallbackPins.push(actor.pin.trim());
+  const authCheck = verifyManagerGovernanceAuth({
+    submittedCredential: cleanPin,
+    totpConfig,
+    validFallbackPins: fallbackPins,
+  });
 
-  if (!isValidManagerPin) {
+  if (!authCheck.authorized) {
     return {
       success: false,
       error:
-        'PIN de autorización gerencial inválido. Verifique su credencial confidencial de Gerencia o Superadministrador.',
+        'Token TOTP o PIN de autorización gerencial inválido. Verifique su autenticador dinámico o credencial de Gerencia.',
     };
   }
 
