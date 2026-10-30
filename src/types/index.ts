@@ -512,7 +512,9 @@ export type AuditActionType =
   | 'BRM_WHATSAPP_SESSION_RESET'
   | 'BANK_STATEMENT_IMPORT'
   | 'BANK_PAYMENT_CONCILE'
-  | 'FISCAL_Z_REPORT_SYNC';
+  | 'FISCAL_Z_REPORT_SYNC'
+  | 'CHRYSTAL_SALES_IMPORT'
+  | 'CHRYSTAL_SALES_SYNC';
 
 export interface AuditLogEntry {
   id: string;

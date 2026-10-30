@@ -17,11 +17,13 @@ import {
 import { ChrystalParseResult } from '../../types';
 import { useInventory } from '../../context/InventoryContext';
 import { formatUsd } from '../../lib/decimal';
+import { ChrystalSalesIngestionModal } from './ChrystalSalesIngestionModal';
 
 export const ChrystalImporter: React.FC = () => {
   const { locations, applyChrystalImport } = useInventory();
   const [targetLocationId, setTargetLocationId] = useState<string>('loc-pzo-01');
   const [importMode, setImportMode] = useState<'REPLACE' | 'ADD'>('REPLACE');
+  const [isSalesModalOpen, setIsSalesModalOpen] = useState(false);
   const [parseResult, setParseResult] = useState<ChrystalParseResult | null>(() =>
     parseChrystalRawRows(generateSampleChrystalRawMatrix(), 'Reporte_Chrystal_AltaVista.xlsx')
   );
@@ -72,6 +74,15 @@ export const ChrystalImporter: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsSalesModalOpen(true)}
+            className="min-h-[44px] sm:min-h-[38px] flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 shrink-0" />
+            <span>Descarga Diaria de Ventas POS</span>
+          </button>
+
           <button
             type="button"
             onClick={() => exportSampleChrystalTemplateExcel()}
@@ -255,6 +266,12 @@ export const ChrystalImporter: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Ingesta Asistida de Ventas Chrystal POS (Auto-Detección Multi-Formato) */}
+      <ChrystalSalesIngestionModal
+        isOpen={isSalesModalOpen}
+        onClose={() => setIsSalesModalOpen(false)}
+      />
     </div>
   );
 };

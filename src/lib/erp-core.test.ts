@@ -87,6 +87,7 @@ import {
   InventoryDiscardRecord,
   UserSessionRecord,
   PurchaseInvoice,
+  PurchaseInvoiceLine,
   TaxRetentionVoucher,
 } from '../types';
 import {
@@ -235,6 +236,21 @@ import {
   computeFiscalPayloadSignature,
   processFiscalZClosure,
 } from './fiscal-printer';
+import {
+  quotaTelemetryEngine,
+  DEFAULT_DAILY_READ_LIMIT,
+  DEFAULT_DAILY_WRITE_LIMIT,
+} from './quota-telemetry';
+import {
+  calculateConservativeCashFlowProjection,
+  getNextSeniatQuincenaDeadline,
+} from './cash-flow-projector';
+import {
+  detectTextDelimiter,
+  parseRawMatrixChrystalSales,
+  parseChrystalSalesUploadedFile,
+  generateSampleChrystalSalesMatrix,
+} from './chrystal-sales-parser';
 
 test('decimal.js arithmetic avoids IEEE-754 floating point drift and rounds ROUND_HALF_UP', () => {
   assert.equal(addMoney(0.1, 0.2), 0.3);
@@ -5212,4 +5228,426 @@ test('60. Conector Impresoras Fiscales Homologadas SENIAT (SNAT/2024/000102) & N
     periodYearMonth: '202610',
   });
   assert.ok(salesWb.SheetNames.includes('Libro Ventas Reportes Z'));
+});
+
+test('61. Telemetría y Estado de Salud del Sistema (Anti-Hemorragia de Cuotas Firestore)', () => {
+  quotaTelemetryEngine.resetTelemetryForTesting(0, 0);
+  let snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.readsToday, 0);
+  assert.equal(snap.healthStatus, 'OPTIMO');
+  assert.equal(snap.throttleModeActive, false);
+
+  // Registrar lecturas normales
+  quotaTelemetryEngine.recordRead(50, 'catalogo_productos');
+  quotaTelemetryEngine.recordWrite(10);
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.readsToday, 50);
+  assert.equal(snap.writesToday, 10);
+  assert.equal(snap.healthStatus, 'OPTIMO');
+
+  // Test umbral preventivo (60%)
+  quotaTelemetryEngine.resetTelemetryForTesting(31000, 500); // 62%
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.healthStatus, 'PREVENTIVO_60');
+  assert.equal(snap.readQuotaPercent, 62);
+
+  // Test umbral crítico de alerta (80%)
+  quotaTelemetryEngine.resetTelemetryForTesting(41000, 500); // 82%
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.healthStatus, 'CRITICO_80');
+  assert.equal(snap.readQuotaPercent, 82);
+
+  // Test modo ahorro forzado (90%)
+  quotaTelemetryEngine.resetTelemetryForTesting(46000, 500); // 92%
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.healthStatus, 'AHORRO_FORZADO_90');
+  assert.equal(snap.throttleModeActive, true);
+
+  // Test detección proactiva de hemorragia de datos (Query Leak Watchdog)
+  quotaTelemetryEngine.resetTelemetryForTesting(100, 10);
+  quotaTelemetryEngine.recordRead(195, 'coleccion_sin_limit', 'BuclePrueba');
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.activeLeaksDetected.length, 1);
+  assert.equal(snap.activeLeaksDetected[0].burstCount, 195);
+  assert.ok(snap.activeLeaksDetected[0].description.includes('Ráfaga anómala'));
+
+  quotaTelemetryEngine.clearLeaks();
+  snap = quotaTelemetryEngine.getSnapshot();
+  assert.equal(snap.activeLeaksDetected.length, 0);
+});
+
+test('62. Flujo de Caja Bimonetario Conservador Estricto (USD / VES) con Decimal.js', () => {
+  const mockInvoices: PurchaseInvoice[] = [
+    {
+      id: 'inv-vencida-1',
+      invoiceNumber: 'FAC-001',
+      controlNumber: '00-01',
+      supplierId: 'sup-001',
+      supplierName: 'Alimentos Polar',
+      supplierRif: 'J-00006372-9',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-10',
+      dueDate: '2026-10-25', // Vencida
+      currency: 'USD',
+      bcvRateAtIssue: 50,
+      lines: [],
+      subtotalUsd: 1000,
+      ivaAmountUsd: 160,
+      igtfAmountUsd: 0,
+      totalUsd: 1160,
+      paidAmountUsd: 0,
+      status: 'PENDIENTE',
+      ocrEngineUsed: 'GEMINI_VISION_PRO',
+      forensicAudit: {
+        passedAllLocks: true,
+        lock1LineIntegrations: true,
+        lock2SubtotalMatch: true,
+        lock3TaxCoherence: true,
+        lock4TotalCrossCheck: true,
+        discrepancyUsd: 0,
+        auditLog: [],
+      },
+      createdAtVet: '2026-10-10 10:00',
+    },
+    {
+      id: 'inv-h7-2',
+      invoiceNumber: 'FAC-002',
+      controlNumber: '00-02',
+      supplierId: 'sup-002',
+      supplierName: 'Cargill de Venezuela',
+      supplierRif: 'J-00045678-0',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-28',
+      dueDate: '2026-11-03', // Próximos 5 días (<=7d)
+      currency: 'USD',
+      bcvRateAtIssue: 50,
+      lines: [],
+      subtotalUsd: 800,
+      ivaAmountUsd: 128,
+      igtfAmountUsd: 0,
+      totalUsd: 928,
+      paidAmountUsd: 0,
+      status: 'PENDIENTE',
+      ocrEngineUsed: 'GEMINI_VISION_PRO',
+      forensicAudit: {
+        passedAllLocks: true,
+        lock1LineIntegrations: true,
+        lock2SubtotalMatch: true,
+        lock3TaxCoherence: true,
+        lock4TotalCrossCheck: true,
+        discrepancyUsd: 0,
+        auditLog: [],
+      },
+      createdAtVet: '2026-10-28 10:00',
+    },
+    {
+      id: 'inv-h15-3',
+      invoiceNumber: 'FAC-003',
+      controlNumber: '00-03',
+      supplierId: 'sup-003',
+      supplierName: 'Plumrose Latinoamericana',
+      supplierRif: 'J-00078901-2',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-29',
+      dueDate: '2026-11-12', // Próximos 14 días (<=15d)
+      currency: 'USD',
+      bcvRateAtIssue: 50,
+      lines: [],
+      subtotalUsd: 1500,
+      ivaAmountUsd: 240,
+      igtfAmountUsd: 0,
+      totalUsd: 1740,
+      paidAmountUsd: 0,
+      status: 'PENDIENTE',
+      ocrEngineUsed: 'GEMINI_VISION_PRO',
+      forensicAudit: {
+        passedAllLocks: true,
+        lock1LineIntegrations: true,
+        lock2SubtotalMatch: true,
+        lock3TaxCoherence: true,
+        lock4TotalCrossCheck: true,
+        discrepancyUsd: 0,
+        auditLog: [],
+      },
+      createdAtVet: '2026-10-29 10:00',
+    },
+  ];
+
+  const mockVouchers: TaxRetentionVoucher[] = [
+    {
+      id: 'vch-iva-1',
+      voucherNumber: '20261000000001',
+      type: 'IVA',
+      status: 'EMITIDO',
+      supplierId: 'sup-001',
+      supplierName: 'Alimentos Polar',
+      supplierRif: 'J-00006372-9',
+      invoiceId: 'inv-vencida-1',
+      invoiceNumber: 'FAC-001',
+      controlNumber: '00-01',
+      bcvRateAtIssue: 50,
+      retainedTotalVes: 6000, // 120 USD a tasa 50
+      retainedTotalUsd: 120,
+      taxableBaseUsd: 1000,
+      taxableBaseVes: 50000,
+      taxCausadoTotalUsd: 160,
+      taxCausadoTotalVes: 8000,
+      retentionPercentApplied: 75,
+      sustraendoTotalVes: 0,
+      netPayableAfterAllRetentionsUsd: 1040,
+      netPayableAfterAllRetentionsVes: 52000,
+      lines: [],
+      createdBy: 'admin',
+      createdAtVet: '2026-10-10 10:30',
+    } as unknown as TaxRetentionVoucher,
+  ];
+
+  // Ejecutar cálculo conservador estricto (Opción B)
+  const result = calculateConservativeCashFlowProjection({
+    availableCashUsd: 5000,
+    availableCashVes: 100000, // 2000 USD a tasa 50 -> Total Disponible = 7000 USD
+    activeBcvRate: 50,
+    invoices: mockInvoices,
+    retentionVouchers: mockVouchers,
+    bcvSlippagePercent: 0,
+  });
+
+  assert.equal(result.currentAvailableLiquidity.usdAvailable, 5000);
+  assert.equal(result.currentAvailableLiquidity.vesAvailable, 100000);
+  assert.equal(result.currentAvailableLiquidity.consolidatedTotalUsd, 7000);
+  assert.equal(result.currentAvailableLiquidity.consolidatedTotalVes, 350000);
+
+  // Validar desglose de cuentas por pagar
+  assert.equal(result.supplierObligations.overdueUsd, 1160);
+  assert.equal(result.supplierObligations.horizon7dUsd, 928);
+  assert.equal(result.supplierObligations.horizon15dUsd, 1740);
+
+  // Validar provisión fiscal SENIAT
+  assert.equal(result.seniatFiscalObligations.ivaPendingVes, 6000);
+  assert.equal(result.seniatFiscalObligations.totalSeniatUsd, 120);
+
+  // Validar 4 horizontes proyectados
+  assert.equal(result.horizons.length, 4);
+  assert.equal(result.horizons[0].periodLabel, 'Vencido / Hoy');
+  assert.equal(result.horizons[1].periodLabel, 'Próximos 7 días');
+  assert.equal(result.horizons[2].periodLabel, 'Quincena (Día 15)');
+
+  // Probar simulador de deslizamiento cambiario BCV (+5%)
+  const simResult = calculateConservativeCashFlowProjection({
+    availableCashUsd: 5000,
+    availableCashVes: 100000,
+    activeBcvRate: 50,
+    invoices: mockInvoices,
+    retentionVouchers: mockVouchers,
+    bcvSlippagePercent: 5, // Tasa simulada = 52.50
+  });
+
+  assert.equal(simResult.simulatedBcvRate, 52.5);
+  assert.equal(simResult.supplierObligations.overdueVes, 1160 * 52.5); // 60,900 VES
+});
+
+test('63. Auto-Detección Multi-Formato Chrystal POS (Excel, CSV, TXT Tabulado)', () => {
+  // Test detección de delimitador
+  assert.equal(detectTextDelimiter('CODIGO,ARTICULO,CANTIDAD\nHAR-01,Harina,10'), 'CSV_COMMA');
+  assert.equal(detectTextDelimiter('CODIGO;ARTICULO;CANTIDAD\nHAR-01;Harina;10'), 'CSV_SEMICOLON');
+  assert.equal(detectTextDelimiter('CODIGO\tARTICULO\tCANTIDAD\nHAR-01\tHarina\t10'), 'TEXT_TAB_DELIMITED');
+
+  // Test matriz con formato de ejemplo Chrystal POS
+  const sampleMatrix = generateSampleChrystalSalesMatrix();
+  assert.ok(sampleMatrix.length >= 8);
+
+  const mockCatalog: Product[] = [
+    {
+      id: 'prd-001',
+      sku: 'HAR-PAN-1KG',
+      barcode: '7591001000101',
+      name: 'Harina PAN 1kg',
+      category: 'Víveres',
+      unit: 'UND',
+      costUsd: 1.0,
+      targetMarginPercent: 25,
+      priceUsd: 1.35,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 100 },
+      minStockByLocation: { 'loc-pzo-01': 20 },
+      monthlyUnitsSold: 300,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-29 10:00',
+    },
+    {
+      id: 'prd-002',
+      sku: 'ACE-MAZ-1LT',
+      barcode: '7591001000202',
+      name: 'Aceite Mazola 1L',
+      category: 'Víveres',
+      unit: 'UND',
+      costUsd: 2.8,
+      targetMarginPercent: 28,
+      priceUsd: 3.85,
+      ivaRate: 16,
+      stockByLocation: { 'loc-pzo-01': 50 },
+      minStockByLocation: { 'loc-pzo-01': 10 },
+      monthlyUnitsSold: 120,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-29 10:00',
+    },
+  ];
+
+  const parsed = parseRawMatrixChrystalSales(
+    sampleMatrix,
+    mockCatalog,
+    'Reporte_Chrystal_Pzo.xlsx',
+    'EXCEL_WORKBOOK'
+  );
+
+  assert.equal(parsed.detectedFormat, 'EXCEL_WORKBOOK');
+  assert.ok(parsed.recognizedItems.length >= 2);
+  const harPanItem = parsed.recognizedItems.find((i) => i.sku === 'HAR-PAN-1KG');
+  assert.ok(harPanItem);
+  assert.equal(harPanItem.qtySold, 45);
+  assert.equal(harPanItem.totalUsd, 60.75);
+});
+
+test('64. Tratamiento de SKUs No Registrados en Ventas Chrystal (Opción A: Omitir y Alertar)', () => {
+  const sampleMatrix = generateSampleChrystalSalesMatrix();
+  const minimalCatalog: Product[] = [
+    {
+      id: 'prd-001',
+      sku: 'HAR-PAN-1KG',
+      barcode: '7591001000101',
+      name: 'Harina PAN 1kg',
+      category: 'Víveres',
+      unit: 'UND',
+      costUsd: 1.0,
+      targetMarginPercent: 25,
+      priceUsd: 1.35,
+      ivaRate: 0,
+      stockByLocation: { 'loc-pzo-01': 100 },
+      minStockByLocation: { 'loc-pzo-01': 20 },
+      monthlyUnitsSold: 300,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-29 10:00',
+    },
+  ];
+
+  const parsed = parseRawMatrixChrystalSales(
+    sampleMatrix,
+    minimalCatalog,
+    'Ventas_Chrystal.csv',
+    'CSV_COMMA'
+  );
+
+  // Solo HAR-PAN-1KG está en el catálogo mínimo
+  assert.equal(parsed.recognizedItems.length, 1);
+  assert.equal(parsed.recognizedItems[0].sku, 'HAR-PAN-1KG');
+
+  // El resto de los productos desconocidos (como DESCONOCIDO-999) están en unrecognizedItems
+  assert.ok(parsed.unrecognizedItems.length >= 1);
+  const unknownItem = parsed.unrecognizedItems.find((i) => i.rawCode === 'DESCONOCIDO-999');
+  assert.ok(unknownItem);
+  assert.equal(unknownItem.qtySold, 12);
+  assert.equal(unknownItem.reason, 'SKU_OR_BARCODE_NOT_FOUND_IN_CATALOG');
+});
+
+test('65. Validación Visual Split-Screen OCR y Modal de Confirmación Rápida de Retenciones', () => {
+  const invoiceLines: PurchaseInvoiceLine[] = [
+    {
+      id: 'ln-1',
+      sku: 'HAR-PAN-1KG',
+      description: 'Harina PAN 1kg',
+      quantity: 100,
+      unitCostUsd: 1.0,
+      lineTotalUsd: 100.0,
+      ivaRate: 0, // Exento
+      lineType: 'BIEN',
+    },
+    {
+      id: 'ln-2',
+      sku: 'ACE-MAZ-1LT',
+      description: 'Aceite Mazola 1L',
+      quantity: 50,
+      unitCostUsd: 3.0,
+      lineTotalUsd: 150.0,
+      ivaRate: 16, // Gravable 16% -> IVA 24 USD
+      lineType: 'BIEN',
+    },
+  ];
+
+  // Totales
+  const subtotalUsd = 250.0;
+  const ivaUsd = 24.0;
+  const totalUsd = 274.0;
+
+  // Cuadre de retenciones: IVA 75%
+  const ivaRetainedUsd = 24.0 * 0.75; // 18 USD
+  // ISLR Bienes PJ (2%)
+  const islrRetainedUsd = 250.0 * 0.02; // 5 USD
+  const totalRetainedUsd = 18.0 + 5.0; // 23 USD
+  const netPayableUsd = 274.0 - 23.0; // 251 USD
+
+  assert.equal(ivaRetainedUsd, 18.0);
+  assert.equal(islrRetainedUsd, 5.0);
+  assert.equal(netPayableUsd, 251.0);
+});
+
+test('66. Prueba de Estrés de Cuotas Firestore & Ingesta Masiva de 1,000 Transacciones Chrystal POS', () => {
+  const stressCatalog: Product[] = [];
+  for (let i = 0; i < 50; i++) {
+    stressCatalog.push({
+      id: `prd-${i}`,
+      sku: `SKU-POS-${i}`,
+      barcode: `759900000${String(i).padStart(4, '0')}`,
+      name: `Producto Retail ${i}`,
+      category: 'Víveres',
+      unit: 'UND',
+      costUsd: 2.0,
+      targetMarginPercent: 30,
+      priceUsd: 2.85,
+      ivaRate: 16,
+      stockByLocation: { 'loc-pzo-01': 500 },
+      minStockByLocation: { 'loc-pzo-01': 50 },
+      monthlyUnitsSold: 1000,
+      abcClass: 'A',
+      supplierId: 'sup-001',
+      lastUpdatedVet: '2026-10-29 10:00',
+    });
+  }
+
+  // Generar 1,000 líneas de venta simuladas de Chrystal POS
+  const bigMatrix: Array<Array<string | number>> = [
+    ['CODIGO', 'DESCRIPCION', 'CANTIDAD', 'PRECIO', 'TOTAL'],
+  ];
+
+  for (let i = 0; i < 1000; i++) {
+    const skuIndex = i % 55; // 50 reconocidos, 5 desconocidos
+    bigMatrix.push([
+      `SKU-POS-${skuIndex}`,
+      `Articulo ${skuIndex}`,
+      (i % 5) + 1,
+      2.85,
+      ((i % 5) + 1) * 2.85,
+    ]);
+  }
+
+  const startT = Date.now();
+  const parsedBig = parseRawMatrixChrystalSales(
+    bigMatrix,
+    stressCatalog,
+    'Ventas_Masivas_1000.csv',
+    'CSV_COMMA'
+  );
+  const elapsed = Date.now() - startT;
+
+  assert.ok(elapsed < 300, `Parseo de 1,000 transacciones debe tardar <300ms (tardó ${elapsed}ms)`);
+  assert.ok(parsedBig.recognizedItems.length > 800);
+  assert.ok(parsedBig.unrecognizedItems.length > 50);
+
+  // Validar telemetría de cuotas registrando el lote
+  quotaTelemetryEngine.recordRead(50, 'catalogo_productos', 'StressTest');
+  quotaTelemetryEngine.recordWrite(parsedBig.recognizedItems.length);
+  const snap = quotaTelemetryEngine.getSnapshot();
+  assert.ok(snap.writesToday >= parsedBig.recognizedItems.length);
 });

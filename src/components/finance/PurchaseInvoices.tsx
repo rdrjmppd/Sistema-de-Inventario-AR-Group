@@ -44,6 +44,7 @@ import { exportRetentionVoucherPdf } from '../../lib/retention-pdf';
 import { applyStockDeltaToZone } from '../../lib/shelf-stock';
 import { formatUsd, formatVes, round2, toDecimal } from '../../lib/decimal';
 import { getCaracasNow } from '../../lib/bcv';
+import { InvoiceOcrSplitViewer } from './InvoiceOcrSplitViewer';
 
 export const PurchaseInvoices: React.FC = () => {
   const { invoices, suppliers, retentionVouchers, bcvState, registerOcrInvoice } = useFinance();
@@ -93,6 +94,7 @@ export const PurchaseInvoices: React.FC = () => {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [previewModalInvoice, setPreviewModalInvoice] =
     useState<PurchaseInvoice | null>(null);
+  const [isSplitViewerOpen, setIsSplitViewerOpen] = useState(false);
   const [commitMessage, setCommitMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -743,7 +745,15 @@ export const PurchaseInvoices: React.FC = () => {
               </span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsSplitViewerOpen(true)}
+                className="px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs transition cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                Validación Visual Split-Screen
+              </button>
               <button
                 type="button"
                 onClick={() => handleRunOcrSimulation('VALID_POLAR')}
@@ -1464,6 +1474,35 @@ export const PurchaseInvoices: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Visor Interactivo Split-Screen Side-by-Side (Decisión Estratégica Opción A y B) */}
+      {isSplitViewerOpen && (
+        <InvoiceOcrSplitViewer
+          invoice={{
+            invoiceNumber,
+            controlNumber,
+            supplierName: selectedSupplier?.name,
+            supplierRif: selectedSupplier?.rif,
+            lines,
+            subtotalUsd: parseFloat(subtotalUsd) || 0,
+            ivaAmountUsd: parseFloat(ivaAmountUsd) || 0,
+            igtfAmountUsd: parseFloat(igtfAmountUsd) || 0,
+            totalUsd: parseFloat(totalUsd) || 0,
+            forensicAudit: liveAudit,
+          }}
+          attachmentUrl={uploadedAttachment?.dataUrl}
+          attachmentName={uploadedAttachment?.fileName}
+          attachmentMimeType={uploadedAttachment?.mimeType}
+          activeBcvRate={bcvState.activeRate}
+          onClose={() => setIsSplitViewerOpen(false)}
+          onApproveAndCommit={({ destinationZone: newZone, editedLines: newLines }) => {
+            setDestinationZone(newZone);
+            setLines(newLines);
+            setIsSplitViewerOpen(false);
+            handleCommitVerifiedInvoice();
+          }}
+        />
       )}
     </div>
   );

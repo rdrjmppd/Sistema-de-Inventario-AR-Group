@@ -26,6 +26,8 @@ import { NavigationTab, UserRole } from '../../types';
 import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
 import { DEFAULT_COMPANY_PROFILE } from '../../lib/excel-exporter';
 import { BackupRestoreManager } from './BackupRestoreManager';
+import { SystemHealthMonitorWidget } from './SystemHealthMonitorWidget';
+import { CashFlowProjectionsWidget } from './CashFlowProjectionsWidget';
 
 interface AnalyticsDashboardProps {
   onNavigate: (tab: NavigationTab) => void;
@@ -246,6 +248,9 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
         </div>
       </div>
 
+      {/* Monitor de Estado de Salud del Sistema & Anti-Hemorragia de Cuotas Firestore */}
+      <SystemHealthMonitorWidget />
+
       {/* 4 Primary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs">
@@ -306,6 +311,9 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
           </button>
         </div>
       </div>
+
+      {/* Flujo de Caja Bimonetario Real Proyectado (USD / VES) */}
+      <CashFlowProjectionsWidget />
 
       {/* Middle Analytical Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
