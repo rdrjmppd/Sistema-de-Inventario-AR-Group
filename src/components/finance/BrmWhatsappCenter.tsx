@@ -13,19 +13,27 @@ import {
   Truck,
   Wifi,
 } from 'lucide-react';
-import { StorageZone } from '../../types';
+import { NavigationTab, StorageZone } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { normalizePhoneE164 } from '../../lib/brm-whatsapp';
+import { QrMatrixView } from '../common/QrMatrixView';
 
-export const BrmWhatsappCenter: React.FC = () => {
+export interface BrmWhatsappCenterProps {
+  onNavigate?: (tab: NavigationTab) => void;
+}
+
+export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate }) => {
   const { suppliers, invoices, retentionVouchers, updateSupplier } = useFinance();
   const { purchaseOrders, products, locations, selectedLocationId } = useInventory();
   const {
     brmSession,
     brmMessages,
     brmPreInvoices,
+    stagedRetentionDispatch,
+    confirmStagedRetentionDispatch,
+    clearStagedRetentionDispatch,
     requestBrmQrSession,
     confirmBrmQrPairing,
     activateBrmCloudWebhookMode,
@@ -69,6 +77,14 @@ export const BrmWhatsappCenter: React.FC = () => {
   const [gateZone, setGateZone] = useState<StorageZone>('DEPOSITO');
   const [gateSku, setGateSku] = useState(products[0]?.sku || '');
   const [gateQty, setGateQty] = useState('20');
+
+  // Auto-seleccionar al proveedor del comprobante en borrador si está pendiente de revisión
+  React.useEffect(() => {
+    if (stagedRetentionDispatch?.supplierId) {
+      setSelectedSupplierId(stagedRetentionDispatch.supplierId);
+      setTab('SUPPLIERS_360');
+    }
+  }, [stagedRetentionDispatch?.supplierId]);
 
   const activeSupplier =
     suppliers.find((s) => s.id === selectedSupplierId) || suppliers[0];
@@ -207,33 +223,127 @@ export const BrmWhatsappCenter: React.FC = () => {
           </div>
         </div>
 
-        {/* Panel de Emparejamiento QR Anti-Split Brain */}
+        {/* Panel de Emparejamiento QR Auténtico (ISO/IEC 18004 WhatsApp Web) */}
         {brmSession.state === 'QR_READY' && brmSession.qrPayloadData && (
-          <div className="p-4 rounded-xl bg-slate-950 border border-amber-500/40 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
-            <div className="flex items-center gap-3">
-              <div className="w-20 h-20 rounded-xl bg-white text-slate-950 p-2 flex flex-col items-center justify-center font-mono text-[9px] font-bold shrink-0 text-center">
-                <QrCode className="w-10 h-10 text-slate-900 mb-0.5" />
-                BRM-QR
+          <div className="p-4 sm:p-5 rounded-2xl bg-slate-950 border-2 border-emerald-500/50 flex flex-col md:flex-row items-center justify-between gap-5 text-xs shadow-2xl">
+            <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+              <div className="shrink-0 p-1 bg-white rounded-2xl shadow-lg border border-emerald-400">
+                <QrMatrixView
+                  value={brmSession.qrPayloadData}
+                  size={160}
+                  margin={2}
+                  darkColor="#022c22"
+                  alt="Código QR WhatsApp Web BRM"
+                />
               </div>
-              <div>
-                <h4 className="font-bold text-amber-300 text-sm">
-                  Sesión QR Lista para Vincular Dispositivo de Compras / Tesorería
+              <div className="space-y-1.5 max-w-xl">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-[11px]">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  QR Activo · Noise Protocol Handshake Listo
+                </div>
+                <h4 className="font-bold text-white text-base">
+                  Escanea este código con WhatsApp desde tu teléfono
                 </h4>
-                <p className="text-slate-400 mt-0.5 font-mono break-all">
-                  Token: {brmSession.qrPayloadData}
-                </p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Línea excluida de auto-envío: {brmSession.corporatePhoneE164}
-                </p>
+                <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-0.5 font-medium">
+                  <li>Abre WhatsApp en el teléfono de Compras/Tesorería</li>
+                  <li>Toca <strong className="text-white">Ajustes</strong> o <strong className="text-white">Menú</strong> y selecciona <strong className="text-white">Dispositivos vinculados</strong></li>
+                  <li>Toca <strong className="text-white">Vincular un dispositivo</strong> y apunta tu cámara a este código</li>
+                </ol>
+                <div className="pt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400 font-mono">
+                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                    Línea corporativa: {brmSession.corporatePhoneE164}
+                  </span>
+                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[240px]">
+                    Token: {brmSession.qrPayloadData}
+                  </span>
+                </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => confirmBrmQrPairing()}
-              className="min-h-[44px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shrink-0 cursor-pointer"
-            >
-              Confirmar Vinculación Activa
-            </button>
+            <div className="flex flex-col sm:flex-row md:flex-col gap-2 w-full md:w-auto shrink-0">
+              <button
+                type="button"
+                onClick={() => confirmBrmQrPairing()}
+                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2 cursor-pointer transition"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                Confirmar Vinculación Activa
+              </button>
+              <button
+                type="button"
+                onClick={() => requestBrmQrSession(corpPhoneInput)}
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-medium flex items-center justify-center gap-1.5 cursor-pointer transition text-xs"
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                Regenerar Código QR
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Tarjeta de Confirmación Humana de Borrador de Retención (Prevención de Despacho Accidental) */}
+        {stagedRetentionDispatch && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-amber-950/40 border-2 border-amber-500/60 shadow-xl space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-500/30 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-400 uppercase tracking-wide">
+                    Borrador Pre-Cargado para Confirmación Manual
+                  </div>
+                  <h4 className="font-bold text-white text-base">
+                    Comprobante {stagedRetentionDispatch.voucherType} N° {stagedRetentionDispatch.voucherNumber} · {stagedRetentionDispatch.supplierName}
+                  </h4>
+                </div>
+              </div>
+              <div className="text-right text-xs">
+                <span className="text-slate-400">Total Retenido:</span>{' '}
+                <strong className="text-amber-300 text-sm">
+                  Bs. {stagedRetentionDispatch.retainedVes.toFixed(2)} (${stagedRetentionDispatch.retainedUsd.toFixed(2)})
+                </strong>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/80 p-3 rounded-xl border border-slate-800 text-xs font-mono text-slate-300 max-h-36 overflow-y-auto whitespace-pre-line leading-relaxed">
+              {stagedRetentionDispatch.formattedSummaryMessage}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <p className="text-[11px] text-slate-400">
+                El comprobante permanece en estado <strong className="text-amber-300">EMITIDO</strong> hasta que confirmes el envío formal.
+              </p>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => clearStagedRetentionDispatch()}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+                >
+                  Descartar Borrador (No Enviar)
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const res = await confirmStagedRetentionDispatch(false);
+                    if (res.success) {
+                      setBanner({
+                        type: 'ok',
+                        text: `Comprobante despachado con éxito al proveedor vía BRM y marcado como ENTREGADO.`,
+                      });
+                    } else {
+                      setBanner({
+                        type: 'err',
+                        text: res.error || 'Error despachando comprobante.',
+                      });
+                    }
+                  }}
+                  className="min-h-[44px] px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/40 flex items-center gap-2 cursor-pointer transition"
+                >
+                  <Send className="w-4 h-4" />
+                  Confirmar y Enviar al Proveedor
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

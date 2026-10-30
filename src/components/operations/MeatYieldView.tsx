@@ -49,6 +49,7 @@ import {
   calculateMeatYieldBatch,
   projectCarcassRequirementForCutDemand,
 } from '../../lib/meat-yield';
+import { YieldMetricsCharts } from '../meat/YieldMetricsCharts';
 import {
   buildStandardDirectCutSku,
   calculateMeatDirectCutPurchase,
@@ -775,6 +776,9 @@ export const MeatYieldView: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* Métricas Visuales de Rendimiento y Merma (Recharts) */}
+      <YieldMetricsCharts mode="MEAT" meatBatches={[computedBatch]} />
 
       {/* SELECTOR DE SESIÓN OPERATIVA: CANAL vs CORTES DIRECTOS */}
       <div className="bg-white p-2 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-2">

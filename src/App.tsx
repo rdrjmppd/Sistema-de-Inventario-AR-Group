@@ -275,8 +275,8 @@ const MainShell: React.FC = () => {
         {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
         {activeTab === 'PRICING' && <PricingCalculator />}
         {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
-        {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter />}
-        {activeTab === 'BRM_WHATSAPP' && <BrmWhatsappCenter />}
+        {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter onNavigate={setActiveTab} />}
+        {activeTab === 'BRM_WHATSAPP' && <BrmWhatsappCenter onNavigate={setActiveTab} />}
         {activeTab === 'BANK_RECONCILIATION' && <BankReconciliationCenter />}
         {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
         {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}

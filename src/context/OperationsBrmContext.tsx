@@ -17,8 +17,10 @@ import {
   PurchaseInvoice,
   RotationHorizonDays,
   ScaleBarcodeMode,
+  StagedBrmRetentionDispatch,
   StorageZone,
   SupplierPurchaseOrder,
+  TaxRetentionVoucher,
   TotpSecurityConfig,
 } from '../types';
 import { useAuth } from './AuthContext';
@@ -158,6 +160,10 @@ interface OperationsBrmContextType {
   brmSession: BrmWhatsappSessionStatus;
   brmMessages: BrmWhatsappMessage[];
   brmPreInvoices: BrmSupplierPreInvoice[];
+  stagedRetentionDispatch: StagedBrmRetentionDispatch | null;
+  stageRetentionVoucherForBrm: (voucher: TaxRetentionVoucher) => { success: boolean; staged?: StagedBrmRetentionDispatch; error?: string };
+  confirmStagedRetentionDispatch: (openWaMeWindow?: boolean) => Promise<{ success: boolean; message?: BrmWhatsappMessage; error?: string }>;
+  clearStagedRetentionDispatch: () => void;
   requestBrmQrSession: (corporatePhoneE164?: string) => Promise<void>;
   confirmBrmQrPairing: () => Promise<void>;
   activateBrmCloudWebhookMode: () => Promise<void>;
@@ -326,6 +332,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   const [brmPreInvoices, setBrmPreInvoices] = useState<BrmSupplierPreInvoice[]>(() =>
     loadJsonSafe<BrmSupplierPreInvoice[]>(STORAGE_KEYS.BRM_PREINVOICES, [])
   );
+
+  const [stagedRetentionDispatch, setStagedRetentionDispatch] = useState<StagedBrmRetentionDispatch | null>(null);
 
   const [bankStatementLines, setBankStatementLines] = useState<BankStatementLine[]>(() =>
     loadJsonSafe<BankStatementLine[]>(STORAGE_KEYS.BANK_LINES, [])
@@ -1093,6 +1101,94 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     ]
   );
 
+  const stageRetentionVoucherForBrm = useCallback(
+    (voucher: TaxRetentionVoucher) => {
+      const invoice = invoices.find((inv) => inv.id === voucher.invoiceId);
+      const supplier = suppliers.find((s) => s.id === voucher.supplierId) || (invoice ? suppliers.find((s) => s.id === invoice.supplierId) : undefined);
+      if (!supplier) {
+        return { success: false, error: 'Proveedor asociado al comprobante no encontrado.' };
+      }
+
+      const now = getCaracasNow();
+      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
+      const latestPayment = payments.filter((p) => p.invoiceId === voucher.invoiceId)[0];
+
+      const ivaV = voucher.type === 'IVA' ? voucher : retentionVouchers.find((v) => v.invoiceId === voucher.invoiceId && v.type === 'IVA');
+      const islrV = voucher.type === 'ISLR' ? voucher : retentionVouchers.find((v) => v.invoiceId === voucher.invoiceId && v.type === 'ISLR');
+
+      const formatted = formatBrmPaymentAndRetentionsBundleTemplate({
+        supplier,
+        invoiceNumber: invoice?.invoiceNumber || voucher.invoiceNumber || 'S/N',
+        payment: latestPayment,
+        ivaVoucher: ivaV || null,
+        islrVoucher: islrV || null,
+        companyProfile: config.companyProfile,
+      });
+
+      const staged: StagedBrmRetentionDispatch = {
+        voucherId: voucher.id,
+        voucherNumber: voucher.voucherNumber,
+        voucherType: voucher.type,
+        invoiceId: voucher.invoiceId,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        supplierRif: supplier.rif,
+        phoneE164: supplier.phone ? `+${supplier.phone.replace(/\D/g, '')}` : DEFAULT_CORPORATE_BRM_PHONE_E164,
+        retainedVes: voucher.retainedTotalVes,
+        retainedUsd: voucher.retainedTotalUsd,
+        periodYearMonth: voucher.periodYearMonth,
+        formattedSummaryMessage: formatted.messageBody,
+        preparedAtVet: nowStamp,
+      };
+
+      setStagedRetentionDispatch(staged);
+
+      logAuditEvent(
+        'BRM_RETENTION_DRAFT_STAGED',
+        'TAX_RETENTION',
+        `Cargado borrador de comprobante ${voucher.type} N° ${voucher.voucherNumber} (${supplier.name}) en WhatsApp BRM para confirmación manual.`,
+        { voucherNumber: voucher.voucherNumber, type: voucher.type, supplierId: supplier.id },
+        voucher.id
+      );
+
+      return { success: true, staged };
+    },
+    [invoices, suppliers, payments, retentionVouchers, config.companyProfile, logAuditEvent]
+  );
+
+  const confirmStagedRetentionDispatch = useCallback(
+    async (openWaMeWindow = false) => {
+      if (!stagedRetentionDispatch) {
+        return { success: false, error: 'No hay ningún comprobante en borrador para despachar.' };
+      }
+
+      const res = await dispatchPaymentAndRetentionsBundleBrm({
+        invoiceId: stagedRetentionDispatch.invoiceId,
+        openWaMeWindow,
+      });
+
+      if (res.success) {
+        setStagedRetentionDispatch(null);
+      }
+
+      return res;
+    },
+    [stagedRetentionDispatch, dispatchPaymentAndRetentionsBundleBrm]
+  );
+
+  const clearStagedRetentionDispatch = useCallback(() => {
+    if (stagedRetentionDispatch) {
+      logAuditEvent(
+        'BRM_RETENTION_DRAFT_DISCARDED',
+        'TAX_RETENTION',
+        `Descartado borrador de comprobante ${stagedRetentionDispatch.voucherType} N° ${stagedRetentionDispatch.voucherNumber} sin realizar envío.`,
+        { voucherNumber: stagedRetentionDispatch.voucherNumber },
+        stagedRetentionDispatch.voucherId
+      );
+    }
+    setStagedRetentionDispatch(null);
+  }, [stagedRetentionDispatch, logAuditEvent]);
+
   const receiveBrmSupplierPreInvoice = useCallback(
     (params: {
       supplierId: string;
@@ -1618,6 +1714,10 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         brmSession,
         brmMessages,
         brmPreInvoices,
+        stagedRetentionDispatch,
+        stageRetentionVoucherForBrm,
+        confirmStagedRetentionDispatch,
+        clearStagedRetentionDispatch,
         requestBrmQrSession,
         confirmBrmQrPairing,
         activateBrmCloudWebhookMode,

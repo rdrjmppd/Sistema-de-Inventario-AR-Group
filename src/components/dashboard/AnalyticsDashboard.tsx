@@ -27,6 +27,7 @@ import { toDecimal, round2, formatUsd, formatVes } from '../../lib/decimal';
 import { DEFAULT_COMPANY_PROFILE } from '../../lib/excel-exporter';
 import { BackupRestoreManager } from './BackupRestoreManager';
 import { SystemHealthMonitorWidget } from './SystemHealthMonitorWidget';
+import { DatabaseSyncStatus } from './DatabaseSyncStatus';
 import { CashFlowProjectionsWidget } from './CashFlowProjectionsWidget';
 
 interface AnalyticsDashboardProps {
@@ -250,6 +251,9 @@ export const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onNaviga
 
       {/* Monitor de Estado de Salud del Sistema & Anti-Hemorragia de Cuotas Firestore */}
       <SystemHealthMonitorWidget />
+
+      {/* Monitor de Sincronización Inmutable de Persistencia Firestore */}
+      <DatabaseSyncStatus />
 
       {/* 4 Primary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

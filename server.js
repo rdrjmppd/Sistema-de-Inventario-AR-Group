@@ -162,6 +162,216 @@ ${liveDataBlock}
 `;
 }
 
+// src/lib/qr-matrix.ts
+var GF256_EXP = new Uint8Array(512);
+var GF256_LOG = new Uint8Array(256);
+(function initGaloisField() {
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    GF256_EXP[i] = x;
+    GF256_EXP[i + 255] = x;
+    GF256_LOG[x] = i;
+    x <<= 1;
+    if (x & 256) x ^= 285;
+  }
+})();
+function gfMul(x, y) {
+  if (x === 0 || y === 0) return 0;
+  return GF256_EXP[GF256_LOG[x] + GF256_LOG[y]];
+}
+function rsCompute(data, ecCount) {
+  let gen = new Uint8Array([1]);
+  for (let i = 0; i < ecCount; i++) {
+    const next = new Uint8Array(gen.length + 1);
+    const root = GF256_EXP[i];
+    for (let j = 0; j < gen.length; j++) {
+      next[j] ^= gfMul(gen[j], root);
+      next[j + 1] ^= gen[j];
+    }
+    gen = next;
+  }
+  const remainder = new Uint8Array(ecCount);
+  for (let i = 0; i < data.length; i++) {
+    const factor = data[i] ^ remainder[0];
+    remainder.copyWithin(0, 1);
+    remainder[ecCount - 1] = 0;
+    for (let j = 0; j < ecCount; j++) {
+      remainder[j] ^= gfMul(gen[j], factor);
+    }
+  }
+  return remainder;
+}
+var QR_VERSIONS_M = [
+  { version: 1, size: 21, dataCapacityBytesM: 14, ecBytes: 10, alignmentPatternCenters: [] },
+  { version: 2, size: 25, dataCapacityBytesM: 26, ecBytes: 16, alignmentPatternCenters: [6, 18] },
+  { version: 3, size: 29, dataCapacityBytesM: 42, ecBytes: 26, alignmentPatternCenters: [6, 22] },
+  { version: 4, size: 33, dataCapacityBytesM: 62, ecBytes: 36, alignmentPatternCenters: [6, 26] },
+  { version: 5, size: 37, dataCapacityBytesM: 84, ecBytes: 48, alignmentPatternCenters: [6, 30] },
+  { version: 6, size: 41, dataCapacityBytesM: 106, ecBytes: 64, alignmentPatternCenters: [6, 34] }
+];
+function chooseVersion(byteCount) {
+  for (const v of QR_VERSIONS_M) {
+    if (byteCount + 2 <= v.dataCapacityBytesM) {
+      return v;
+    }
+  }
+  return QR_VERSIONS_M[QR_VERSIONS_M.length - 1];
+}
+function generateQrMatrix(text) {
+  const encoder = new TextEncoder();
+  const rawBytes = encoder.encode(text);
+  const cfg = chooseVersion(rawBytes.length);
+  const size = cfg.size;
+  const matrix = Array.from({ length: size }, () => Array(size).fill(false));
+  const isFunction = Array.from({ length: size }, () => Array(size).fill(false));
+  function setFunction(r, c, val) {
+    if (r >= 0 && r < size && c >= 0 && c < size) {
+      matrix[r][c] = val;
+      isFunction[r][c] = true;
+    }
+  }
+  function drawFinderPattern(row, col) {
+    for (let r = -1; r <= 7; r++) {
+      for (let c = -1; c <= 7; c++) {
+        const nr = row + r;
+        const nc = col + c;
+        if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
+        const inOuter = r >= 0 && r <= 6 && c >= 0 && c <= 6;
+        const inInner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
+        setFunction(nr, nc, inOuter && (isBorder || inInner));
+      }
+    }
+  }
+  drawFinderPattern(0, 0);
+  drawFinderPattern(0, size - 7);
+  drawFinderPattern(size - 7, 0);
+  if (cfg.alignmentPatternCenters.length > 0) {
+    const centers = cfg.alignmentPatternCenters;
+    for (const cr of centers) {
+      for (const cc of centers) {
+        if (cr === 6 && cc === 6 || cr === 6 && cc === size - 7 || cr === size - 7 && cc === 6) {
+          continue;
+        }
+        for (let r = -2; r <= 2; r++) {
+          for (let c = -2; c <= 2; c++) {
+            const isBlack = Math.max(Math.abs(r), Math.abs(c)) !== 1;
+            setFunction(cr + r, cc + c, isBlack);
+          }
+        }
+      }
+    }
+  }
+  for (let i = 8; i < size - 8; i++) {
+    const bit = i % 2 === 0;
+    if (!isFunction[6][i]) setFunction(6, i, bit);
+    if (!isFunction[i][6]) setFunction(i, 6, bit);
+  }
+  setFunction(size - 8, 8, true);
+  for (let i = 0; i < 9; i++) {
+    if (i !== 6) {
+      setFunction(8, i, false);
+      setFunction(i, 8, false);
+    }
+  }
+  for (let i = size - 8; i < size; i++) {
+    setFunction(8, i, false);
+    setFunction(i, 8, false);
+  }
+  const bitBuffer = [];
+  function pushBits(val, len) {
+    for (let i = len - 1; i >= 0; i--) {
+      bitBuffer.push(val >> i & 1);
+    }
+  }
+  pushBits(4, 4);
+  pushBits(rawBytes.length, 8);
+  for (let i = 0; i < rawBytes.length; i++) {
+    pushBits(rawBytes[i], 8);
+  }
+  const maxDataBits = cfg.dataCapacityBytesM * 8;
+  const termBits = Math.min(4, maxDataBits - bitBuffer.length);
+  for (let i = 0; i < termBits; i++) bitBuffer.push(0);
+  while (bitBuffer.length % 8 !== 0) bitBuffer.push(0);
+  const padBytes = [236, 17];
+  let padIdx = 0;
+  while (bitBuffer.length < maxDataBits) {
+    pushBits(padBytes[padIdx % 2], 8);
+    padIdx++;
+  }
+  const dataBytes = new Uint8Array(cfg.dataCapacityBytesM);
+  for (let i = 0; i < dataBytes.length; i++) {
+    let b = 0;
+    for (let j = 0; j < 8; j++) {
+      b = b << 1 | bitBuffer[i * 8 + j];
+    }
+    dataBytes[i] = b;
+  }
+  const ecBytes = rsCompute(dataBytes, cfg.ecBytes);
+  const allCodewords = new Uint8Array(dataBytes.length + ecBytes.length);
+  allCodewords.set(dataBytes, 0);
+  allCodewords.set(ecBytes, dataBytes.length);
+  let bitIdx = 0;
+  const totalBits = allCodewords.length * 8;
+  let upwards = true;
+  for (let rightCol = size - 1; rightCol > 0; rightCol -= 2) {
+    if (rightCol === 6) rightCol--;
+    const cols = [rightCol, rightCol - 1];
+    const rowRange = upwards ? Array.from({ length: size }, (_, i) => size - 1 - i) : Array.from({ length: size }, (_, i) => i);
+    for (const r of rowRange) {
+      for (const c of cols) {
+        if (!isFunction[r][c]) {
+          let bit = false;
+          if (bitIdx < totalBits) {
+            const byteIndex = Math.floor(bitIdx / 8);
+            const bitOffset = 7 - bitIdx % 8;
+            bit = (allCodewords[byteIndex] >> bitOffset & 1) === 1;
+            bitIdx++;
+          }
+          const mask = (r + c) % 2 === 0;
+          matrix[r][c] = mask ? !bit : bit;
+        }
+      }
+    }
+    upwards = !upwards;
+  }
+  const formatBits = [1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0];
+  for (let i = 0; i < 6; i++) matrix[8][i] = formatBits[i] === 1;
+  matrix[8][7] = formatBits[6] === 1;
+  matrix[8][8] = formatBits[7] === 1;
+  matrix[7][8] = formatBits[8] === 1;
+  for (let i = 9; i < 15; i++) matrix[14 - i][8] = formatBits[i] === 1;
+  for (let i = 0; i < 7; i++) matrix[size - 1 - i][8] = formatBits[i] === 1;
+  for (let i = 7; i < 15; i++) matrix[8][size - 15 + i] = formatBits[i] === 1;
+  return matrix;
+}
+function generateQrSvgString(text, options) {
+  const matrix = generateQrMatrix(text);
+  const matrixSize = matrix.length;
+  const margin = options?.margin ?? 4;
+  const viewSize = matrixSize + margin * 2;
+  const sizePx = options?.size ?? 240;
+  const dark = options?.darkColor ?? "#0f172a";
+  const light = options?.lightColor ?? "#ffffff";
+  let rects = "";
+  for (let r = 0; r < matrixSize; r++) {
+    for (let c = 0; c < matrixSize; c++) {
+      if (matrix[r][c]) {
+        rects += `<rect x="${c + margin}" y="${r + margin}" width="1" height="1" fill="${dark}" />`;
+      }
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewSize} ${viewSize}" width="${sizePx}" height="${sizePx}" shape-rendering="crispEdges">
+  <rect width="${viewSize}" height="${viewSize}" fill="${light}" />
+  ${rects}
+</svg>`;
+}
+function generateQrDataUri(text, options) {
+  const svg = generateQrSvgString(text, options);
+  const base64 = typeof Buffer !== "undefined" ? Buffer.from(svg).toString("base64") : btoa(unescape(encodeURIComponent(svg)));
+  return `data:image/svg+xml;base64,${base64}`;
+}
+
 // server.ts
 Decimal2.set({
   precision: 28,
@@ -830,14 +1040,23 @@ ${query}` : String(query);
       };
     } else {
       const nonce = crypto.randomBytes(8).toString("hex").toUpperCase();
+      const qrPayload = `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`;
+      const qrDataUri = generateQrDataUri(qrPayload, { size: 240, margin: 3, darkColor: "#022c22" });
       brmServerSession = {
         ...brmServerSession,
         state: "QR_READY",
         activeMode: "QR_SOCKET_BRIDGE",
-        qrPayloadData: `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`,
+        qrPayloadData: qrPayload,
         qrGeneratedAtVet: nowStamp,
         lastHeartbeatVet: nowStamp
       };
+      res.json({
+        ...brmServerSession,
+        qrCodeDataUri: qrDataUri,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
     }
     res.json({
       ...brmServerSession,

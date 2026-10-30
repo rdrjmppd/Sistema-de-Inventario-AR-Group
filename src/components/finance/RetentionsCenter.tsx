@@ -15,7 +15,7 @@ import {
   Stamp,
   X,
 } from 'lucide-react';
-import { TaxRetentionStatus, TaxRetentionType, TaxRetentionVoucher } from '../../types';
+import { NavigationTab, TaxRetentionStatus, TaxRetentionType, TaxRetentionVoucher } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useUIConfig } from '../../context/UIConfigContext';
@@ -33,7 +33,11 @@ import {
   triggerWorkbookDownload,
 } from '../../lib/seniat-exporter';
 
-export const RetentionsCenter: React.FC = () => {
+export interface RetentionsCenterProps {
+  onNavigate?: (tab: NavigationTab) => void;
+}
+
+export const RetentionsCenter: React.FC<RetentionsCenterProps> = ({ onNavigate }) => {
   const {
     invoices,
     retentionVouchers,
@@ -42,7 +46,7 @@ export const RetentionsCenter: React.FC = () => {
   } = useFinance();
   const { logAuditEvent } = useInventory();
   const { config, setIsCompanyModalOpen } = useUIConfig();
-  const { dispatchPaymentAndRetentionsBundleBrm } = useOperationsBrm();
+  const { stageRetentionVoucherForBrm } = useOperationsBrm();
 
   const [typeFilter, setTypeFilter] = useState<'ALL' | TaxRetentionType>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | TaxRetentionStatus>('ALL');
@@ -257,22 +261,24 @@ export const RetentionsCenter: React.FC = () => {
     });
   };
 
-  const handleSendVoucherViaBrm = async (v: TaxRetentionVoucher) => {
-    const res = await dispatchPaymentAndRetentionsBundleBrm({
-      invoiceId: v.invoiceId,
-      openWaMeWindow: false,
-    });
+  const handleSendVoucherViaBrm = (v: TaxRetentionVoucher) => {
+    const res = stageRetentionVoucherForBrm(v);
     if (!res.success) {
       setFeedback({
         type: 'err',
-        text: res.error || 'No se pudo despachar el comprobante por WhatsApp BRM.',
+        text: res.error || 'No se pudo preparar el borrador para WhatsApp BRM.',
       });
       return;
     }
-    setFeedback({
-      type: 'ok',
-      text: `Comprobante ${v.voucherNumber} despachado por WhatsApp BRM a ${v.supplierName} y marcado como ENTREGADO.`,
-    });
+
+    if (onNavigate) {
+      onNavigate('BRM_WHATSAPP');
+    } else {
+      setFeedback({
+        type: 'ok',
+        text: `Comprobante ${v.voucherNumber} cargado en borrador en el módulo BRM WhatsApp para confirmación manual.`,
+      });
+    }
   };
 
   return (
@@ -572,11 +578,9 @@ export const RetentionsCenter: React.FC = () => {
                         {v.status !== 'ANULADO' && (
                           <button
                             type="button"
-                            onClick={() => {
-                              handleSendVoucherViaBrm(v).catch(() => {});
-                            }}
-                            className="min-h-[44px] px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1 transition"
-                            title="Despachar comprobante y soporte de pago al proveedor vía WhatsApp BRM"
+                            onClick={() => handleSendVoucherViaBrm(v)}
+                            className="min-h-[44px] px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1 transition cursor-pointer"
+                            title="Revisar y confirmar envío del comprobante en el módulo WhatsApp BRM"
                           >
                             <MessageSquareShare className="w-3.5 h-3.5" />
                             WhatsApp BRM

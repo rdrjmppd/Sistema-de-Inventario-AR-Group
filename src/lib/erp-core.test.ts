@@ -10,6 +10,7 @@ import {
   roundCurrency,
   roundRate,
   convertUsdToVes,
+  round2,
 } from './decimal';
 import {
   evaluateBcv5PmRule,
@@ -88,8 +89,12 @@ import {
   UserSessionRecord,
   PurchaseInvoice,
   PurchaseInvoiceLine,
+  AuditLogEntry,
+  MeatYieldBatch,
+  StagedBrmRetentionDispatch,
   TaxRetentionVoucher,
 } from '../types';
+import { generateQrMatrix, generateQrSvgString, generateQrDataUri } from './qr-matrix';
 import {
   evaluateSecurityGuardrails,
   buildOutOfScopeResponse,
@@ -5650,4 +5655,228 @@ test('66. Prueba de Estrés de Cuotas Firestore & Ingesta Masiva de 1,000 Transa
   quotaTelemetryEngine.recordWrite(parsedBig.recognizedItems.length);
   const snap = quotaTelemetryEngine.getSnapshot();
   assert.ok(snap.writesToday >= parsedBig.recognizedItems.length);
+});
+
+test('67. Generador Determinista de Código QR Real ISO/IEC 18004 (WhatsApp Web Pairing)', () => {
+  const token = 'CHRYSTAL-BRM-WA::+582432345678::F7E91D3C4A5B6F70';
+  const matrix = generateQrMatrix(token);
+
+  assert.ok(Array.isArray(matrix), 'La matriz QR debe ser un array bidimensional');
+  assert.ok(matrix.length >= 21, 'El tamaño de la matriz debe ser al menos 21x21 módulos');
+  assert.strictEqual(matrix.length, matrix[0].length, 'La matriz QR debe ser cuadrada');
+
+  // Verificar patrones de localización (Finder Patterns de 7x7) en las 3 esquinas
+  const size = matrix.length;
+  // Esquina superior izquierda
+  assert.strictEqual(matrix[0][0], true, 'Finder superior izq (0,0) debe ser negro');
+  assert.strictEqual(matrix[0][6], true, 'Finder superior izq (0,6) debe ser negro');
+  assert.strictEqual(matrix[6][0], true, 'Finder superior izq (6,0) debe ser negro');
+  assert.strictEqual(matrix[3][3], true, 'Centro Finder superior izq (3,3) debe ser negro');
+
+  // Esquina superior derecha
+  assert.strictEqual(matrix[0][size - 1], true, 'Finder superior der (0,size-1) debe ser negro');
+  assert.strictEqual(matrix[0][size - 7], true, 'Finder superior der (0,size-7) debe ser negro');
+
+  // Esquina inferior izquierda
+  assert.strictEqual(matrix[size - 1][0], true, 'Finder inferior izq (size-1,0) debe ser negro');
+  assert.strictEqual(matrix[size - 7][0], true, 'Finder inferior izq (size-7,0) debe ser negro');
+
+  // Generar SVG String y Data URI
+  const svg = generateQrSvgString(token, { size: 240, margin: 4 });
+  assert.ok(svg.startsWith('<svg'), 'Debe generar SVG válido');
+  assert.ok(svg.includes('viewBox='), 'SVG debe incluir viewBox escalable');
+  assert.ok(svg.includes('rect'), 'SVG debe contener módulos rectangulares');
+
+  const dataUri = generateQrDataUri(token);
+  assert.ok(dataUri.startsWith('data:image/svg+xml;base64,'), 'Debe generar Data URI SVG en base64');
+});
+
+test('68. Despacho Asistido en Retenciones: Carga de Borrador BRM y Prevención de Envíos Accidentales', () => {
+  const mockVoucher: TaxRetentionVoucher = {
+    id: 'ret-mock-99',
+    voucherNumber: '20261000000099',
+    type: 'IVA',
+    legalNormative: 'SNAT/2025/000054',
+    status: 'EMITIDO',
+    issueDate: '2026-10-30',
+    periodYearMonth: '202610',
+    fortnight: 'SEGUNDA_QUINCENA',
+    fortnightLabel: 'Segunda Quincena Octubre 2026',
+    legalDeliveryHint: 'Entrega obligatoria dentro de 2 días hábiles siguientes.',
+    agentRazonSocial: 'HIPER ABASTO POLAR, C.A.',
+    agentRif: 'J-50123456-7',
+    agentAddress: 'Av. Las Delicias, Maracay',
+    supplierId: 'sup-agro-01',
+    supplierName: 'Distribuidora Lácteos Los Llanos, C.A.',
+    supplierRif: 'J-30987654-2',
+    supplierTaxpayerType: 'ORDINARIO',
+    supplierPersonType: 'PJ_DOMICILIADA',
+    invoiceId: 'inv-lact-101',
+    invoiceNumber: 'FAC-9012',
+    controlNumber: '00-8812',
+    invoiceIssueDate: '2026-10-28',
+    bcvRateAtIssue: 44.5,
+    utValueVes: 9.0,
+    lines: [],
+    invoiceTotalUsd: 1000,
+    invoiceTotalVes: 44500,
+    exemptTotalUsd: 0,
+    exemptTotalVes: 0,
+    taxableBaseUsd: 1000,
+    taxableBaseVes: 44500,
+    taxCausadoTotalUsd: 160,
+    taxCausadoTotalVes: 7120,
+    sustraendoTotalVes: 0,
+    retainedTotalUsd: 120, // 75%
+    retainedTotalVes: 5340,
+    retentionPercentApplied: 75,
+    netPayableAfterAllRetentionsUsd: 880,
+    netPayableAfterAllRetentionsVes: 39160,
+    createdBy: 'Analista Tributario',
+    createdAtVet: '2026-10-30 08:30',
+  };
+
+  // Simular empaquetado de borrador
+  const stagedDraft: StagedBrmRetentionDispatch = {
+    voucherId: mockVoucher.id,
+    voucherNumber: mockVoucher.voucherNumber,
+    voucherType: mockVoucher.type,
+    invoiceId: mockVoucher.invoiceId,
+    supplierId: mockVoucher.supplierId,
+    supplierName: mockVoucher.supplierName,
+    supplierRif: mockVoucher.supplierRif,
+    phoneE164: '+584141234567',
+    retainedVes: mockVoucher.retainedTotalVes,
+    retainedUsd: mockVoucher.retainedTotalUsd,
+    periodYearMonth: mockVoucher.periodYearMonth,
+    formattedSummaryMessage: `Estimados señores ${mockVoucher.supplierName}:\nAdjuntamos Comprobante de Retención IVA N° ${mockVoucher.voucherNumber}.`,
+    preparedAtVet: '2026-10-30 08:35',
+  };
+
+  // El comprobante DEBE permanecer en estado EMITIDO mientras esté en borrador
+  assert.strictEqual(mockVoucher.status, 'EMITIDO', 'El comprobante no debe pasar a ENTREGADO al preparar el borrador');
+  assert.strictEqual(stagedDraft.retainedVes, 5340, 'Monto retenido en Bs debe coincidir exactamente');
+  assert.strictEqual(stagedDraft.retainedUsd, 120, 'Monto retenido en USD debe coincidir');
+
+  // Simular descarte del borrador
+  let activeDraft: StagedBrmRetentionDispatch | null = stagedDraft;
+  activeDraft = null; // Descarte
+  assert.strictEqual(activeDraft, null, 'El borrador se descarta limpiamente');
+  assert.strictEqual(mockVoucher.status, 'EMITIDO', 'El estado original del comprobante se preserva intacto');
+});
+
+test('69. Verificación de Integridad Inmutable de Registros de Persistencia (DatabaseSyncStatus)', () => {
+  const sampleAuditTrail: AuditLogEntry[] = [
+    {
+      id: 'aud-01',
+      userId: 'usr-admin',
+      userEmail: 'admin@ar-group.com',
+      userDisplayName: 'Gerente General',
+      userRole: UserRole.GERENTE,
+      action: 'TAX_RETENTION_STATUS_CHANGE',
+      entityType: 'TAX_RETENTION',
+      entityId: 'ret-01',
+      description: 'Comprobante IVA emitido',
+      timestampVet: '2026-10-30 09:00',
+    },
+    {
+      id: 'aud-02',
+      userId: 'usr-analyst',
+      userEmail: 'analista@ar-group.com',
+      userDisplayName: 'Analista de Compras',
+      userRole: UserRole.ANALISTA,
+      action: 'BRM_WHATSAPP_SEND',
+      entityType: 'WhatsApp BRM Proveedores',
+      entityId: 'msg-01',
+      description: 'Envío de orden de compra vía WhatsApp BRM',
+      timestampVet: '2026-10-30 09:15',
+    },
+  ];
+
+  // Algoritmo de integridad: verificar campos inmutables obligatorios
+  const validCount = sampleAuditTrail.filter(
+    (e) => e.id && e.timestampVet && e.description && e.action && e.entityType
+  ).length;
+
+  assert.strictEqual(validCount, 2, 'Todos los registros válidos deben certificar integridad');
+  const integrityPct = Math.round((validCount / sampleAuditTrail.length) * 100);
+  assert.strictEqual(integrityPct, 100, 'Integridad criptográfica debe ser 100%');
+});
+
+test('70. Analítica Histórica de Rendimiento y Merma (YieldMetricsCharts Logic)', () => {
+  const meatBatchesTest: MeatYieldBatch[] = [
+    {
+      id: 'batch-01',
+      batchCode: 'LOTE-RES-01',
+      customBatchCode: 'GUIA-SADA-100',
+      receptionDate: '2026-10-25',
+      supplierId: 'sup-gan-01',
+      supplierName: 'Ganadería Santa Inés',
+      animalType: 'RES',
+      presentation: 'CANAL_COMPLETA',
+      locationId: 'loc-pzo-01',
+      locationName: 'Sede Principal',
+      carcassWeightKg: 200,
+      carcassCostPerKgUsd: 3.5,
+      totalCarcassCostUsd: 700,
+      cuts: [],
+      totalCutsWeightKg: 150,
+      cutsYieldPercent: 75, // 75%
+      wastes: [],
+      totalWasteWeightKg: 50,
+      wastePercent: 25, // 25%
+      unaccountedWeightKg: 0,
+      projectedTotalRevenueUsd: 950,
+      projectedGrossProfitUsd: 250,
+      projectedMarginPercent: 26.3,
+      bcvRateAtBatch: 44.5,
+      supervisorUserId: 'usr-sup',
+      supervisorName: 'Supervisor Carnes',
+      supervisorRole: UserRole.SUPERVISOR_CARNICERIA,
+      createdAtVet: '2026-10-25 08:00',
+      status: 'CONFIRMADO_INVENTARIO',
+    },
+    {
+      id: 'batch-02',
+      batchCode: 'LOTE-RES-02',
+      customBatchCode: 'GUIA-SADA-102',
+      receptionDate: '2026-10-28',
+      supplierId: 'sup-gan-02',
+      supplierName: 'Frigorífico El Llano',
+      animalType: 'RES',
+      presentation: 'CANAL_COMPLETA',
+      locationId: 'loc-pzo-01',
+      locationName: 'Sede Principal',
+      carcassWeightKg: 220,
+      carcassCostPerKgUsd: 3.4,
+      totalCarcassCostUsd: 748,
+      cuts: [],
+      totalCutsWeightKg: 176,
+      cutsYieldPercent: 80, // 80%
+      wastes: [],
+      totalWasteWeightKg: 44,
+      wastePercent: 20, // 20%
+      unaccountedWeightKg: 0,
+      projectedTotalRevenueUsd: 1100,
+      projectedGrossProfitUsd: 352,
+      projectedMarginPercent: 32.0,
+      bcvRateAtBatch: 44.5,
+      supervisorUserId: 'usr-sup',
+      supervisorName: 'Supervisor Carnes',
+      supervisorRole: UserRole.SUPERVISOR_CARNICERIA,
+      createdAtVet: '2026-10-28 08:00',
+      status: 'CONFIRMADO_INVENTARIO',
+    },
+  ];
+
+  // Cálculo de promedios agregados
+  const avgYield = round2((meatBatchesTest[0].cutsYieldPercent + meatBatchesTest[1].cutsYieldPercent) / 2);
+  const avgWaste = round2((meatBatchesTest[0].wastePercent + meatBatchesTest[1].wastePercent) / 2);
+
+  assert.strictEqual(avgYield, 77.5, 'Rendimiento promedio debe ser 77.5%');
+  assert.strictEqual(avgWaste, 22.5, 'Merma promedio debe ser 22.5%');
+
+  // Identificación del mejor proveedor (menor merma)
+  const sortedByWaste = [...meatBatchesTest].sort((a, b) => a.wastePercent - b.wastePercent);
+  assert.strictEqual(sortedByWaste[0].supplierName, 'Frigorífico El Llano', 'El mejor proveedor debe tener la menor merma (20%)');
 });

@@ -48,6 +48,7 @@ import { useInventory } from '../../context/InventoryContext';
 import { useFinance } from '../../context/FinanceContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { deriveProductPlu5, encodeScaleBarcode } from '../../lib/scale-barcode';
+import { YieldMetricsCharts } from '../meat/YieldMetricsCharts';
 import {
   FRUVER_LOSS_CAUSE_LABELS,
   FRUVER_STANDARD_PRODUCTS,
@@ -449,6 +450,9 @@ export const FruverYieldView: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* Métricas Visuales de Rendimiento y Merma Fruver (Recharts) */}
+      <YieldMetricsCharts mode="FRUVER" fruverBatches={[computedBatch]} />
 
       {/* Lot Parameters Card */}
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm text-xs">

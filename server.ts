@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import Decimal from 'decimal.js';
 import { GoogleGenAI, Type } from '@google/genai';
 import { buildMasterSystemPrompt } from './src/ai-assistant/system-prompt';
+import { generateQrDataUri } from './src/lib/qr-matrix';
 
 Decimal.set({
   precision: 28,
@@ -887,14 +888,24 @@ async function startServer() {
       };
     } else {
       const nonce = crypto.randomBytes(8).toString('hex').toUpperCase();
+      const qrPayload = `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`;
+      const qrDataUri = generateQrDataUri(qrPayload, { size: 240, margin: 3, darkColor: '#022c22' });
       brmServerSession = {
         ...brmServerSession,
         state: 'QR_READY',
         activeMode: 'QR_SOCKET_BRIDGE',
-        qrPayloadData: `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`,
+        qrPayloadData: qrPayload,
         qrGeneratedAtVet: nowStamp,
         lastHeartbeatVet: nowStamp,
       };
+
+      res.json({
+        ...brmServerSession,
+        qrCodeDataUri: qrDataUri,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+      });
+      return;
     }
 
     res.json({

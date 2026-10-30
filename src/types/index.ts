@@ -510,6 +510,9 @@ export type AuditActionType =
   | 'BRM_WHATSAPP_SEND'
   | 'BRM_WHATSAPP_INVOICE_PRELOAD'
   | 'BRM_WHATSAPP_SESSION_RESET'
+  | 'BRM_RETENTION_DRAFT_STAGED'
+  | 'BRM_RETENTION_DRAFT_DISCARDED'
+  | 'DATABASE_INTEGRITY_VERIFIED'
   | 'BANK_STATEMENT_IMPORT'
   | 'BANK_PAYMENT_CONCILE'
   | 'FISCAL_Z_REPORT_SYNC'
@@ -1199,6 +1202,22 @@ export interface BrmSupplierPreInvoice {
   confirmedBy?: string;
   confirmedAtVet?: string;
   linkedInvoiceId?: string;
+}
+
+export interface StagedBrmRetentionDispatch {
+  voucherId: string;
+  voucherNumber: string;
+  voucherType: TaxRetentionType;
+  invoiceId: string;
+  supplierId: string;
+  supplierName: string;
+  supplierRif: string;
+  phoneE164: string;
+  retainedVes: number;
+  retainedUsd: number;
+  periodYearMonth: string;
+  formattedSummaryMessage: string;
+  preparedAtVet: string;
 }
 
 // 5. Control FEFO de Perecederos & Telemetría Cadena de Frío SADA
