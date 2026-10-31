@@ -1046,10 +1046,10 @@ ${query}` : String(query);
     } else {
       if (qrType === "WA_ME_LINK") {
         const digits = brmServerSession.corporatePhoneE164.replace(/\D/g, "") || "582432345678";
-        const qrPayload2 = `https://wa.me/${digits}?text=${encodeURIComponent(
+        const qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
           "Conexi\xF3n BRM AR Group 2026"
         )}`;
-        const qrDataUri2 = await QRCode.toDataURL(qrPayload2, {
+        const qrDataUri = await QRCode.toDataURL(qrPayload, {
           margin: 4,
           scale: 8,
           color: { dark: "#000000", light: "#ffffff" }
@@ -1058,79 +1058,81 @@ ${query}` : String(query);
           ...brmServerSession,
           state: "QR_READY",
           activeMode: "QR_SOCKET_BRIDGE",
-          qrPayloadData: qrPayload2,
-          qrCodeDataUri: qrDataUri2,
+          qrPayloadData: qrPayload,
+          qrCodeDataUri: qrDataUri,
           qrTargetType: qrType,
           qrGeneratedAtVet: nowStamp,
           lastHeartbeatVet: nowStamp
         };
         res.json({
           ...brmServerSession,
-          qrCodeDataUri: qrDataUri2,
+          qrCodeDataUri: qrDataUri,
           hasAdminCredentials,
           pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
         });
         return;
       }
       try {
+        if (brmServerSession.state === "CONNECTED") {
+          res.json({
+            ...brmServerSession,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+          });
+          return;
+        }
+        const forceReset = action === "REGENERATE_QR";
+        if (!forceReset && brmServerSession.state === "QR_READY" && brmServerSession.qrCodeDataUri) {
+          res.json({
+            ...brmServerSession,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+          });
+          return;
+        }
+        brmServerSession.state = "GENERATING_QR";
+        brmServerSession.lastHeartbeatVet = nowStamp;
         const waitForQrPromise = new Promise((resolve) => {
           brmQrEmitterPromiseResolver = resolve;
         });
-        getOrInitBrmSocket(true).catch(
+        getOrInitBrmSocket(forceReset).catch(
           (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys:", err)
         );
         const liveQrDataUri = await Promise.race([
           waitForQrPromise,
-          new Promise((r) => setTimeout(() => r(null), 6e3))
+          new Promise((r) => setTimeout(() => r(null), 1e4))
         ]);
-        if (liveQrDataUri) {
+        if (liveQrDataUri || brmServerSession.qrCodeDataUri) {
+          const validUri = liveQrDataUri || brmServerSession.qrCodeDataUri;
+          brmServerSession.state = "QR_READY";
+          brmServerSession.qrCodeDataUri = validUri;
           res.json({
             ...brmServerSession,
-            qrCodeDataUri: liveQrDataUri,
+            qrCodeDataUri: validUri,
             hasAdminCredentials,
             pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
           });
           return;
         }
-        if (brmServerSession.qrCodeDataUri) {
-          res.json({
-            ...brmServerSession,
-            qrCodeDataUri: brmServerSession.qrCodeDataUri,
-            hasAdminCredentials,
-            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-          });
-          return;
-        }
+        res.json({
+          ...brmServerSession,
+          state: "GENERATING_QR",
+          qrCodeDataUri: void 0,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
       } catch (err) {
-        console.warn("[BRM WhatsApp] Fallback a QR de formato can\xF3nico:", err);
+        console.warn("[BRM WhatsApp] Error gestionando conexi\xF3n Baileys:", err);
+        res.json({
+          ...brmServerSession,
+          state: "DISCONNECTED",
+          qrCodeDataUri: void 0,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
       }
-      const refId = crypto.randomBytes(18).toString("base64");
-      const noiseKey = crypto.randomBytes(32).toString("base64");
-      const identityKey = crypto.randomBytes(32).toString("base64");
-      const advKey = crypto.randomBytes(32).toString("base64");
-      const qrPayload = `https://wa.me/settings/linked_devices#2@${refId},${noiseKey},${identityKey},${advKey}`;
-      const qrDataUri = await QRCode.toDataURL(qrPayload, {
-        margin: 2,
-        scale: 8,
-        color: { dark: "#000000", light: "#ffffff" }
-      });
-      brmServerSession = {
-        ...brmServerSession,
-        state: "QR_READY",
-        activeMode: "QR_SOCKET_BRIDGE",
-        qrPayloadData: qrPayload,
-        qrCodeDataUri: qrDataUri,
-        qrTargetType: qrType,
-        qrGeneratedAtVet: nowStamp,
-        lastHeartbeatVet: nowStamp
-      };
-      res.json({
-        ...brmServerSession,
-        qrCodeDataUri: qrDataUri,
-        hasAdminCredentials,
-        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-      });
-      return;
     }
     res.json({
       ...brmServerSession,

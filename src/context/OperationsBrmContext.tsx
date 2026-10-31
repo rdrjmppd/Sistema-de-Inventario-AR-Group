@@ -530,7 +530,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Polling automático mientras se espera el escaneo del código QR (Auto-detección de vinculación en vivo)
   useEffect(() => {
-    if (brmSession.state !== 'QR_READY') return;
+    if (brmSession.state !== 'QR_READY' && brmSession.state !== 'GENERATING_QR') return;
     let timer: NodeJS.Timeout | null = null;
     let cancelled = false;
 
@@ -543,7 +543,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
               if (
                 prev.state !== data.state ||
                 prev.corporatePhoneE164 !== data.corporatePhoneE164 ||
-                prev.qrPayloadData !== data.qrPayloadData
+                prev.qrPayloadData !== data.qrPayloadData ||
+                prev.qrCodeDataUri !== data.qrCodeDataUri
               ) {
                 return { ...prev, ...data };
               }
@@ -554,7 +555,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         .catch(() => {});
     };
 
-    timer = setInterval(checkStatus, 2500);
+    timer = setInterval(checkStatus, 2000);
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
@@ -893,24 +894,34 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
           return;
         }
       } catch {
-        // Fallback local resiliente
+        // Fallback local resiliente: sin emitir tokens falsos
       }
 
-      const payload =
-        qrType === 'WA_ME_LINK'
-          ? generateBrmWaMeDeepLinkPayload(targetPhone)
-          : generateBrmNoisePairingPayload(targetPhone);
-
-      setBrmSession((prev) => ({
-        ...prev,
-        state: 'QR_READY',
-        activeMode: 'QR_SOCKET_BRIDGE',
-        corporatePhoneE164: targetPhone,
-        qrPayloadData: payload,
-        qrTargetType: qrType,
-        qrGeneratedAtVet: nowStamp,
-        lastHeartbeatVet: nowStamp,
-      }));
+      if (qrType === 'WA_ME_LINK') {
+        const payload = generateBrmWaMeDeepLinkPayload(targetPhone);
+        setBrmSession((prev) => ({
+          ...prev,
+          state: 'QR_READY',
+          activeMode: 'QR_SOCKET_BRIDGE',
+          corporatePhoneE164: targetPhone,
+          qrPayloadData: payload,
+          qrTargetType: qrType,
+          qrGeneratedAtVet: nowStamp,
+          lastHeartbeatVet: nowStamp,
+        }));
+      } else {
+        setBrmSession((prev) => ({
+          ...prev,
+          state: 'GENERATING_QR',
+          activeMode: 'QR_SOCKET_BRIDGE',
+          corporatePhoneE164: targetPhone,
+          qrPayloadData: undefined,
+          qrCodeDataUri: undefined,
+          qrTargetType: qrType,
+          qrGeneratedAtVet: nowStamp,
+          lastHeartbeatVet: nowStamp,
+        }));
+      }
     },
     [brmSession.corporatePhoneE164]
   );

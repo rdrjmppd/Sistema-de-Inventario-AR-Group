@@ -1143,7 +1143,8 @@ export type BrmSessionState =
   | 'CONNECTED'
   | 'QR_READY'
   | 'DISCONNECTED'
-  | 'CLOUD_STANDBY';
+  | 'CLOUD_STANDBY'
+  | 'GENERATING_QR';
 
 export type BrmDeliveryStatus =
   | 'EN_COLA_OFFLINE'

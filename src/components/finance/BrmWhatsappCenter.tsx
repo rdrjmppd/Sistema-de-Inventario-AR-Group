@@ -1,18 +1,31 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   AlertTriangle,
+  Building2,
+  Calendar,
+  Check,
+  CheckCheck,
   CheckCircle2,
+  Clock,
   Copy,
+  DollarSign,
   ExternalLink,
   FileCheck2,
+  FileText,
   MessageSquare,
+  Paperclip,
+  Phone,
   PowerOff,
   QrCode,
+  RefreshCw,
+  Search,
   Send,
   ShieldCheck,
   Smartphone,
   Truck,
+  User,
   Wifi,
+  X,
 } from 'lucide-react';
 import { NavigationTab, StorageZone } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
@@ -47,23 +60,28 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     rejectBrmPreInvoice,
   } = useOperationsBrm();
 
-  const [tab, setTab] = useState<'SUPPLIERS_360' | 'INBOX_PRE_AUDIT' | 'LEDGER'>(
-    'SUPPLIERS_360'
-  );
+  // Pestañas principales: CHAT_WEB es ahora la experiencia principal
+  const [activeTab, setActiveTab] = useState<
+    'CHAT_WEB' | 'SUPPLIERS_360' | 'INBOX_PRE_AUDIT' | 'LEDGER'
+  >('CHAT_WEB');
+
   const [selectedSupplierId, setSelectedSupplierId] = useState(
     suppliers[0]?.id || ''
   );
-  const [customMsg, setCustomMsg] = useState('');
+  const [contactSearch, setContactSearch] = useState('');
+  const [chatInput, setChatInput] = useState('');
   const [corpPhoneInput, setCorpPhoneInput] = useState(
-    brmSession.corporatePhoneE164
+    brmSession.corporatePhoneE164 || '+582432345678'
   );
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
-  const [selectedQrMode, setSelectedQrMode] = useState<
-    'NOISE_PAIRING' | 'WA_ME_LINK'
-  >('NOISE_PAIRING');
+  const [selectedQrMode, setSelectedQrMode] = useState<'NOISE_PAIRING' | 'WA_ME_LINK'>(
+    'NOISE_PAIRING'
+  );
+  const [showQrModal, setShowQrModal] = useState(false);
   const [copiedPayload, setCopiedPayload] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
 
   // Edición rápida de WhatsApp E.164 del proveedor
   const [editPhone, setEditPhone] = useState('');
@@ -83,20 +101,64 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   const [gateSku, setGateSku] = useState(products[0]?.sku || '');
   const [gateQty, setGateQty] = useState('20');
 
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
   // Auto-seleccionar al proveedor del comprobante en borrador si está pendiente de revisión
-  React.useEffect(() => {
+  useEffect(() => {
     if (stagedRetentionDispatch?.supplierId) {
       setSelectedSupplierId(stagedRetentionDispatch.supplierId);
-      setTab('SUPPLIERS_360');
+      setActiveTab('CHAT_WEB');
     }
   }, [stagedRetentionDispatch?.supplierId]);
 
-  const activeSupplier =
-    suppliers.find((s) => s.id === selectedSupplierId) || suppliers[0];
+  // Si se genera un QR, abrir automáticamente el visor
+  useEffect(() => {
+    if (brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR') {
+      setShowQrModal(true);
+    } else if (brmSession.state === 'CONNECTED') {
+      setShowQrModal(false);
+    }
+  }, [brmSession.state]);
+
+  const activeSupplier = useMemo(
+    () => suppliers.find((s) => s.id === selectedSupplierId) || suppliers[0],
+    [suppliers, selectedSupplierId]
+  );
+
+  // Filtrado de contactos activos de proveedores para el directorio izquierdo
+  const filteredSuppliers = useMemo(() => {
+    const q = contactSearch.trim().toLowerCase();
+    return suppliers.filter((s) => {
+      if (!q) return true;
+      const name = s.name.toLowerCase();
+      const rif = s.rif.toLowerCase();
+      const phone = (s.whatsappE164 || s.phone || '').toLowerCase();
+      return name.includes(q) || rif.includes(q) || phone.includes(q);
+    });
+  }, [suppliers, contactSearch]);
+
+  // Histórico de mensajes del chat para el proveedor seleccionado
+  const activeSupplierMessages = useMemo(() => {
+    if (!activeSupplier) return [];
+    const supPhoneNorm = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone);
+    return brmMessages
+      .filter((m) => {
+        if (m.supplierId && m.supplierId === activeSupplier.id) return true;
+        if (supPhoneNorm && m.phoneE164 === supPhoneNorm) return true;
+        return false;
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }, [brmMessages, activeSupplier]);
+
+  // Auto-scroll al final del chat al llegar nuevos mensajes
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [activeSupplierMessages, activeSupplier?.id]);
 
   const supplierOrders = useMemo(
-    () =>
-      purchaseOrders.filter((o) => o.supplierId === activeSupplier?.id),
+    () => purchaseOrders.filter((o) => o.supplierId === activeSupplier?.id),
     [purchaseOrders, activeSupplier?.id]
   );
 
@@ -109,23 +171,37 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     (p) => p.status === 'PENDIENTE_VERIFICACION'
   ).length;
 
-  const handleCustomSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeSupplier || !customMsg.trim()) return;
-    const res = await sendBrmMessageToSupplier({
-      supplierId: activeSupplier.id,
-      category: 'MENSAJE_OPERATIVO_BRM',
-      bodyText: customMsg.trim(),
-    });
-    if (!res.success) {
-      setBanner({ type: 'err', text: res.error || 'Error enviando mensaje.' });
-      return;
+  // Manejo de envío desde el chat interactivo
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!activeSupplier || !chatInput.trim() || sendingMessage) return;
+
+    setSendingMessage(true);
+    try {
+      const res = await sendBrmMessageToSupplier({
+        supplierId: activeSupplier.id,
+        category: 'MENSAJE_OPERATIVO_BRM',
+        bodyText: chatInput.trim(),
+        openWaMeWindow: brmSession.state !== 'CONNECTED', // Si no está conectado el socket, abre wa.me asistido
+      });
+
+      if (!res.success) {
+        setBanner({ type: 'err', text: res.error || 'Error enviando mensaje.' });
+      } else {
+        setChatInput('');
+        setBanner({
+          type: 'ok',
+          text: `Mensaje remitido a ${activeSupplier.name} (${res.message?.phoneE164}) vía ${res.message?.transportUsed}.`,
+        });
+      }
+    } finally {
+      setSendingMessage(false);
     }
-    setCustomMsg('');
-    setBanner({
-      type: 'ok',
-      text: `Mensaje institucional BRM despachado a ${activeSupplier.name} (${res.message?.phoneE164}) vía ${res.message?.transportUsed}.`,
-    });
+  };
+
+  // Inyectar plantilla pre-redactada en la caja de texto del chat
+  const handleInsertTemplate = (text: string) => {
+    setChatInput((prev) => (prev ? `${prev}\n${text}` : text));
   };
 
   const handleReceivePreInvoice = (e: React.FormEvent) => {
@@ -155,39 +231,47 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   };
 
   return (
-    <div className="space-y-5">
-      {/* Cabecera Modo Híbrido Triple (Patrón Puro Apure ERP) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-4">
+    <div className="space-y-4">
+      {/* Barra Superior de Estado y Conectividad WhatsApp */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <MessageSquare className="w-5 h-5 text-emerald-400" />
-              <h2 className="text-base sm:text-lg font-bold text-white">
-                Portal BRM WhatsApp Proveedores (Modo Híbrido Triple)
-              </h2>
-              <span
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-                  brmSession.state === 'CONNECTED'
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                    : brmSession.state === 'CLOUD_STANDBY'
-                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
-                    : brmSession.state === 'QR_READY'
-                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                }`}
-              >
-                {brmSession.state === 'CONNECTED'
-                  ? 'PUENTE QR CONECTADO'
-                  : brmSession.state === 'CLOUD_STANDBY'
-                  ? 'API CLOUD WEBHOOK ACTIVA'
-                  : brmSession.state === 'QR_READY'
-                  ? 'ESPERANDO ESCANEO QR'
-                  : 'RESPALDO DIRECTO WA.ME + BITÁCORA'}
-              </span>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
+                <MessageSquare className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                  Centro de Mensajería BRM WhatsApp
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border tracking-wide ${
+                      brmSession.state === 'CONNECTED'
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : brmSession.state === 'CLOUD_STANDBY'
+                        ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                        : brmSession.state === 'GENERATING_QR'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                        : brmSession.state === 'QR_READY'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-slate-800 text-slate-300 border-slate-700'
+                    }`}
+                  >
+                    {brmSession.state === 'CONNECTED'
+                      ? '🟢 PUENTE EN VIVO CONECTADO'
+                      : brmSession.state === 'CLOUD_STANDBY'
+                      ? '🔵 CLOUD API ACTIVA'
+                      : brmSession.state === 'GENERATING_QR'
+                      ? '⏳ NEGOCIANDO CON WHATSAPP...'
+                      : brmSession.state === 'QR_READY'
+                      ? '🟡 ESCANEA EL CÓDIGO QR'
+                      : '⚪ MODO ASISTIDO WA.ME + BITÁCORA'}
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Línea activa: <strong className="text-slate-200">{brmSession.corporatePhoneE164}</strong> · Mensajería con proveedores, historial de chats, retenciones SENIAT y órdenes de compra.
+                </p>
+              </div>
             </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Exclusivo para gestión de Proveedores homologados (`E.164`), Órdenes de Compra, Doble Compuerta de Facturas (`@OCR`) y remisión de Pagos + Comprobantes PDF SENIAT (IVA/ISLR).
-            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -196,65 +280,94 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               value={corpPhoneInput}
               onChange={(e) => setCorpPhoneInput(e.target.value)}
               placeholder="Línea Propia +58..."
-              className="min-h-[44px] w-44 px-3 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono"
-              title="Número corporativo propio excluido automáticamente (Anti-Loop)"
+              className="min-h-[44px] w-40 px-3 rounded-xl bg-slate-950 border border-slate-700 text-white font-mono"
+              title="Número corporativo propio excluido de envíos (Anti-Loop)"
             />
+
             <button
               type="button"
-              onClick={() => requestBrmQrSession(corpPhoneInput, selectedQrMode)}
-              className="min-h-[44px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-950/40"
+              onClick={() => {
+                setShowQrModal(true);
+                requestBrmQrSession(corpPhoneInput, selectedQrMode);
+              }}
+              className="min-h-[44px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-950/40 transition"
             >
               <QrCode className="w-4 h-4" />
-              Generar QR
+              {brmSession.state === 'CONNECTED' ? 'Ver Estado QR' : 'Vincular Dispositivo'}
             </button>
-            <button
-              type="button"
-              onClick={() => activateBrmCloudWebhookMode()}
-              className="min-h-[44px] px-3.5 rounded-xl bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/40 text-sky-200 font-bold flex items-center gap-1.5 cursor-pointer"
-            >
-              <Wifi className="w-4 h-4" />
-              Webhook Cloud
-            </button>
+
             {brmSession.state !== 'DISCONNECTED' && (
               <button
                 type="button"
                 onClick={() => disconnectBrmSessionClean()}
-                className="min-h-[44px] px-3.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-200 font-bold flex items-center gap-1.5 cursor-pointer"
+                className="min-h-[44px] px-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-200 font-bold flex items-center gap-1.5 cursor-pointer transition"
+                title="Desvinculación limpia de sesión (Anti-Split Brain)"
               >
                 <PowerOff className="w-4 h-4" />
-                Desvincular Limpio
+                Desvincular
               </button>
             )}
           </div>
         </div>
 
-        {/* Panel de Emparejamiento QR Auténtico (ISO/IEC 18004 WhatsApp Web & Cámara) */}
-        {brmSession.state === 'QR_READY' && brmSession.qrPayloadData && (
-          <div className="p-4 sm:p-6 rounded-2xl bg-slate-950 border-2 border-emerald-500/60 flex flex-col xl:flex-row items-center justify-between gap-6 text-xs shadow-2xl">
-            <div className="flex flex-col md:flex-row items-center gap-6 text-center md:text-left w-full xl:w-auto">
-              {/* Contenedor QR de Alto Contraste Óptico con Zona de Silencio >= 4 módulos */}
-              <div className="shrink-0 p-2 bg-white rounded-2xl shadow-2xl border-2 border-emerald-400">
-                {brmSession.qrCodeDataUri ? (
+        {/* Modal / Panel Desplegable de Vinculación QR Auténtica */}
+        {showQrModal && (
+          <div className="mt-4 p-4 sm:p-5 rounded-2xl bg-slate-950 border-2 border-emerald-500/60 shadow-2xl relative">
+            <button
+              type="button"
+              onClick={() => setShowQrModal(false)}
+              className="absolute top-3 right-3 text-slate-400 hover:text-white p-2 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex flex-col md:flex-row items-center gap-6">
+              {/* Contenedor del QR de Alto Contraste */}
+              <div className="shrink-0 p-3 bg-white rounded-2xl shadow-2xl border-2 border-emerald-400 flex items-center justify-center min-w-[240px] min-h-[240px]">
+                {brmSession.state === 'GENERATING_QR' ? (
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-slate-800">
+                    <RefreshCw className="w-10 h-10 text-emerald-600 animate-spin mb-3" />
+                    <span className="font-bold text-xs text-slate-900">
+                      Negociando con WhatsApp...
+                    </span>
+                    <span className="text-[10px] text-slate-600 mt-1">
+                      Generando token oficial de emparejamiento WSS
+                    </span>
+                  </div>
+                ) : brmSession.qrCodeDataUri ? (
                   <img
                     src={brmSession.qrCodeDataUri}
                     alt="Código QR WhatsApp Web BRM"
-                    className="w-[240px] h-[240px] object-contain rounded-xl select-none"
+                    className="w-[230px] h-[230px] object-contain rounded-xl select-none"
                     style={{ imageRendering: 'pixelated' }}
                   />
+                ) : brmSession.state === 'CONNECTED' ? (
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-emerald-600">
+                    <CheckCircle2 className="w-12 h-12 mb-2" />
+                    <span className="font-bold text-sm text-slate-900">
+                      ¡Dispositivo Vinculado!
+                    </span>
+                    <span className="text-xs text-slate-700 mt-0.5 font-mono">
+                      {brmSession.corporatePhoneE164}
+                    </span>
+                  </div>
                 ) : (
-                  <QrMatrixView
-                    value={brmSession.qrPayloadData}
-                    size={240}
-                    margin={4}
-                    darkColor="#000000"
-                    lightColor="#ffffff"
-                    alt="Código QR WhatsApp Web BRM ISO/IEC 18004"
-                  />
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-slate-700">
+                    <Smartphone className="w-10 h-10 text-slate-400 mb-2" />
+                    <span className="font-bold text-xs">Sin código QR activo</span>
+                    <button
+                      type="button"
+                      onClick={() => requestBrmQrSession(corpPhoneInput, 'NOISE_PAIRING')}
+                      className="mt-2 text-xs text-emerald-600 font-bold underline"
+                    >
+                      Haz clic para generar
+                    </button>
+                  </div>
                 )}
               </div>
 
-              <div className="space-y-3 max-w-xl">
-                {/* Selector de Modo de Escaneo */}
+              {/* Instrucciones y Opciones de Modo */}
+              <div className="space-y-3 flex-1 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -262,7 +375,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                       setSelectedQrMode('NOISE_PAIRING');
                       requestBrmQrSession(corpPhoneInput, 'NOISE_PAIRING');
                     }}
-                    className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                    className={`min-h-[44px] px-3 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
                       selectedQrMode === 'NOISE_PAIRING'
                         ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/40'
                         : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
@@ -277,241 +390,137 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                       setSelectedQrMode('WA_ME_LINK');
                       requestBrmQrSession(corpPhoneInput, 'WA_ME_LINK');
                     }}
-                    className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                    className={`min-h-[44px] px-3 rounded-xl font-bold transition cursor-pointer flex items-center gap-1.5 ${
                       selectedQrMode === 'WA_ME_LINK'
                         ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/40'
                         : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
                     }`}
                   >
-                    <QrCode className="w-3.5 h-3.5" />
-                    2. Cámara Móvil (Enlace Directo wa.me)
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    2. Enlace Directo wa.me (Cámara / Lens)
                   </button>
                 </div>
 
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-[11px]">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  {selectedQrMode === 'NOISE_PAIRING'
-                    ? 'QR Activo · WhatsApp Web Noise Protocol Handshake'
-                    : 'QR Activo · Enlace Directo wa.me para Cámara / Lens'}
-                </div>
-
-                <h4 className="font-bold text-white text-base">
-                  {selectedQrMode === 'NOISE_PAIRING'
-                    ? 'Escanea desde WhatsApp > Dispositivos Vinculados'
-                    : 'Escanea con la cámara de tu teléfono o Google Lens'}
-                </h4>
-
-                {selectedQrMode === 'NOISE_PAIRING' ? (
-                  <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
-                    <li>
-                      Abre WhatsApp en el teléfono de compras/tesorería (
-                      <strong className="text-white">
-                        {brmSession.corporatePhoneE164}
-                      </strong>
-                      ).
-                    </li>
-                    <li>
-                      Toca <strong className="text-white">Ajustes</strong> o{' '}
-                      <strong className="text-white">Menú (⋮)</strong> y selecciona{' '}
-                      <strong className="text-white">Dispositivos vinculados</strong>.
-                    </li>
-                    <li>
-                      Toca <strong className="text-white">Vincular un dispositivo</strong>{' '}
-                      y apunta la cámara al código QR superior.
-                    </li>
-                  </ol>
-                ) : (
-                  <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
-                    <li>
-                      Abre la aplicación de{' '}
-                      <strong className="text-white">Cámara normal</strong> o{' '}
-                      <strong className="text-white">Google Lens</strong> en tu
-                      smartphone.
-                    </li>
-                    <li>
-                      Apunta al código QR para detectar automáticamente el enlace
-                      oficial <strong className="text-emerald-400">wa.me</strong>.
-                    </li>
-                    <li>
-                      Toca el banner emergente para abrir la conversación directa con la
-                      línea institucional.
-                    </li>
-                  </ol>
-                )}
-
-                <div className="pt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400 font-mono">
-                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-                    Línea corporativa: {brmSession.corporatePhoneE164}
-                  </span>
-                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[260px]">
-                    Payload: {brmSession.qrPayloadData}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row xl:flex-col gap-2.5 w-full xl:w-auto shrink-0">
-              <button
-                type="button"
-                onClick={() => confirmBrmQrPairing()}
-                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2 cursor-pointer transition text-xs"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                Confirmar Vinculación Activa
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  requestBrmQrSession(corpPhoneInput, selectedQrMode)
-                }
-                className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-medium flex items-center justify-center gap-1.5 cursor-pointer transition text-xs"
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                Regenerar Código QR
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (brmSession.qrPayloadData) {
-                    navigator.clipboard.writeText(brmSession.qrPayloadData);
-                    setCopiedPayload(true);
-                    setTimeout(() => setCopiedPayload(false), 2000);
-                  }
-                }}
-                className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-medium flex items-center justify-center gap-1.5 cursor-pointer transition text-xs"
-              >
-                <Copy className="w-3.5 h-3.5 text-slate-400" />
-                {copiedPayload ? '¡Copiado con Éxito!' : 'Copiar Token / Enlace'}
-              </button>
-              {brmSession.qrPayloadData?.startsWith('http') && (
-                <a
-                  href={brmSession.qrPayloadData}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold flex items-center justify-center gap-1.5 transition text-xs"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Abrir Enlace en WhatsApp
-                </a>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Tarjeta de Confirmación Humana de Borrador de Retención (Prevención de Despacho Accidental) */}
-        {stagedRetentionDispatch && (
-          <div className="p-4 sm:p-5 rounded-2xl bg-amber-950/40 border-2 border-amber-500/60 shadow-xl space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-500/30 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300">
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-400 uppercase tracking-wide">
-                    Borrador Pre-Cargado para Confirmación Manual
-                  </div>
-                  <h4 className="font-bold text-white text-base">
-                    Comprobante {stagedRetentionDispatch.voucherType} N° {stagedRetentionDispatch.voucherNumber} · {stagedRetentionDispatch.supplierName}
+                <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 space-y-2">
+                  <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                    {selectedQrMode === 'NOISE_PAIRING'
+                      ? 'Paso a paso en tu teléfono móvil:'
+                      : 'Escaneo con cámara móvil o Google Lens:'}
                   </h4>
+                  {selectedQrMode === 'NOISE_PAIRING' ? (
+                    <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
+                      <li>Abre WhatsApp en tu teléfono (<strong className="text-white">{brmSession.corporatePhoneE164}</strong>).</li>
+                      <li>Toca <strong>Menú (⋮)</strong> o <strong>Ajustes</strong> &gt; <strong>Dispositivos vinculados</strong>.</li>
+                      <li>Selecciona <strong>Vincular un dispositivo</strong> y apunta al código QR a la izquierda.</li>
+                      <li className="text-emerald-300">El sistema detectará el emparejamiento de forma 100% automática en segundos.</li>
+                    </ol>
+                  ) : (
+                    <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
+                      <li>Abre la app de cámara normal o Google Lens en tu smartphone.</li>
+                      <li>Apunta al código para abrir el enlace directo seguro de WhatsApp.</li>
+                    </ol>
+                  )}
                 </div>
-              </div>
-              <div className="text-right text-xs">
-                <span className="text-slate-400">Total Retenido:</span>{' '}
-                <strong className="text-amber-300 text-sm">
-                  Bs. {stagedRetentionDispatch.retainedVes.toFixed(2)} (${stagedRetentionDispatch.retainedUsd.toFixed(2)})
-                </strong>
-              </div>
-            </div>
 
-            <div className="bg-slate-950/80 p-3 rounded-xl border border-slate-800 text-xs font-mono text-slate-300 max-h-36 overflow-y-auto whitespace-pre-line leading-relaxed">
-              {stagedRetentionDispatch.formattedSummaryMessage}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <p className="text-[11px] text-slate-400">
-                El comprobante permanece en estado <strong className="text-amber-300">EMITIDO</strong> hasta que confirmes el envío formal.
-              </p>
-              <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => clearStagedRetentionDispatch()}
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
-                >
-                  Descartar Borrador (No Enviar)
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    const res = await confirmStagedRetentionDispatch(false);
-                    if (res.success) {
-                      setBanner({
-                        type: 'ok',
-                        text: `Comprobante despachado con éxito al proveedor vía BRM y marcado como ENTREGADO.`,
-                      });
-                    } else {
-                      setBanner({
-                        type: 'err',
-                        text: res.error || 'Error despachando comprobante.',
-                      });
-                    }
-                  }}
-                  className="min-h-[44px] px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-lg shadow-emerald-900/40 flex items-center gap-2 cursor-pointer transition"
-                >
-                  <Send className="w-4 h-4" />
-                  Confirmar y Enviar al Proveedor
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => confirmBrmQrPairing()}
+                    className="min-h-[44px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Forzar Confirmación
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => requestBrmQrSession(corpPhoneInput, selectedQrMode)}
+                    className="min-h-[44px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Refrescar Token
+                  </button>
+                  {brmSession.qrPayloadData && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(brmSession.qrPayloadData || '');
+                        setCopiedPayload(true);
+                        setTimeout(() => setCopiedPayload(false), 2000);
+                      }}
+                      className="min-h-[44px] px-3 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-400 font-medium cursor-pointer transition text-xs flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      {copiedPayload ? '¡Copiado!' : 'Copiar Token'}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* Pestañas de Navegación Interna BRM */}
-        <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
+        {/* Pestañas de Navegación del Módulo BRM */}
+        <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-800 mt-4">
           <button
             type="button"
-            onClick={() => setTab('SUPPLIERS_360')}
-            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
-              tab === 'SUPPLIERS_360'
-                ? 'bg-emerald-600 text-white border-emerald-500'
-                : 'bg-slate-950 text-slate-300 border-slate-800'
+            onClick={() => setActiveTab('CHAT_WEB')}
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-2 ${
+              activeTab === 'CHAT_WEB'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/40'
+                : 'bg-slate-950 text-slate-300 border-slate-800 hover:text-white'
             }`}
           >
-            1. Expediente 360° Proveedores & Envíos 1-Clic
+            <MessageSquare className="w-4 h-4 text-emerald-300" />
+            1. Chat WhatsApp en Vivo & Contactos Activos
           </button>
           <button
             type="button"
-            onClick={() => setTab('INBOX_PRE_AUDIT')}
-            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
-              tab === 'INBOX_PRE_AUDIT'
-                ? 'bg-emerald-600 text-white border-emerald-500'
-                : 'bg-slate-950 text-slate-300 border-slate-800'
+            onClick={() => setActiveTab('SUPPLIERS_360')}
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-2 ${
+              activeTab === 'SUPPLIERS_360'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/40'
+                : 'bg-slate-950 text-slate-300 border-slate-800 hover:text-white'
             }`}
           >
-            2. Doble Compuerta Facturas Entrantes OCR ({pendingPreInvoicesCount})
+            <Building2 className="w-4 h-4 text-sky-400" />
+            2. Expediente Financiero 360° & Envíos 1-Clic
           </button>
           <button
             type="button"
-            onClick={() => setTab('LEDGER')}
-            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
-              tab === 'LEDGER'
-                ? 'bg-emerald-600 text-white border-emerald-500'
-                : 'bg-slate-950 text-slate-300 border-slate-800'
+            onClick={() => setActiveTab('INBOX_PRE_AUDIT')}
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-2 ${
+              activeTab === 'INBOX_PRE_AUDIT'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/40'
+                : 'bg-slate-950 text-slate-300 border-slate-800 hover:text-white'
             }`}
           >
-            3. Bitácora Auditada E.164 ({brmMessages.length})
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            3. Doble Compuerta Facturas OCR ({pendingPreInvoicesCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('LEDGER')}
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer flex items-center gap-2 ${
+              activeTab === 'LEDGER'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-950/40'
+                : 'bg-slate-950 text-slate-300 border-slate-800 hover:text-white'
+            }`}
+          >
+            <Smartphone className="w-4 h-4 text-amber-400" />
+            4. Bitácora Auditada E.164 ({brmMessages.length})
           </button>
         </div>
       </div>
 
       {banner && (
         <div
-          className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2 shadow-lg ${
             banner.type === 'ok'
-              ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
-              : 'bg-rose-950/60 border-rose-500/40 text-rose-200'
+              ? 'bg-emerald-950/70 border-emerald-500/40 text-emerald-200'
+              : 'bg-rose-950/70 border-rose-500/40 text-rose-200'
           }`}
         >
-          <span className="flex items-center gap-2">
+          <span className="flex items-center gap-2 font-medium">
             {banner.type === 'ok' ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             ) : (
@@ -522,16 +531,363 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
           <button
             type="button"
             onClick={() => setBanner(null)}
-            className="text-slate-400 hover:text-white px-2 cursor-pointer"
+            className="text-slate-400 hover:text-white px-2 cursor-pointer font-bold"
           >
             ✕
           </button>
         </div>
       )}
 
-      {tab === 'SUPPLIERS_360' && activeSupplier && (
+      {/* ========================================================================= */}
+      {/* PESTAÑA 1: CLON DE WHATSAPP WEB CON VENTANA DE CONTACTOS Y CHAT EN VIVO    */}
+      {/* ========================================================================= */}
+      {activeTab === 'CHAT_WEB' && activeSupplier && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[650px] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+          {/* Panel Izquierdo: Directorio y Contactos Activos de Proveedores */}
+          <div className="lg:col-span-4 bg-slate-950 border-r border-slate-800 flex flex-col h-full">
+            {/* Buscador de Contactos */}
+            <div className="p-3 border-b border-slate-800 space-y-2">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
+                <input
+                  type="text"
+                  value={contactSearch}
+                  onChange={(e) => setContactSearch(e.target.value)}
+                  placeholder="Buscar proveedor o teléfono..."
+                  className="w-full min-h-[44px] pl-9 pr-3 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs placeholder:text-slate-500 focus:border-emerald-500"
+                />
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-400 px-1 font-semibold">
+                <span>Proveedores Activos ({filteredSuppliers.length})</span>
+                <span className="text-emerald-400">BRM AR Group</span>
+              </div>
+            </div>
+
+            {/* Lista de Contactos con Scroll */}
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
+              {filteredSuppliers.length === 0 ? (
+                <div className="p-6 text-center text-slate-500 text-xs">
+                  No se encontraron proveedores que coincidan con la búsqueda.
+                </div>
+              ) : (
+                filteredSuppliers.map((supplier) => {
+                  const isSelected = supplier.id === activeSupplier.id;
+                  const phoneNorm = normalizePhoneE164(supplier.whatsappE164 || supplier.phone);
+                  const hasStaged = stagedRetentionDispatch?.supplierId === supplier.id;
+
+                  // Último mensaje registrado para este contacto
+                  const lastMsg = brmMessages
+                    .filter((m) => m.supplierId === supplier.id || (phoneNorm && m.phoneE164 === phoneNorm))
+                    .slice(-1)[0];
+
+                  return (
+                    <button
+                      key={supplier.id}
+                      type="button"
+                      onClick={() => setSelectedSupplierId(supplier.id)}
+                      className={`w-full p-3 text-left transition flex items-start gap-3 cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-950/40 border-l-4 border-emerald-500'
+                          : 'hover:bg-slate-900/60'
+                      }`}
+                    >
+                      <div className="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0 font-bold text-white text-xs">
+                        {supplier.name.slice(0, 2).toUpperCase()}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <h4 className="font-bold text-white text-xs truncate">
+                            {supplier.name}
+                          </h4>
+                          {lastMsg && (
+                            <span className="text-[10px] text-slate-500 shrink-0 font-mono">
+                              {lastMsg.timestampVet?.split(' ')[1]?.slice(0, 5) || ''}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-between gap-1 text-[11px] text-slate-400 mt-0.5">
+                          <span className="font-mono truncate">{phoneNorm || supplier.rif}</span>
+                          <span className="text-amber-300 font-mono font-bold tabular-nums shrink-0">
+                            ${supplier.balanceUsd.toFixed(2)}
+                          </span>
+                        </div>
+
+                        {hasStaged && (
+                          <div className="mt-1 inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
+                            <AlertTriangle className="w-3 h-3" />
+                            Retención en Borrador
+                          </div>
+                        )}
+
+                        {lastMsg && !hasStaged && (
+                          <p className="text-[11px] text-slate-400 truncate mt-1">
+                            {lastMsg.direction === 'OUTBOUND_TO_SUPPLIER' && 'Tú: '}
+                            {lastMsg.bodyText}
+                          </p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Panel Central/Derecho: Espacio del Chat e Histórico de Conversación */}
+          <div className="lg:col-span-8 flex flex-col h-full bg-slate-950/40">
+            {/* Cabecera del Chat Activo */}
+            <div className="p-3.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center font-bold text-emerald-300 text-xs">
+                  {activeSupplier.name.slice(0, 2).toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-sm flex items-center gap-2">
+                    {activeSupplier.name}
+                    <span className="font-mono text-xs text-slate-400 font-normal">
+                      ({activeSupplier.rif})
+                    </span>
+                  </h3>
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <span className="font-mono text-emerald-400 font-semibold">
+                      {normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone) ||
+                        'Sin E.164'}
+                    </span>
+                    <span>·</span>
+                    <span>Saldo CxP: <strong className="text-amber-300 font-mono">${activeSupplier.balanceUsd.toFixed(2)}</strong></span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {activeSupplier.whatsappE164 && (
+                  <a
+                    href={`https://wa.me/${activeSupplier.whatsappE164.replace(/\D/g, '')}?text=${encodeURIComponent(
+                      `Estimados ${activeSupplier.name}, le saludamos de AR Group 2026:`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[44px] px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 text-xs font-bold flex items-center gap-1.5 transition"
+                    title="Abrir chat directamente en WhatsApp Web o móvil"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Abrir wa.me
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('SUPPLIERS_360')}
+                  className="min-h-[44px] px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition"
+                  title="Ver facturas y retenciones completas del proveedor"
+                >
+                  Expediente 360°
+                </button>
+              </div>
+            </div>
+
+            {/* Alerta de Retención en Borrador Pendiente de Confirmar */}
+            {stagedRetentionDispatch && stagedRetentionDispatch.supplierId === activeSupplier.id && (
+              <div className="m-3 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    Borrador de Comprobante {stagedRetentionDispatch.voucherType} N° {stagedRetentionDispatch.voucherNumber}
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    Monto retenido: <strong className="text-white">Bs. {stagedRetentionDispatch.retainedVes.toFixed(2)}</strong> (${stagedRetentionDispatch.retainedUsd.toFixed(2)}) · Listo para despachar al proveedor.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => clearStagedRetentionDispatch()}
+                    className="min-h-[44px] px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 text-xs font-bold transition cursor-pointer"
+                  >
+                    Descartar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const res = await confirmStagedRetentionDispatch(false);
+                      if (res.success) {
+                        setBanner({
+                          type: 'ok',
+                          text: 'Comprobante despachado con éxito al chat y marcado como ENTREGADO.',
+                        });
+                      } else {
+                        setBanner({
+                          type: 'err',
+                          text: res.error || 'Error enviando comprobante.',
+                        });
+                      }
+                    }}
+                    className="min-h-[44px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-950/40 transition"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    Confirmar y Despachar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Espacio del Histórico de Conversación con Burbujas */}
+            <div
+              ref={chatScrollRef}
+              className="flex-1 p-4 overflow-y-auto space-y-3 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]"
+            >
+              {activeSupplierMessages.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
+                  <div className="w-14 h-14 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-400 mb-3">
+                    <MessageSquare className="w-6 h-6" />
+                  </div>
+                  <h4 className="font-bold text-white text-sm">
+                    Sin mensajes previos con {activeSupplier.name}
+                  </h4>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1">
+                    Escribe un mensaje abajo o haz clic en las plantillas rápidas para enviar cotizaciones, notificaciones de pago o retenciones SENIAT.
+                  </p>
+                </div>
+              ) : (
+                activeSupplierMessages.map((msg) => {
+                  const isOut = msg.direction === 'OUTBOUND_TO_SUPPLIER';
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex flex-col ${isOut ? 'items-end' : 'items-start'}`}
+                    >
+                      <div
+                        className={`max-w-[85%] sm:max-w-[70%] rounded-2xl p-3.5 shadow-md space-y-1.5 text-xs ${
+                          isOut
+                            ? 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-100 rounded-br-none'
+                            : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-none'
+                        }`}
+                      >
+                        {/* Categoría y Adjuntos */}
+                        <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1">
+                          <span className="font-bold text-[10px] text-emerald-400 uppercase tracking-wide">
+                            {msg.category.replace(/_/g, ' ')}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {msg.transportUsed}
+                          </span>
+                        </div>
+
+                        {/* Texto del Mensaje */}
+                        <p className="whitespace-pre-line leading-relaxed text-xs">
+                          {msg.bodyText}
+                        </p>
+
+                        {/* Tarjeta de Archivo Adjunto */}
+                        {msg.attachmentFileName && (
+                          <div className="p-2 rounded-xl bg-black/40 border border-white/10 flex items-center gap-2 text-amber-300 font-mono text-[11px]">
+                            <FileText className="w-4 h-4 shrink-0 text-amber-400" />
+                            <span className="truncate">{msg.attachmentFileName}</span>
+                          </div>
+                        )}
+
+                        {/* Pie de Mensaje: Hora y Ticks de Entrega */}
+                        <div className="flex items-center justify-end gap-1.5 pt-0.5 text-[10px] text-slate-400 font-mono">
+                          <span>{msg.timestampVet || 'Hoy'}</span>
+                          {isOut && (
+                            <span className="text-emerald-400 inline-flex items-center">
+                              {msg.deliveryStatus === 'ENTREGADO' || msg.deliveryStatus === 'LEIDO' ? (
+                                <CheckCheck className="w-3.5 h-3.5" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5" />
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Plantillas Rápidas de Mensajes */}
+            <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 flex items-center gap-1.5 overflow-x-auto text-xs shrink-0">
+              <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0">
+                Plantillas:
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  handleInsertTemplate(
+                    `Estimados ${activeSupplier.name}, le confirmamos que su pago de factura ha sido procesado exitosamente por Tesorería.`
+                  )
+                }
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
+              >
+                💰 Pago Procesado
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleInsertTemplate(
+                    `Estimados ${activeSupplier.name}, le remitimos comprobantes oficiales de retención SENIAT (IVA/ISLR) correspondientes a su facturación.`
+                  )
+                }
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
+              >
+                📋 Retenciones SENIAT
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleInsertTemplate(
+                    `Estimados ${activeSupplier.name}, solicitamos confirmación de despacho para mercancía en ventana de muelle de recepción.`
+                  )
+                }
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
+              >
+                🚚 Ventana de Descarga
+              </button>
+            </div>
+
+            {/* Barra de Entrada y Escritura del Chat */}
+            <form
+              onSubmit={handleSendMessage}
+              className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2 shrink-0"
+            >
+              <textarea
+                rows={1}
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                placeholder={`Escribe un mensaje a ${activeSupplier.name} (Enter para enviar)...`}
+                className="flex-1 min-h-[44px] max-h-32 p-3 rounded-xl bg-slate-950 border border-slate-700 text-white text-xs placeholder:text-slate-500 focus:border-emerald-500 resize-none"
+              />
+              <button
+                type="submit"
+                disabled={sendingMessage || !chatInput.trim()}
+                className="min-h-[44px] px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/40 transition shrink-0 text-xs"
+              >
+                {sendingMessage ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                Enviar
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* PESTAÑA 2: EXPEDIENTE 360° PROVEEDORES & ENVÍOS 1-CLIC                     */}
+      {/* ========================================================================= */}
+      {activeTab === 'SUPPLIERS_360' && activeSupplier && (
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          {/* Selector y Ficha Homologada del Proveedor */}
+          {/* Ficha Homologada del Proveedor */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4 text-xs">
             <div>
               <label className="block text-slate-400 mb-1 font-semibold">
@@ -605,30 +961,18 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               </button>
             </div>
 
-            <form onSubmit={handleCustomSend} className="space-y-2 pt-2 border-t border-slate-800">
-              <label className="block text-slate-300 font-semibold">
-                Mensaje Institucional a Proveedor
-              </label>
-              <textarea
-                rows={3}
-                value={customMsg}
-                onChange={(e) => setCustomMsg(e.target.value)}
-                placeholder="Ej. Confirmamos ventana de descarga en Cava Principal a las 08:30 AM..."
-                className="w-full p-3 rounded-xl bg-slate-950 border border-slate-700 text-white"
-              />
-              <button
-                type="submit"
-                className="w-full min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
-                Enviar Mensaje Auditado BRM
-              </button>
-            </form>
+            <button
+              type="button"
+              onClick={() => setActiveTab('CHAT_WEB')}
+              className="w-full min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/40"
+            >
+              <MessageSquare className="w-4 h-4" />
+              Abrir Conversación en el Chat
+            </button>
           </div>
 
           {/* Despacho 1-Clic de Facturas/Pagos/Retenciones y Órdenes de Compra */}
           <div className="xl:col-span-2 space-y-4">
-            {/* Facturas, Pagos y Comprobantes PDF de Retención IVA/ISLR */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
               <div className="p-4 border-b border-slate-800 flex items-center justify-between">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -705,7 +1049,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                                     setBanner({
                                       type: r.success ? 'ok' : 'err',
                                       text: r.success
-                                        ? `Paquete de Pago + PDFs de Retención enviado a ${activeSupplier.name} y marcado ENTREGADO.`
+                                        ? `Paquete de Pago + PDFs enviado a ${activeSupplier.name} y registrado en el chat.`
                                         : r.error || 'Error en despacho.',
                                     });
                                   }}
@@ -723,7 +1067,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                                     });
                                   }}
                                   className="min-h-[44px] px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 inline-flex items-center gap-1 cursor-pointer"
-                                  title="Abrir también en WhatsApp Web / Móvil (wa.me)"
+                                  title="Abrir en WhatsApp Web (wa.me)"
                                 >
                                   <ExternalLink className="w-3.5 h-3.5" />
                                 </button>
@@ -804,7 +1148,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
         </div>
       )}
 
-      {tab === 'INBOX_PRE_AUDIT' && (
+      {/* ========================================================================= */}
+      {/* PESTAÑA 3: DOBLE COMPUERTA DE FACTURAS ENTRANTES OCR                      */}
+      {/* ========================================================================= */}
+      {activeTab === 'INBOX_PRE_AUDIT' && (
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           {/* Compuerta 1: Recepción Digital de Factura por WhatsApp */}
           <form
@@ -886,7 +1233,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                 checked={inSuspicious}
                 onChange={(e) => setInSuspicious(e.target.checked)}
               />
-              Simular metadatos EXIF alterados / edición IA (Prueba Anti-Fraude)
+              Simular metadatos alterados / edición IA (Prueba Anti-Fraude)
             </label>
 
             <button
@@ -1053,7 +1400,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
         </div>
       )}
 
-      {tab === 'LEDGER' && (
+      {/* ========================================================================= */}
+      {/* PESTAÑA 4: BITÁCORA AUDITADA E.164                                        */}
+      {/* ========================================================================= */}
+      {activeTab === 'LEDGER' && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
           <div className="p-4 border-b border-slate-800 flex items-center justify-between">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">

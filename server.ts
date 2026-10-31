@@ -73,7 +73,7 @@ let inMemoryOfflineQueue: OfflineDelegatedQueueItem[] = [];
 const processedBrmMessageIds = new Set<string>();
 
 let brmServerSession: {
-  state: 'CONNECTED' | 'QR_READY' | 'DISCONNECTED' | 'CLOUD_STANDBY';
+  state: 'CONNECTED' | 'QR_READY' | 'DISCONNECTED' | 'CLOUD_STANDBY' | 'GENERATING_QR';
   activeMode: 'QR_SOCKET_BRIDGE' | 'CLOUD_API_WEBHOOK' | 'WA_ME_DIRECT_LEDGER';
   corporatePhoneE164: string;
   qrPayloadData?: string;
@@ -1102,75 +1102,81 @@ async function startServer() {
 
       // NOISE_PAIRING: Baileys real socket connection to WhatsApp servers
       try {
+        if (brmServerSession.state === 'CONNECTED') {
+          res.json({
+            ...brmServerSession,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+          });
+          return;
+        }
+
+        const forceReset = action === 'REGENERATE_QR';
+        if (
+          !forceReset &&
+          brmServerSession.state === 'QR_READY' &&
+          brmServerSession.qrCodeDataUri
+        ) {
+          res.json({
+            ...brmServerSession,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+          });
+          return;
+        }
+
+        brmServerSession.state = 'GENERATING_QR';
+        brmServerSession.lastHeartbeatVet = nowStamp;
+
         const waitForQrPromise = new Promise<string>((resolve) => {
           brmQrEmitterPromiseResolver = resolve;
         });
 
-        // Start socket in background (or connect)
-        getOrInitBrmSocket(true).catch((err) =>
+        // Start socket in background (or reuse singleton) without killing in-flight handshake
+        getOrInitBrmSocket(forceReset).catch((err) =>
           console.warn('[BRM WhatsApp] Error iniciando Baileys:', err)
         );
 
-        // Wait up to 6s for the live QR from WhatsApp signaling servers
+        // Wait up to 10s for the live authentic QR from WhatsApp signaling servers
         const liveQrDataUri = await Promise.race([
           waitForQrPromise,
-          new Promise<null>((r) => setTimeout(() => r(null), 6000)),
+          new Promise<null>((r) => setTimeout(() => r(null), 10000)),
         ]);
 
-        if (liveQrDataUri) {
+        if (liveQrDataUri || brmServerSession.qrCodeDataUri) {
+          const validUri = liveQrDataUri || brmServerSession.qrCodeDataUri;
+          brmServerSession.state = 'QR_READY';
+          brmServerSession.qrCodeDataUri = validUri;
           res.json({
             ...brmServerSession,
-            qrCodeDataUri: liveQrDataUri,
+            qrCodeDataUri: validUri,
             hasAdminCredentials,
             pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
           });
           return;
         }
 
-        if (brmServerSession.qrCodeDataUri) {
-          res.json({
-            ...brmServerSession,
-            qrCodeDataUri: brmServerSession.qrCodeDataUri,
-            hasAdminCredentials,
-            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
-          });
-          return;
-        }
+        // Si WhatsApp aún está negociando el canal WSS, responder en estado GENERATING_QR
+        // Prohibido terminantemente emitir tokens sintéticos con bytes falsos
+        res.json({
+          ...brmServerSession,
+          state: 'GENERATING_QR',
+          qrCodeDataUri: undefined,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+        });
+        return;
       } catch (err) {
-        console.warn('[BRM WhatsApp] Fallback a QR de formato canónico:', err);
+        console.warn('[BRM WhatsApp] Error gestionando conexión Baileys:', err);
+        res.json({
+          ...brmServerSession,
+          state: 'DISCONNECTED',
+          qrCodeDataUri: undefined,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
+        });
+        return;
       }
-
-      // Fallback a QR con formato canónico de emparejamiento WhatsApp
-      const refId = crypto.randomBytes(18).toString('base64');
-      const noiseKey = crypto.randomBytes(32).toString('base64');
-      const identityKey = crypto.randomBytes(32).toString('base64');
-      const advKey = crypto.randomBytes(32).toString('base64');
-      const qrPayload = `https://wa.me/settings/linked_devices#2@${refId},${noiseKey},${identityKey},${advKey}`;
-
-      const qrDataUri = await QRCode.toDataURL(qrPayload, {
-        margin: 2,
-        scale: 8,
-        color: { dark: '#000000', light: '#ffffff' },
-      });
-
-      brmServerSession = {
-        ...brmServerSession,
-        state: 'QR_READY',
-        activeMode: 'QR_SOCKET_BRIDGE',
-        qrPayloadData: qrPayload,
-        qrCodeDataUri: qrDataUri,
-        qrTargetType: qrType,
-        qrGeneratedAtVet: nowStamp,
-        lastHeartbeatVet: nowStamp,
-      };
-
-      res.json({
-        ...brmServerSession,
-        qrCodeDataUri: qrDataUri,
-        hasAdminCredentials,
-        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length,
-      });
-      return;
     }
 
     res.json({
