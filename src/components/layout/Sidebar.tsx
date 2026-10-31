@@ -26,6 +26,7 @@ import {
   ChefHat,
   MessageSquare,
   Landmark,
+  CreditCard,
 } from 'lucide-react';
 import { NavigationTab, UserRole } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -224,6 +225,13 @@ const NAV_ITEMS: NavItem[] = [
     defaultLabel: 'Cuentas por Pagar (CxP)',
     group: 'FINANZAS & OCR',
     icon: Wallet,
+    allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
+  },
+  {
+    id: 'EXPENSES_CONTROL',
+    defaultLabel: 'Control de Gastos OPEX',
+    group: 'FINANZAS & OCR',
+    icon: CreditCard,
     allowedRoles: [UserRole.SUPERADMIN, UserRole.GERENTE, UserRole.ANALISTA],
   },
   {

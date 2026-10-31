@@ -281,6 +281,8 @@ export interface PurchaseInvoice {
   ocrEngineUsed: OcrEngineMode;
   forensicAudit: ForensicAuditReport;
   attachment?: IndexedInvoiceAttachment;
+  invoiceType?: 'COMPRA_MERCANCIA' | 'GASTO_OPERATIVO_OPEX';
+  expenseId?: string;
   createdAtVet: string;
 }
 
@@ -407,7 +409,8 @@ export type NavigationTab =
   | 'FEFO_COLD_CHAIN'
   | 'PRODUCTION_RECIPES'
   | 'BRM_WHATSAPP'
-  | 'BANK_RECONCILIATION';
+  | 'BANK_RECONCILIATION'
+  | 'EXPENSES_CONTROL';
 
 export type DiscardReason =
   | 'VENCIMIENTO_CADUCIDAD'
@@ -517,7 +520,14 @@ export type AuditActionType =
   | 'BANK_PAYMENT_CONCILE'
   | 'FISCAL_Z_REPORT_SYNC'
   | 'CHRYSTAL_SALES_IMPORT'
-  | 'CHRYSTAL_SALES_SYNC';
+  | 'CHRYSTAL_SALES_SYNC'
+  | 'EXPENSE_PRELOAD'
+  | 'EXPENSE_APPROVAL'
+  | 'EXPENSE_REJECTION'
+  | 'EXPENSE_PAYMENT'
+  | 'EXPENSE_BUDGET_OVERRIDE'
+  | 'EXPENSE_MONTHLY_CLOSE'
+  | 'EXPENSE_DRIVE_BACKUP';
 
 export interface AuditLogEntry {
   id: string;
@@ -1414,4 +1424,148 @@ export interface FiscalZReportRecord {
   source: 'API_PUENTE_FISCAL' | 'CARGA_AUDITADA_CIERRE';
   registeredBy: string;
   registeredAtVet: string;
+}
+
+// ============================================================================
+// 11. Control de Gastos Operativos (OPEX), Facturas de Servicios & Presupuestos
+// ============================================================================
+export type ExpenseCategory =
+  | 'OFICINA_PAPELERIA'
+  | 'MANTENIMIENTO_EQUIPOS'
+  | 'MATERIALES_MANTENIMIENTO'
+  | 'MATERIALES_CONSTRUCCION'
+  | 'CLIMATIZACION_AC'
+  | 'SERVIDORES_TI_TELEVISORES'
+  | 'SERVICIO_TECNICO_ESPECIALIZADO'
+  | 'LIMPIEZA_DESINFECCION'
+  | 'LOGISTICA_VIATICOS'
+  | 'SERVICIOS_PUBLICOS'
+  | 'OTRO';
+
+export type ExpenseVoucherType =
+  | 'FACTURA_FISCAL'
+  | 'TICKET_CAJA'
+  | 'RECIBO_SIMPLE'
+  | 'NOTA_ENTREGA';
+
+export type ExpenseApprovalStatus =
+  | 'APROBADO_DIRECTO'
+  | 'PENDIENTE_APROBACION'
+  | 'APROBADO_GERENCIA'
+  | 'RECHAZADO';
+
+export interface ExpensePaymentRecord {
+  id: string;
+  expenseId: string;
+  amountUsd: number;
+  amountVes: number;
+  bcvRate: number;
+  method: 'TRANSFERENCIA_VES' | 'ZELLE_USD' | 'EFECTIVO_USD' | 'PAGO_MOVIL_VES';
+  reference: string;
+  paidAtVet: string;
+  registeredBy: string;
+  isEarlyDiscountApplied?: boolean;
+  discountSavedUsd?: number;
+  penaltyAppliedUsd?: number;
+}
+
+export interface ExpenseRecord {
+  id: string;
+  expenseCode: string;
+  voucherType: ExpenseVoucherType;
+  voucherNumber: string;
+  controlNumber?: string;
+  category: ExpenseCategory;
+  description: string;
+  supplierId?: string;
+  beneficiaryName: string;
+  beneficiaryRif: string;
+  beneficiaryType: 'PERSONA_NATURAL' | 'PERSONA_JURIDICA';
+  locationId: string;
+  issueDate: string;
+  dueDate?: string;
+  paymentCondition: 'CONTADO' | 'CREDITO';
+  creditDays?: number;
+  earlyPaymentDiscountPercent?: number;
+  earlyPaymentDiscountDeadline?: string;
+  penaltyRateMonthlyPercent?: number;
+  penaltyFlatUsd?: number;
+  currency: 'USD' | 'VES';
+  bcvRate: number;
+  amountOriginal: number;
+  amountUsd: number;
+  amountVes: number;
+  taxIncluded: boolean;
+  ivaAmountUsd: number;
+  islrRetentionSuggestedUsd?: number;
+  netPayableUsd: number;
+  paidAmountUsd: number;
+  status: 'PENDIENTE' | 'ABONADO' | 'PAGADO' | 'VENCIDO';
+  requiresManagerApproval: boolean;
+  approvalStatus: ExpenseApprovalStatus;
+  preloadedByUserId: string;
+  preloadedByName: string;
+  preloadedAtVet: string;
+  approvedByUserId?: string;
+  approvedByName?: string;
+  approvedAtVet?: string;
+  approvalPinUsed?: string;
+  rejectionReason?: string;
+  payments: ExpensePaymentRecord[];
+  attachment?: IndexedInvoiceAttachment;
+  driveBackupUrl?: string;
+  driveBackupPath?: string;
+  driveBackupConfirmed?: boolean;
+  linkedInvoiceId?: string;
+  createdAtVet: string;
+}
+
+export interface MonthlyBudgetPlan {
+  id: string;
+  periodYearMonth: string; // "YYYY-MM"
+  globalBudgetLimitUsd: number;
+  categoryBudgets: Record<ExpenseCategory, number>;
+  locationBudgets: Record<string, number>;
+  contingencyAlarmThresholdPercent: number; // default 70%
+  hardCapLockEnabled: boolean; // default true: requires PIN override if > 100%
+  authorizedBy: string;
+  authorizedAtVet: string;
+}
+
+export interface ExpenseMonthlyArqueoReport {
+  id: string;
+  periodYearMonth: string;
+  totalBudgetUsd: number;
+  totalExecutedUsd: number;
+  totalExecutedVes: number;
+  variancePercent: number;
+  status: 'DENTRO_PRESUPUESTO' | 'EN_ALARMA_70' | 'EXCEDIDO';
+  topExpensesByAmount: Array<{
+    id: string;
+    description: string;
+    amountUsd: number;
+    category: ExpenseCategory;
+    beneficiary: string;
+    voucherNumber: string;
+  }>;
+  topFrequentMicroExpenses: Array<{
+    category: ExpenseCategory;
+    count: number;
+    totalAmountUsd: number;
+    avgAmountUsd: number;
+  }>;
+  topSuppliersBySpend: Array<{
+    supplierName: string;
+    rif: string;
+    totalUsd: number;
+    count: number;
+  }>;
+  nextMonthBudgetProjections: Array<{
+    category: ExpenseCategory;
+    historicalAvgUsd: number;
+    recommendedAllocationUsd: number;
+    rationale: string;
+  }>;
+  generatedAtVet: string;
+  generatedBy: string;
 }

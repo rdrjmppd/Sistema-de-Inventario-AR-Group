@@ -93,7 +93,25 @@ import {
   MeatYieldBatch,
   StagedBrmRetentionDispatch,
   TaxRetentionVoucher,
+  ExpenseCategory,
+  ExpenseRecord,
+  ExpenseVoucherType,
+  MonthlyBudgetPlan,
+  ExpenseMonthlyArqueoReport,
 } from '../types';
+import {
+  evaluateExpenseApprovalRequirement,
+  calculateEarlyPaymentDiscount,
+  calculateOverduePenalty,
+  buildSuggestedDrivePath,
+  evaluateMonthlyBudgetStatus,
+  generateMonthlyExpenseArqueoData,
+  exportExpenseArqueoPdfDocument,
+  buildExpenseArqueoWorkbook,
+  EXPENSE_APPROVAL_THRESHOLD_USD,
+  CONTINGENCY_ALARM_THRESHOLD_PERCENT,
+  EXPENSE_CATEGORIES_METADATA,
+} from './expenses-engine';
 import { generateQrMatrix, generateQrSvgString, generateQrDataUri } from './qr-matrix';
 import {
   evaluateSecurityGuardrails,
@@ -5880,3 +5898,366 @@ test('70. Analítica Histórica de Rendimiento y Merma (YieldMetricsCharts Logic
   const sortedByWaste = [...meatBatchesTest].sort((a, b) => a.wastePercent - b.wastePercent);
   assert.strictEqual(sortedByWaste[0].supplierName, 'Frigorífico El Llano', 'El mejor proveedor debe tener la menor merma (20%)');
 });
+
+test('71. Control de Gastos OPEX: Aritmética Exacta Decimal.js (ROUND_HALF_UP) y Descuento por Pronto Pago', () => {
+  // Caso A: Gasto con 5% de descuento por pronto pago activo
+  const expenseSample: Pick<ExpenseRecord, 'netPayableUsd' | 'earlyPaymentDiscountPercent' | 'earlyPaymentDiscountDeadline'> = {
+    netPayableUsd: 380.0,
+    earlyPaymentDiscountPercent: 5,
+    earlyPaymentDiscountDeadline: '2026-10-31',
+  };
+
+  const evalActive = calculateEarlyPaymentDiscount(expenseSample, '2026-10-25T10:00:00Z');
+  assert.strictEqual(evalActive.isEligible, true, 'Debe ser elegible para pronto pago');
+  assert.strictEqual(evalActive.discountPercent, 5, 'Porcentaje debe ser 5%');
+  assert.strictEqual(evalActive.discountAmountUsd, 19.0, '380 * 0.05 = $19.00 USD exactos');
+  assert.strictEqual(evalActive.discountedPayableUsd, 361.0, '380 - 19 = $361.00 USD exactos');
+  assert.strictEqual(evalActive.isUrgent48h, false, 'Aún restan más de 48 horas');
+
+  // Caso B: Vencimiento urgente en menos de 48 horas
+  const evalUrgent = calculateEarlyPaymentDiscount(expenseSample, '2026-10-30T12:00:00Z');
+  assert.strictEqual(evalUrgent.isEligible, true);
+  assert.strictEqual(evalUrgent.isUrgent48h, true, 'Debe disparar la alerta urgente de <= 48 horas');
+
+  // Caso C: Fecha límite vencida
+  const evalExpired = calculateEarlyPaymentDiscount(expenseSample, '2026-11-02T10:00:00Z');
+  assert.strictEqual(evalExpired.isEligible, false, 'No debe aplicar descuento si la fecha límite ya expiró');
+  assert.strictEqual(evalExpired.discountAmountUsd, 0);
+  assert.strictEqual(evalExpired.discountedPayableUsd, 380.0);
+});
+
+test('72. Control de Gastos OPEX: Aprobación Gerencial Obligatoria (> $100 USD) y Doble Firma con PIN 203040', () => {
+  // Caso A: Gasto menor o igual a $100 USD (Aprobación Directa)
+  const evalMinor = evaluateExpenseApprovalRequirement(45.0);
+  assert.strictEqual(evalMinor.requiresManagerApproval, false, '$45 USD no requiere aprobación gerencial');
+  assert.strictEqual(evalMinor.initialApprovalStatus, 'APROBADO_DIRECTO');
+
+  const evalThreshold = evaluateExpenseApprovalRequirement(100.0);
+  assert.strictEqual(evalThreshold.requiresManagerApproval, false, '$100.00 exactos es el límite directo');
+  assert.strictEqual(evalThreshold.initialApprovalStatus, 'APROBADO_DIRECTO');
+
+  // Caso B: Gasto mayor a $100 USD (Requiere Aprobación Gerencial con PIN)
+  const evalOverThreshold = evaluateExpenseApprovalRequirement(100.01);
+  assert.strictEqual(evalOverThreshold.requiresManagerApproval, true, '$100.01 supera el umbral operativo');
+  assert.strictEqual(evalOverThreshold.initialApprovalStatus, 'PENDIENTE_APROBACION');
+
+  const evalMajor = evaluateExpenseApprovalRequirement(380.0);
+  assert.strictEqual(evalMajor.requiresManagerApproval, true);
+  assert.strictEqual(evalMajor.initialApprovalStatus, 'PENDIENTE_APROBACION');
+  assert.strictEqual(evalMajor.thresholdUsd, EXPENSE_APPROVAL_THRESHOLD_USD);
+});
+
+test('73. Control de Gastos OPEX: Semáforo de Presupuesto Mensual (Alarma 70% y Bloqueo Hard-Cap 100%)', () => {
+  const samplePlan: MonthlyBudgetPlan = {
+    id: 'plan-test-2026-10',
+    periodYearMonth: '2026-10',
+    globalBudgetLimitUsd: 1000.0,
+    categoryBudgets: {
+      OFICINA_PAPELERIA: 100,
+      MANTENIMIENTO_EQUIPOS: 150,
+      MATERIALES_MANTENIMIENTO: 100,
+      MATERIALES_CONSTRUCCION: 100,
+      CLIMATIZACION_AC: 200,
+      SERVIDORES_TI_TELEVISORES: 150,
+      SERVICIO_TECNICO_ESPECIALIZADO: 100,
+      LIMPIEZA_DESINFECCION: 50,
+      LOGISTICA_VIATICOS: 25,
+      SERVICIOS_PUBLICOS: 20,
+      OTRO: 5,
+    },
+    locationBudgets: { 'loc-pzo-01': 1000 },
+    contingencyAlarmThresholdPercent: 70.0,
+    hardCapLockEnabled: true,
+    authorizedBy: 'Gerencia General',
+    authorizedAtVet: '2026-10-01 08:00:00',
+  };
+
+  // 1. Escenario Normal (< 70%)
+  const expNormal: ExpenseRecord[] = [
+    {
+      id: 'e1',
+      expenseCode: 'GTO-202610-001',
+      voucherType: 'FACTURA_FISCAL',
+      voucherNumber: 'FAC-1',
+      category: 'CLIMATIZACION_AC',
+      description: 'Mantenimiento AC',
+      beneficiaryName: 'Clima Sur',
+      beneficiaryRif: 'J-12345678-9',
+      beneficiaryType: 'PERSONA_JURIDICA',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-05',
+      paymentCondition: 'CONTADO',
+      currency: 'USD',
+      bcvRate: 880.0,
+      amountOriginal: 500.0,
+      amountUsd: 500.0,
+      amountVes: 440000.0,
+      taxIncluded: true,
+      ivaAmountUsd: 68.97,
+      netPayableUsd: 500.0,
+      paidAmountUsd: 500.0,
+      status: 'PAGADO',
+      requiresManagerApproval: true,
+      approvalStatus: 'APROBADO_GERENCIA',
+      preloadedByUserId: 'u1',
+      preloadedByName: 'Analista',
+      preloadedAtVet: '2026-10-05',
+      payments: [],
+      createdAtVet: '2026-10-05',
+    },
+  ];
+
+  const evalNorm = evaluateMonthlyBudgetStatus(samplePlan, expNormal, '2026-10');
+  assert.strictEqual(evalNorm.totalExecutedUsd, 500.0);
+  assert.strictEqual(evalNorm.budgetConsumedPercent, 50.0);
+  assert.strictEqual(evalNorm.isContingencyAlarm70, false, '50% está por debajo del 70%');
+  assert.strictEqual(evalNorm.isOverBudget100, false);
+  assert.strictEqual(evalNorm.remainingBudgetUsd, 500.0);
+
+  // 2. Escenario Alarma Preventiva (>= 70%)
+  const expAlarm: ExpenseRecord[] = [
+    ...expNormal,
+    {
+      ...expNormal[0],
+      id: 'e2',
+      amountUsd: 250.0,
+      amountVes: 220000.0,
+      netPayableUsd: 250.0,
+      category: 'MANTENIMIENTO_EQUIPOS',
+    },
+  ];
+
+  const evalAlarm = evaluateMonthlyBudgetStatus(samplePlan, expAlarm, '2026-10');
+  assert.strictEqual(evalAlarm.totalExecutedUsd, 750.0);
+  assert.strictEqual(evalAlarm.budgetConsumedPercent, 75.0);
+  assert.strictEqual(evalAlarm.isContingencyAlarm70, true, '75% debe disparar la alarma del 70%');
+  assert.strictEqual(evalAlarm.isOverBudget100, false);
+
+  // 3. Escenario Bloqueo Hard-Cap (>= 100%)
+  const expBlocked: ExpenseRecord[] = [
+    ...expAlarm,
+    {
+      ...expNormal[0],
+      id: 'e3',
+      amountUsd: 300.0,
+      amountVes: 264000.0,
+      netPayableUsd: 300.0,
+      category: 'MATERIALES_MANTENIMIENTO',
+    },
+  ];
+
+  const evalBlocked = evaluateMonthlyBudgetStatus(samplePlan, expBlocked, '2026-10');
+  assert.strictEqual(evalBlocked.totalExecutedUsd, 1050.0);
+  assert.strictEqual(evalBlocked.budgetConsumedPercent, 105.0);
+  assert.strictEqual(evalBlocked.isOverBudget100, true, '105% debe activar bloqueo por presupuesto excedido');
+  assert.strictEqual(evalBlocked.remainingBudgetUsd, -50.0);
+});
+
+test('74. Control de Gastos OPEX: Recargo por Mora Vencida Proporcional y Cargo Fijo', () => {
+  // Factura de $600 USD con saldo pendiente $400 USD vencida hace 15 días (tasa mensual 3% + flat $10)
+  const sampleOverdue: Pick<
+    ExpenseRecord,
+    'netPayableUsd' | 'paidAmountUsd' | 'dueDate' | 'penaltyRateMonthlyPercent' | 'penaltyFlatUsd'
+  > = {
+    netPayableUsd: 600.0,
+    paidAmountUsd: 200.0,
+    dueDate: '2026-10-10',
+    penaltyRateMonthlyPercent: 3, // 3% mensual
+    penaltyFlatUsd: 10.0, // $10 flat
+  };
+
+  // Evaluado a 15 días después (2026-10-25)
+  const res = calculateOverduePenalty(sampleOverdue, '2026-10-25T12:00:00Z');
+  assert.strictEqual(res.isOverdue, true);
+  assert.strictEqual(res.daysOverdue, 15, 'Debe calcular exactamente 15 días de atraso');
+  // Pending = 400. Daily rate = 0.03 / 30 = 0.001. 15 days = 0.015 * 400 = 6.00 USD.
+  // Flat penalty = 10.00 USD. Total penalty = 16.00 USD.
+  assert.strictEqual(res.penaltyAmountUsd, 16.0, 'Recargo de mora debe ser $16.00 USD exactos');
+  assert.strictEqual(res.totalWithPenaltyUsd, 416.0, 'Total con mora debe ser $416.00 USD');
+});
+
+test('75. Control de Gastos OPEX: Asistente Estructurado de Respaldo en Google Drive Empresa', () => {
+  const pathInfo = buildSuggestedDrivePath({
+    beneficiaryName: 'Inversiones Clima Polar, C.A.',
+    issueDate: '2026-10-14',
+    voucherType: 'FACTURA_FISCAL',
+    voucherNumber: 'FAC-00812',
+    originalFileName: 'factura_cava_polar.pdf',
+  });
+
+  assert.strictEqual(
+    pathInfo.folderPath,
+    'Google Drive Empresa / Inversiones Clima Polar CA / 2026-10',
+    'La ruta de carpeta debe sanear caracteres especiales y agrupar por mes'
+  );
+  assert.strictEqual(
+    pathInfo.suggestedFileName,
+    'FACTURA_FISCAL_FAC-00812_2026-10-14.pdf',
+    'El nombre de archivo debe estandarizarse con tipo, número y fecha'
+  );
+  assert.strictEqual(
+    pathInfo.fullRelativePath,
+    'Google Drive Empresa / Inversiones Clima Polar CA / 2026-10 / FACTURA_FISCAL_FAC-00812_2026-10-14.pdf'
+  );
+});
+
+test('76. Control de Gastos OPEX: Arqueo Mensual Ejecutivo, Análisis de Pareto, Gastos Hormiga y Exportaciones PDF/Excel', () => {
+  const testPlan: MonthlyBudgetPlan = {
+    id: 'plan-oct-2026',
+    periodYearMonth: '2026-10',
+    globalBudgetLimitUsd: 2500.0,
+    categoryBudgets: {
+      OFICINA_PAPELERIA: 200,
+      MANTENIMIENTO_EQUIPOS: 375,
+      MATERIALES_MANTENIMIENTO: 300,
+      MATERIALES_CONSTRUCCION: 250,
+      CLIMATIZACION_AC: 450,
+      SERVIDORES_TI_TELEVISORES: 350,
+      SERVICIO_TECNICO_ESPECIALIZADO: 250,
+      LIMPIEZA_DESINFECCION: 125,
+      LOGISTICA_VIATICOS: 100,
+      SERVICIOS_PUBLICOS: 75,
+      OTRO: 25,
+    },
+    locationBudgets: { 'loc-pzo-01': 2500 },
+    contingencyAlarmThresholdPercent: 70.0,
+    hardCapLockEnabled: true,
+    authorizedBy: 'Gerente General',
+    authorizedAtVet: '2026-10-01 08:00:00',
+  };
+
+  const testExpenses: ExpenseRecord[] = [
+    {
+      id: 'exp-1',
+      expenseCode: 'GTO-202610-001',
+      voucherType: 'FACTURA_FISCAL',
+      voucherNumber: 'FAC-801',
+      category: 'CLIMATIZACION_AC',
+      description: 'Mantenimiento Mayor Cava',
+      beneficiaryName: 'Clima Polar, C.A.',
+      beneficiaryRif: 'J-40192831-2',
+      beneficiaryType: 'PERSONA_JURIDICA',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-14',
+      paymentCondition: 'CREDITO',
+      currency: 'USD',
+      bcvRate: 880.0,
+      amountOriginal: 380.0,
+      amountUsd: 380.0,
+      amountVes: 334400.0,
+      taxIncluded: true,
+      ivaAmountUsd: 52.41,
+      netPayableUsd: 380.0,
+      paidAmountUsd: 0,
+      status: 'PENDIENTE',
+      requiresManagerApproval: true,
+      approvalStatus: 'APROBADO_GERENCIA',
+      preloadedByUserId: 'usr-1',
+      preloadedByName: 'Analista',
+      preloadedAtVet: '2026-10-14',
+      payments: [],
+      createdAtVet: '2026-10-14',
+    },
+    {
+      id: 'exp-2',
+      expenseCode: 'GTO-202610-002',
+      voucherType: 'TICKET_CAJA',
+      voucherNumber: 'TCK-101',
+      category: 'MATERIALES_MANTENIMIENTO',
+      description: 'Candado y tornillos',
+      beneficiaryName: 'Ferretería Central',
+      beneficiaryRif: 'V-14892019-3',
+      beneficiaryType: 'PERSONA_NATURAL',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-16',
+      paymentCondition: 'CONTADO',
+      currency: 'USD',
+      bcvRate: 880.0,
+      amountOriginal: 45.0, // Micro-gasto <= $50
+      amountUsd: 45.0,
+      amountVes: 39600.0,
+      taxIncluded: true,
+      ivaAmountUsd: 6.21,
+      netPayableUsd: 45.0,
+      paidAmountUsd: 45.0,
+      status: 'PAGADO',
+      requiresManagerApproval: false,
+      approvalStatus: 'APROBADO_DIRECTO',
+      preloadedByUserId: 'usr-1',
+      preloadedByName: 'Analista',
+      preloadedAtVet: '2026-10-16',
+      payments: [],
+      createdAtVet: '2026-10-16',
+    },
+    {
+      id: 'exp-3',
+      expenseCode: 'GTO-202610-003',
+      voucherType: 'TICKET_CAJA',
+      voucherNumber: 'TCK-102',
+      category: 'MATERIALES_MANTENIMIENTO',
+      description: 'Cinta adhesiva y bombillo LED',
+      beneficiaryName: 'Ferretería Central',
+      beneficiaryRif: 'V-14892019-3',
+      beneficiaryType: 'PERSONA_NATURAL',
+      locationId: 'loc-pzo-01',
+      issueDate: '2026-10-20',
+      paymentCondition: 'CONTADO',
+      currency: 'USD',
+      bcvRate: 880.0,
+      amountOriginal: 25.0, // Micro-gasto <= $50
+      amountUsd: 25.0,
+      amountVes: 22000.0,
+      taxIncluded: true,
+      ivaAmountUsd: 3.45,
+      netPayableUsd: 25.0,
+      paidAmountUsd: 25.0,
+      status: 'PAGADO',
+      requiresManagerApproval: false,
+      approvalStatus: 'APROBADO_DIRECTO',
+      preloadedByUserId: 'usr-1',
+      preloadedByName: 'Analista',
+      preloadedAtVet: '2026-10-20',
+      payments: [],
+      createdAtVet: '2026-10-20',
+    },
+  ];
+
+  // 1. Generar reporte consolidado
+  const report = generateMonthlyExpenseArqueoData(testExpenses, testPlan, '2026-10', 'Auditor Financiero');
+  assert.strictEqual(report.totalBudgetUsd, 2500.0);
+  assert.strictEqual(report.totalExecutedUsd, 450.0);
+  assert.strictEqual(report.status, 'DENTRO_PRESUPUESTO');
+
+  // 2. Verificar Pareto Top 1
+  assert.strictEqual(report.topExpensesByAmount.length, 3);
+  assert.strictEqual(report.topExpensesByAmount[0].amountUsd, 380.0, 'El gasto mayor debe ser $380 USD');
+  assert.strictEqual(report.topExpensesByAmount[0].beneficiary, 'Clima Polar, C.A.');
+
+  // 3. Verificar Gastos Hormiga Recurrentes (<= $50 USD)
+  assert.ok(report.topFrequentMicroExpenses.length >= 1);
+  const microMaint = report.topFrequentMicroExpenses.find((m) => m.category === 'MATERIALES_MANTENIMIENTO');
+  assert.ok(microMaint);
+  assert.strictEqual(microMaint?.count, 2, 'Deben registrarse 2 tickets de gastos hormiga en materiales');
+  assert.strictEqual(microMaint?.totalAmountUsd, 70.0, '45 + 25 = $70.00 USD');
+  assert.strictEqual(microMaint?.avgAmountUsd, 35.0, 'Ticket promedio = $35.00 USD');
+
+  // 4. Proyecciones para el próximo mes
+  assert.strictEqual(report.nextMonthBudgetProjections.length, 11, 'Debe incluir las 11 categorías');
+
+  // 5. Generar PDF Institucional
+  const pdfDoc = exportExpenseArqueoPdfDocument(report, {
+    razonSocial: 'HIPER ABASTO POLAR, C.A.',
+    rif: 'J-50123456-7',
+  });
+  assert.ok(pdfDoc.getNumberOfPages() >= 1, 'El PDF debe renderizarse con al menos 1 página');
+
+  // 6. Generar Libro Excel Estructurado
+  const wb = buildExpenseArqueoWorkbook(report, {
+    razonSocial: 'HIPER ABASTO POLAR, C.A.',
+    rif: 'J-50123456-7',
+  });
+  assert.strictEqual(wb.SheetNames.length, 2, 'El Excel debe incluir 2 hojas');
+  assert.ok(wb.SheetNames.includes('Arqueo Mensual OPEX'));
+  assert.ok(wb.SheetNames.includes('Proyecciones Próximo Mes'));
+});
+

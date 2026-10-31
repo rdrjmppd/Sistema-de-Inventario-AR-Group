@@ -11,6 +11,7 @@ import { UIConfigProvider } from './context/UIConfigContext';
 import { InventoryProvider } from './context/InventoryContext';
 import { FinanceProvider } from './context/FinanceContext';
 import { OperationsBrmProvider } from './context/OperationsBrmContext';
+import { ExpenseProvider } from './context/ExpenseContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Layout } from './components/layout/Layout';
 import { Footer } from './components/layout/Footer';
@@ -68,6 +69,12 @@ const BrmWhatsappCenter = React.lazy(() =>
 const BankReconciliationCenter = React.lazy(() =>
   import('./components/finance/BankReconciliationCenter').then((m) => ({
     default: m.default || m.BankReconciliationCenter,
+  }))
+);
+
+const ExpensesCenter = React.lazy(() =>
+  import('./components/expenses/ExpensesCenter').then((m) => ({
+    default: m.default || m.ExpensesCenter,
   }))
 );
 
@@ -196,6 +203,7 @@ export const VALID_NAVIGATION_TABS: NavigationTab[] = [
   'BANK_RECONCILIATION',
   'SUPPLIERS',
   'ACCOUNTS_PAYABLE',
+  'EXPENSES_CONTROL',
   'ABC_ROTATION',
   'PURCHASE_SUGGESTIONS',
   'PURCHASE_ORDERS_CENTER',
@@ -280,6 +288,7 @@ const MainShell: React.FC = () => {
         {activeTab === 'BANK_RECONCILIATION' && <BankReconciliationCenter />}
         {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
         {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
+        {activeTab === 'EXPENSES_CONTROL' && <ExpensesCenter onNavigate={setActiveTab} />}
         {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
         {activeTab === 'PURCHASE_SUGGESTIONS' && <PurchaseSuggestions onNavigate={setActiveTab} />}
         {activeTab === 'PURCHASE_ORDERS_CENTER' && <PurchaseOrdersCenter />}
@@ -300,7 +309,9 @@ export const App: React.FC = () => {
           <FinanceProvider>
             <InventoryProvider>
               <OperationsBrmProvider>
-                <MainShell />
+                <ExpenseProvider>
+                  <MainShell />
+                </ExpenseProvider>
               </OperationsBrmProvider>
             </InventoryProvider>
           </FinanceProvider>
