@@ -1166,6 +1166,7 @@ export interface BrmWhatsappSessionStatus {
   activeMode: BrmConnectionMode;
   corporatePhoneE164: string;
   qrPayloadData?: string;
+  qrTargetType?: 'NOISE_PAIRING' | 'WA_ME_LINK';
   qrGeneratedAtVet?: string;
   hasAdminCredentials: boolean;
   pendingOfflineQueueCount: number;

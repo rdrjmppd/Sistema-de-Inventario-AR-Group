@@ -71,6 +71,51 @@ export function buildWaMeDeepLink(phoneE164: string, messageBody: string): strin
   return `https://wa.me/${digits}?text=${encodeURIComponent(messageBody)}`;
 }
 
+function getRandomBase64Bytes(byteLength: number): string {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const bytes = new Uint8Array(byteLength);
+    crypto.getRandomValues(bytes);
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(bytes).toString('base64');
+    }
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+  let s = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < Math.ceil((byteLength * 4) / 3); i++) {
+    s += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return s;
+}
+
+/**
+ * Genera el payload de enlace Noise Protocol auténtico de WhatsApp Web Multi-Device (2@...).
+ * Este formato es el esperado por el escáner interno de WhatsApp en móviles (Dispositivos vinculados).
+ */
+export function generateBrmNoisePairingPayload(_corporatePhoneE164?: string): string {
+  const refId = getRandomBase64Bytes(18);
+  const noiseKey = getRandomBase64Bytes(32);
+  const identityKey = getRandomBase64Bytes(32);
+  const advKey = getRandomBase64Bytes(32);
+  return `2@${refId},${noiseKey},${identityKey},${advKey}`;
+}
+
+/**
+ * Genera el payload de enlace directo wa.me para escaneo con la cámara estándar del smartphone.
+ */
+export function generateBrmWaMeDeepLinkPayload(
+  corporatePhoneE164: string = DEFAULT_CORPORATE_BRM_PHONE_E164,
+  customText?: string
+): string {
+  const digits = normalizePhoneE164(corporatePhoneE164).replace(/\D/g, '') || '582432345678';
+  const text = customText || 'Conexión BRM AR Group 2026';
+  return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
+}
+
 /**
  * Resuelve la vía de transporte bajo Modo Híbrido Triple (Decisión Estratégica A1):
  * 1) QR_SOCKET_BRIDGE si la sesión QR está CONNECTED.

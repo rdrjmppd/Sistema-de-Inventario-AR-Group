@@ -117,7 +117,12 @@ import {
   CONTINGENCY_ALARM_THRESHOLD_PERCENT,
   EXPENSE_CATEGORIES_METADATA,
 } from './expenses-engine';
-import { generateQrMatrix, generateQrSvgString, generateQrDataUri } from './qr-matrix';
+import {
+  generateQrMatrix,
+  generateQrSvgString,
+  generateQrDataUri,
+  decodeQrMatrix,
+} from './qr-matrix';
 import {
   evaluateSecurityGuardrails,
   buildOutOfScopeResponse,
@@ -230,6 +235,8 @@ import {
   formatBrmPaymentAndRetentionsBundleTemplate,
   registerIncomingBrmPreInvoice,
   resetBrmWhatsappSessionCleanly,
+  generateBrmNoisePairingPayload,
+  generateBrmWaMeDeepLinkPayload,
   DEFAULT_CORPORATE_BRM_PHONE_E164,
 } from './brm-whatsapp';
 import {
@@ -5712,6 +5719,11 @@ test('67. Generador Determinista de Código QR Real ISO/IEC 18004 (WhatsApp Web 
 
   const dataUri = generateQrDataUri(token);
   assert.ok(dataUri.startsWith('data:image/svg+xml;base64,'), 'Debe generar Data URI SVG en base64');
+
+  // Certificación de decodificación exacta de ida y vuelta ISO/IEC 18004
+  const decoded = decodeQrMatrix(matrix);
+  assert.strictEqual(decoded.text, token, 'El texto decodificado debe coincidir exactamente');
+  assert.strictEqual(decoded.formatSyndrome, 0, 'El síndrome BCH de formato debe ser exactamente 0');
 });
 
 test('68. Despacho Asistido en Retenciones: Carga de Borrador BRM y Prevención de Envíos Accidentales', () => {
@@ -6416,4 +6428,49 @@ test('78. Cerebro Operativo de PolarBot Actualizado: Guías Paso a Paso Enumerad
   assert.ok(sessionRes.answer.includes('Mantener Sesión Activa'));
   assert.ok(sessionRes.answer.includes('BroadcastChannel'));
 });
+
+test('79. Certificación Forense QR ISO/IEC 18004: Decodificación de Ida y Vuelta con Síndrome Reed-Solomon 0 y Compatibilidad WhatsApp Web Multi-Device (2@...) & wa.me', () => {
+  // 1. Caso WhatsApp Web Multi-Device Noise Handshake (2@...)
+  const noisePayload = generateBrmNoisePairingPayload('+582432345678');
+  assert.ok(noisePayload.startsWith('2@'), 'El payload Noise debe iniciar con el prefijo oficial 2@');
+  const parts = noisePayload.slice(2).split(',');
+  assert.strictEqual(parts.length, 4, 'Noise protocol debe contener exactamente 4 componentes criptográficos (refId, noiseKey, identityKey, advKey)');
+  assert.ok(noisePayload.length >= 120, 'La cadena Noise pairing debe tener longitud completa (~130 a 160 caracteres)');
+
+  // Generar Matriz QR ISO/IEC 18004
+  const noiseMatrix = generateQrMatrix(noisePayload, { preferredLevel: 'M' });
+  assert.ok(Array.isArray(noiseMatrix) && noiseMatrix.length >= 41, 'Debe escalar a Versión 6 o superior');
+
+  // Decodificar matriz generada y certificar que el síndrome BCH y Reed-Solomon sea exactamente 0
+  const noiseDecoded = decodeQrMatrix(noiseMatrix);
+  assert.strictEqual(noiseDecoded.text, noisePayload, 'El payload decodificado debe coincidir byte a byte');
+  assert.strictEqual(noiseDecoded.formatSyndrome, 0, 'El síndrome BCH de formato debe ser idénticamente 0');
+  assert.ok(noiseDecoded.blocksCount >= 2, 'Debe haber verificado intercalado de múltiples bloques Reed-Solomon');
+
+  // 2. Caso Enlace Directo wa.me para Cámara Móvil Estándar
+  const waMePayload = generateBrmWaMeDeepLinkPayload('+584141234567', 'Vinculación BRM AR Group 2026');
+  assert.ok(waMePayload.startsWith('https://wa.me/584141234567?text='), 'Debe iniciar con esquema canónico wa.me');
+  const waMeMatrix = generateQrMatrix(waMePayload, { preferredLevel: 'M' });
+  const waMeDecoded = decodeQrMatrix(waMeMatrix);
+  assert.strictEqual(waMeDecoded.text, waMePayload, 'El enlace wa.me decodificado debe coincidir exactamente');
+  assert.strictEqual(waMeDecoded.formatSyndrome, 0, 'El síndrome BCH de formato en wa.me debe ser 0');
+
+  // 3. Verificación de Zona de Silencio (Quiet Zone >= 4 módulos) y Alto Contraste Óptico
+  const svg = generateQrSvgString(noisePayload, { size: 260, margin: 4, darkColor: '#000000', lightColor: '#ffffff' });
+  const expectedViewSize = noiseMatrix.length + 8; // 4 módulos a cada lado
+  assert.ok(svg.includes(`viewBox="0 0 ${expectedViewSize} ${expectedViewSize}"`), 'Debe respetar la zona de silencio ISO de al menos 4 módulos');
+  assert.ok(svg.includes('fill="#000000"'), 'Debe usar negro puro (#000000) para máxima legibilidad por sensores CMOS móviles');
+  assert.ok(svg.includes('fill="#ffffff"'), 'Debe usar fondo blanco puro (#ffffff)');
+
+  // 4. Verificación de Invariante de Detección de Falla Forense (Anti-Corrupción)
+  const corruptMatrix = noiseMatrix.map(row => [...row]);
+  // Corromper intencionalmente un bit de formato en (8, 0)
+  corruptMatrix[8][0] = !corruptMatrix[8][0];
+  assert.throws(
+    () => decodeQrMatrix(corruptMatrix),
+    /Inconsistencia en información de formato QR|Síndrome de formato BCH corrupto/,
+    'Cualquier discrepancia o daño en bits de formato debe ser detectado inmediatamente por la verificación BCH'
+  );
+});
+
 

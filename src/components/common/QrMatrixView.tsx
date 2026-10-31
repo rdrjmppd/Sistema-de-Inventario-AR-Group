@@ -13,17 +13,17 @@ export interface QrMatrixViewProps {
 
 export const QrMatrixView: React.FC<QrMatrixViewProps> = ({
   value,
-  size = 220,
-  margin = 3,
-  darkColor = '#090d16',
+  size = 240,
+  margin = 4,
+  darkColor = '#000000',
   lightColor = '#ffffff',
   className = '',
-  alt = 'Código QR de Vinculación WhatsApp Web',
+  alt = 'Código QR de Vinculación WhatsApp Web (ISO/IEC 18004)',
 }) => {
   const { matrix, viewSize } = useMemo(() => {
     if (!value) return { matrix: [], viewSize: 0 };
     try {
-      const m = generateQrMatrix(value);
+      const m = generateQrMatrix(value, { preferredLevel: 'M' });
       return { matrix: m, viewSize: m.length + margin * 2 };
     } catch (err) {
       console.warn('[QrMatrixView] Error generando matriz QR:', err);
@@ -44,11 +44,9 @@ export const QrMatrixView: React.FC<QrMatrixViewProps> = ({
     );
   }
 
-  const matrixSize = matrix.length;
-
   return (
     <div
-      className={`inline-block p-2 rounded-2xl bg-white shadow-xl border-2 border-emerald-500/40 relative select-none ${className}`}
+      className={`inline-block p-2.5 rounded-2xl bg-white shadow-xl border-2 border-emerald-500/50 relative select-none ${className}`}
       style={{ width: size, height: size }}
       role="img"
       aria-label={alt}

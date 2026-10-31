@@ -45,6 +45,8 @@ import {
   DEFAULT_CORPORATE_BRM_PHONE_E164,
   formatBrmPaymentAndRetentionsBundleTemplate,
   formatBrmPurchaseOrderTemplate,
+  generateBrmNoisePairingPayload,
+  generateBrmWaMeDeepLinkPayload,
   registerIncomingBrmPreInvoice,
   resetBrmWhatsappSessionCleanly,
 } from '../lib/brm-whatsapp';
@@ -164,7 +166,10 @@ interface OperationsBrmContextType {
   stageRetentionVoucherForBrm: (voucher: TaxRetentionVoucher) => { success: boolean; staged?: StagedBrmRetentionDispatch; error?: string };
   confirmStagedRetentionDispatch: (openWaMeWindow?: boolean) => Promise<{ success: boolean; message?: BrmWhatsappMessage; error?: string }>;
   clearStagedRetentionDispatch: () => void;
-  requestBrmQrSession: (corporatePhoneE164?: string) => Promise<void>;
+  requestBrmQrSession: (
+    corporatePhoneE164?: string,
+    qrType?: 'NOISE_PAIRING' | 'WA_ME_LINK'
+  ) => Promise<void>;
   confirmBrmQrPairing: () => Promise<void>;
   activateBrmCloudWebhookMode: () => Promise<void>;
   disconnectBrmSessionClean: () => Promise<void>;
@@ -828,33 +833,54 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   // MÓDULO BRM WHATSAPP PROVEEDORES (MODO HÍBRIDO TRIPLE — PURO APURE ERP)
   // =========================================================================
 
-  const requestBrmQrSession = useCallback(async (corporatePhoneE164?: string) => {
-    const now = getCaracasNow();
-    const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
-    try {
-      const resp = await fetch('/api/brm/whatsapp/qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'GENERATE_QR', corporatePhoneE164 }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        setBrmSession((prev) => ({ ...prev, ...data }));
-        return;
+  const requestBrmQrSession = useCallback(
+    async (
+      corporatePhoneE164?: string,
+      qrType: 'NOISE_PAIRING' | 'WA_ME_LINK' = 'NOISE_PAIRING'
+    ) => {
+      const now = getCaracasNow();
+      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
+      const targetPhone =
+        corporatePhoneE164 ||
+        brmSession.corporatePhoneE164 ||
+        DEFAULT_CORPORATE_BRM_PHONE_E164;
+      try {
+        const resp = await fetch('/api/brm/whatsapp/qr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'GENERATE_QR',
+            corporatePhoneE164: targetPhone,
+            qrType,
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setBrmSession((prev) => ({ ...prev, ...data }));
+          return;
+        }
+      } catch {
+        // Fallback local resiliente
       }
-    } catch {
-      // Fallback local resiliente
-    }
-    setBrmSession((prev) => ({
-      ...prev,
-      state: 'QR_READY',
-      activeMode: 'QR_SOCKET_BRIDGE',
-      corporatePhoneE164: corporatePhoneE164 || prev.corporatePhoneE164,
-      qrPayloadData: `CHRYSTAL-BRM-WA::${corporatePhoneE164 || prev.corporatePhoneE164}::${Date.now()}`,
-      qrGeneratedAtVet: nowStamp,
-      lastHeartbeatVet: nowStamp,
-    }));
-  }, []);
+
+      const payload =
+        qrType === 'WA_ME_LINK'
+          ? generateBrmWaMeDeepLinkPayload(targetPhone)
+          : generateBrmNoisePairingPayload(targetPhone);
+
+      setBrmSession((prev) => ({
+        ...prev,
+        state: 'QR_READY',
+        activeMode: 'QR_SOCKET_BRIDGE',
+        corporatePhoneE164: targetPhone,
+        qrPayloadData: payload,
+        qrTargetType: qrType,
+        qrGeneratedAtVet: nowStamp,
+        lastHeartbeatVet: nowStamp,
+      }));
+    },
+    [brmSession.corporatePhoneE164]
+  );
 
   const confirmBrmQrPairing = useCallback(async () => {
     const now = getCaracasNow();

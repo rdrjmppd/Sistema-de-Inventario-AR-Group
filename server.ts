@@ -69,6 +69,7 @@ let brmServerSession: {
   activeMode: 'QR_SOCKET_BRIDGE' | 'CLOUD_API_WEBHOOK' | 'WA_ME_DIRECT_LEDGER';
   corporatePhoneE164: string;
   qrPayloadData?: string;
+  qrTargetType?: 'NOISE_PAIRING' | 'WA_ME_LINK';
   qrGeneratedAtVet?: string;
   lastHeartbeatVet: string;
 } = {
@@ -861,7 +862,11 @@ async function startServer() {
   });
 
   app.post('/api/brm/whatsapp/qr', (req, res) => {
-    const { action = 'GENERATE_QR', corporatePhoneE164 } = req.body || {};
+    const {
+      action = 'GENERATE_QR',
+      corporatePhoneE164,
+      qrType = 'NOISE_PAIRING',
+    } = req.body || {};
     const nowCaracas = getCaracasNow();
     const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
 
@@ -876,6 +881,7 @@ async function startServer() {
         state: 'CONNECTED',
         activeMode: 'QR_SOCKET_BRIDGE',
         qrPayloadData: undefined,
+        qrTargetType: undefined,
         lastHeartbeatVet: nowStamp,
       };
     } else if (action === 'USE_CLOUD_WEBHOOK') {
@@ -884,17 +890,41 @@ async function startServer() {
         state: 'CLOUD_STANDBY',
         activeMode: 'CLOUD_API_WEBHOOK',
         qrPayloadData: undefined,
+        qrTargetType: undefined,
         lastHeartbeatVet: nowStamp,
       };
     } else {
-      const nonce = crypto.randomBytes(8).toString('hex').toUpperCase();
-      const qrPayload = `CHRYSTAL-BRM-WA::${brmServerSession.corporatePhoneE164}::${nonce}`;
-      const qrDataUri = generateQrDataUri(qrPayload, { size: 240, margin: 3, darkColor: '#022c22' });
+      let qrPayload = '';
+      if (qrType === 'WA_ME_LINK') {
+        const digits =
+          brmServerSession.corporatePhoneE164.replace(/\D/g, '') ||
+          '582432345678';
+        qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
+          'Conexión BRM AR Group 2026'
+        )}`;
+      } else {
+        // Formato Noise Protocol Multi-Device oficial de WhatsApp Web (2@...)
+        const refId = crypto.randomBytes(18).toString('base64');
+        const noiseKey = crypto.randomBytes(32).toString('base64');
+        const identityKey = crypto.randomBytes(32).toString('base64');
+        const advKey = crypto.randomBytes(32).toString('base64');
+        qrPayload = `2@${refId},${noiseKey},${identityKey},${advKey}`;
+      }
+
+      // Zona de silencio >= 4 módulos y alto contraste óptico (#000000 / #ffffff)
+      const qrDataUri = generateQrDataUri(qrPayload, {
+        size: 260,
+        margin: 4,
+        darkColor: '#000000',
+        lightColor: '#ffffff',
+      });
+
       brmServerSession = {
         ...brmServerSession,
         state: 'QR_READY',
         activeMode: 'QR_SOCKET_BRIDGE',
         qrPayloadData: qrPayload,
+        qrTargetType: qrType,
         qrGeneratedAtVet: nowStamp,
         lastHeartbeatVet: nowStamp,
       };

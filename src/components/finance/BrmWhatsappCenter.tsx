@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  Copy,
   ExternalLink,
   FileCheck2,
   MessageSquare,
@@ -59,6 +60,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   const [banner, setBanner] = useState<{ type: 'ok' | 'err'; text: string } | null>(
     null
   );
+  const [selectedQrMode, setSelectedQrMode] = useState<
+    'NOISE_PAIRING' | 'WA_ME_LINK'
+  >('NOISE_PAIRING');
+  const [copiedPayload, setCopiedPayload] = useState(false);
 
   // Edición rápida de WhatsApp E.164 del proveedor
   const [editPhone, setEditPhone] = useState('');
@@ -196,8 +201,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
             />
             <button
               type="button"
-              onClick={() => requestBrmQrSession(corpPhoneInput)}
-              className="min-h-[44px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 cursor-pointer"
+              onClick={() => requestBrmQrSession(corpPhoneInput, selectedQrMode)}
+              className="min-h-[44px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-950/40"
             >
               <QrCode className="w-4 h-4" />
               Generar QR
@@ -223,59 +228,163 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
           </div>
         </div>
 
-        {/* Panel de Emparejamiento QR Auténtico (ISO/IEC 18004 WhatsApp Web) */}
+        {/* Panel de Emparejamiento QR Auténtico (ISO/IEC 18004 WhatsApp Web & Cámara) */}
         {brmSession.state === 'QR_READY' && brmSession.qrPayloadData && (
-          <div className="p-4 sm:p-5 rounded-2xl bg-slate-950 border-2 border-emerald-500/50 flex flex-col md:flex-row items-center justify-between gap-5 text-xs shadow-2xl">
-            <div className="flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
-              <div className="shrink-0 p-1 bg-white rounded-2xl shadow-lg border border-emerald-400">
+          <div className="p-4 sm:p-6 rounded-2xl bg-slate-950 border-2 border-emerald-500/60 flex flex-col xl:flex-row items-center justify-between gap-6 text-xs shadow-2xl">
+            <div className="flex flex-col md:flex-row items-center gap-6 text-center md:text-left w-full xl:w-auto">
+              {/* Contenedor QR de Alto Contraste Óptico con Zona de Silencio >= 4 módulos */}
+              <div className="shrink-0 p-2 bg-white rounded-2xl shadow-2xl border-2 border-emerald-400">
                 <QrMatrixView
                   value={brmSession.qrPayloadData}
-                  size={160}
-                  margin={2}
-                  darkColor="#022c22"
-                  alt="Código QR WhatsApp Web BRM"
+                  size={240}
+                  margin={4}
+                  darkColor="#000000"
+                  lightColor="#ffffff"
+                  alt="Código QR WhatsApp Web BRM ISO/IEC 18004"
                 />
               </div>
-              <div className="space-y-1.5 max-w-xl">
+
+              <div className="space-y-3 max-w-xl">
+                {/* Selector de Modo de Escaneo */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedQrMode('NOISE_PAIRING');
+                      requestBrmQrSession(corpPhoneInput, 'NOISE_PAIRING');
+                    }}
+                    className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                      selectedQrMode === 'NOISE_PAIRING'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/40'
+                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    <Smartphone className="w-3.5 h-3.5" />
+                    1. WhatsApp Web (Dispositivos Vinculados)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedQrMode('WA_ME_LINK');
+                      requestBrmQrSession(corpPhoneInput, 'WA_ME_LINK');
+                    }}
+                    className={`min-h-[44px] px-3 py-1.5 rounded-xl font-bold text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                      selectedQrMode === 'WA_ME_LINK'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/40'
+                        : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    2. Cámara Móvil (Enlace Directo wa.me)
+                  </button>
+                </div>
+
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-[11px]">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  QR Activo · Noise Protocol Handshake Listo
+                  {selectedQrMode === 'NOISE_PAIRING'
+                    ? 'QR Activo · WhatsApp Web Noise Protocol Handshake'
+                    : 'QR Activo · Enlace Directo wa.me para Cámara / Lens'}
                 </div>
+
                 <h4 className="font-bold text-white text-base">
-                  Escanea este código con WhatsApp desde tu teléfono
+                  {selectedQrMode === 'NOISE_PAIRING'
+                    ? 'Escanea desde WhatsApp > Dispositivos Vinculados'
+                    : 'Escanea con la cámara de tu teléfono o Google Lens'}
                 </h4>
-                <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-0.5 font-medium">
-                  <li>Abre WhatsApp en el teléfono de Compras/Tesorería</li>
-                  <li>Toca <strong className="text-white">Ajustes</strong> o <strong className="text-white">Menú</strong> y selecciona <strong className="text-white">Dispositivos vinculados</strong></li>
-                  <li>Toca <strong className="text-white">Vincular un dispositivo</strong> y apunta tu cámara a este código</li>
-                </ol>
+
+                {selectedQrMode === 'NOISE_PAIRING' ? (
+                  <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
+                    <li>
+                      Abre WhatsApp en el teléfono de compras/tesorería (
+                      <strong className="text-white">
+                        {brmSession.corporatePhoneE164}
+                      </strong>
+                      ).
+                    </li>
+                    <li>
+                      Toca <strong className="text-white">Ajustes</strong> o{' '}
+                      <strong className="text-white">Menú (⋮)</strong> y selecciona{' '}
+                      <strong className="text-white">Dispositivos vinculados</strong>.
+                    </li>
+                    <li>
+                      Toca <strong className="text-white">Vincular un dispositivo</strong>{' '}
+                      y apunta la cámara al código QR superior.
+                    </li>
+                  </ol>
+                ) : (
+                  <ol className="text-[11px] text-slate-300 list-decimal list-inside space-y-1 font-medium leading-relaxed">
+                    <li>
+                      Abre la aplicación de{' '}
+                      <strong className="text-white">Cámara normal</strong> o{' '}
+                      <strong className="text-white">Google Lens</strong> en tu
+                      smartphone.
+                    </li>
+                    <li>
+                      Apunta al código QR para detectar automáticamente el enlace
+                      oficial <strong className="text-emerald-400">wa.me</strong>.
+                    </li>
+                    <li>
+                      Toca el banner emergente para abrir la conversación directa con la
+                      línea institucional.
+                    </li>
+                  </ol>
+                )}
+
                 <div className="pt-1 flex flex-wrap items-center gap-2 text-[10px] text-slate-400 font-mono">
                   <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
                     Línea corporativa: {brmSession.corporatePhoneE164}
                   </span>
-                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[240px]">
-                    Token: {brmSession.qrPayloadData}
+                  <span className="bg-slate-900 px-2 py-0.5 rounded border border-slate-800 truncate max-w-[260px]">
+                    Payload: {brmSession.qrPayloadData}
                   </span>
                 </div>
               </div>
             </div>
-            <div className="flex flex-col sm:flex-row md:flex-col gap-2 w-full md:w-auto shrink-0">
+
+            <div className="flex flex-col sm:flex-row xl:flex-col gap-2.5 w-full xl:w-auto shrink-0">
               <button
                 type="button"
                 onClick={() => confirmBrmQrPairing()}
-                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2 cursor-pointer transition"
+                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2 cursor-pointer transition text-xs"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 Confirmar Vinculación Activa
               </button>
               <button
                 type="button"
-                onClick={() => requestBrmQrSession(corpPhoneInput)}
+                onClick={() =>
+                  requestBrmQrSession(corpPhoneInput, selectedQrMode)
+                }
                 className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-medium flex items-center justify-center gap-1.5 cursor-pointer transition text-xs"
               >
                 <QrCode className="w-3.5 h-3.5" />
                 Regenerar Código QR
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (brmSession.qrPayloadData) {
+                    navigator.clipboard.writeText(brmSession.qrPayloadData);
+                    setCopiedPayload(true);
+                    setTimeout(() => setCopiedPayload(false), 2000);
+                  }
+                }}
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-medium flex items-center justify-center gap-1.5 cursor-pointer transition text-xs"
+              >
+                <Copy className="w-3.5 h-3.5 text-slate-400" />
+                {copiedPayload ? '¡Copiado con Éxito!' : 'Copiar Token / Enlace'}
+              </button>
+              {brmSession.qrPayloadData?.startsWith('http') && (
+                <a
+                  href={brmSession.qrPayloadData}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-bold flex items-center justify-center gap-1.5 transition text-xs"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Abrir Enlace en WhatsApp
+                </a>
+              )}
             </div>
           </div>
         )}
