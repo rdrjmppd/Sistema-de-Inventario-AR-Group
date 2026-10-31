@@ -34,6 +34,7 @@ import { AuditHistoryView } from './components/dashboard/AuditHistoryView';
 import { InventoryDiscardsView } from './components/inventory/InventoryDiscardsView';
 import { MeatYieldView } from './components/operations/MeatYieldView';
 import { FruverYieldView } from './components/operations/FruverYieldView';
+import { SessionTimeoutWarningModal } from './components/common/SessionTimeoutWarningModal';
 import { BRAND_ASSETS, BRAND_NAME, BRAND_LEGAL_NAME, BRAND_RIF } from './lib/brand-assets';
 
 const ShelfStockManager = React.lazy(() =>
@@ -79,7 +80,7 @@ const ExpensesCenter = React.lazy(() =>
 );
 
 const LoginView: React.FC = () => {
-  const { login } = useAuth();
+  const { login, logoutReason, clearLogoutReason } = useAuth();
   const [email, setEmail] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +120,26 @@ const LoginView: React.FC = () => {
               </p>
             </div>
           </div>
+
+          {logoutReason && (
+            <div className="p-3.5 rounded-xl bg-amber-950/80 border border-amber-500/50 text-amber-200 text-xs flex items-start justify-between gap-2.5 animate-fadeIn">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-amber-300">Gobernanza de Sesiones (Seguridad)</p>
+                  <p className="text-[11px] text-amber-200/90 leading-relaxed mt-0.5">{logoutReason}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={clearLogoutReason}
+                className="text-amber-400 hover:text-amber-200 p-1 text-xs shrink-0 rounded transition"
+                title="Cerrar aviso"
+              >
+                ✕
+              </button>
+            </div>
+          )}
 
           {error && (
             <div className="p-3 rounded-lg bg-rose-950/80 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
@@ -232,7 +253,13 @@ export function resolveStoredActiveTab(): NavigationTab {
 }
 
 const MainShell: React.FC = () => {
-  const { isAuthenticated } = useAuth();
+  const {
+    isAuthenticated,
+    isTimeoutWarningOpen,
+    timeoutCountdownSeconds,
+    renewSession,
+    logout,
+  } = useAuth();
   const [activeTab, setActiveTabState] = useState<NavigationTab>(() => resolveStoredActiveTab());
 
   // Listen to browser hash changes (back/forward navigation)
@@ -262,42 +289,51 @@ const MainShell: React.FC = () => {
   }
 
   return (
-    <Layout activeTab={activeTab} onSelectTab={setActiveTab}>
-      <React.Suspense
-        fallback={
-          <div className="p-8 text-center text-xs font-mono text-slate-500">
-            Cargando módulo operativo...
-          </div>
-        }
-      >
-        {activeTab === 'DASHBOARD' && <AnalyticsDashboard onNavigate={setActiveTab} />}
-        {activeTab === 'CATALOG' && <ProductCatalog />}
-        {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
-        {activeTab === 'SHELF_STOCK' && <ShelfStockManager />}
-        {activeTab === 'TRANSFERS' && <StockTransfers />}
-        {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
-        {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
-        {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
-        {activeTab === 'FEFO_COLD_CHAIN' && <FefoColdChainCenter />}
-        {activeTab === 'PRODUCTION_RECIPES' && <ProductionRecipesView />}
-        {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
-        {activeTab === 'PRICING' && <PricingCalculator />}
-        {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
-        {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter onNavigate={setActiveTab} />}
-        {activeTab === 'BRM_WHATSAPP' && <BrmWhatsappCenter onNavigate={setActiveTab} />}
-        {activeTab === 'BANK_RECONCILIATION' && <BankReconciliationCenter />}
-        {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
-        {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
-        {activeTab === 'EXPENSES_CONTROL' && <ExpensesCenter onNavigate={setActiveTab} />}
-        {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
-        {activeTab === 'PURCHASE_SUGGESTIONS' && <PurchaseSuggestions onNavigate={setActiveTab} />}
-        {activeTab === 'PURCHASE_ORDERS_CENTER' && <PurchaseOrdersCenter />}
-        {activeTab === 'POS_API_SYNC' && <SalesApiSimulator />}
-        {activeTab === 'MONTHLY_CLOSING' && <MonthlyClosing />}
-        {activeTab === 'SETTINGS_RBAC' && <BusinessSettings />}
-        {activeTab === 'AUDIT_HISTORY' && <AuditHistoryView />}
-      </React.Suspense>
-    </Layout>
+    <>
+      <Layout activeTab={activeTab} onSelectTab={setActiveTab}>
+        <React.Suspense
+          fallback={
+            <div className="p-8 text-center text-xs font-mono text-slate-500">
+              Cargando módulo operativo...
+            </div>
+          }
+        >
+          {activeTab === 'DASHBOARD' && <AnalyticsDashboard onNavigate={setActiveTab} />}
+          {activeTab === 'CATALOG' && <ProductCatalog />}
+          {activeTab === 'MULTILOCATION' && <MultiLocationStock />}
+          {activeTab === 'SHELF_STOCK' && <ShelfStockManager />}
+          {activeTab === 'TRANSFERS' && <StockTransfers />}
+          {activeTab === 'INVENTORY_DISCARDS' && <InventoryDiscardsView />}
+          {activeTab === 'MEAT_YIELD' && <MeatYieldView />}
+          {activeTab === 'FRUVER_YIELD' && <FruverYieldView />}
+          {activeTab === 'FEFO_COLD_CHAIN' && <FefoColdChainCenter />}
+          {activeTab === 'PRODUCTION_RECIPES' && <ProductionRecipesView />}
+          {activeTab === 'CHRYSTAL_IMPORT' && <ChrystalImporter />}
+          {activeTab === 'PRICING' && <PricingCalculator />}
+          {activeTab === 'INVOICES_OCR' && <PurchaseInvoices />}
+          {activeTab === 'TAX_RETENTIONS' && <RetentionsCenter onNavigate={setActiveTab} />}
+          {activeTab === 'BRM_WHATSAPP' && <BrmWhatsappCenter onNavigate={setActiveTab} />}
+          {activeTab === 'BANK_RECONCILIATION' && <BankReconciliationCenter />}
+          {activeTab === 'SUPPLIERS' && <SupplierDirectory />}
+          {activeTab === 'ACCOUNTS_PAYABLE' && <AccountsPayable />}
+          {activeTab === 'EXPENSES_CONTROL' && <ExpensesCenter onNavigate={setActiveTab} />}
+          {activeTab === 'ABC_ROTATION' && <AbcRotationPanel />}
+          {activeTab === 'PURCHASE_SUGGESTIONS' && <PurchaseSuggestions onNavigate={setActiveTab} />}
+          {activeTab === 'PURCHASE_ORDERS_CENTER' && <PurchaseOrdersCenter />}
+          {activeTab === 'POS_API_SYNC' && <SalesApiSimulator />}
+          {activeTab === 'MONTHLY_CLOSING' && <MonthlyClosing />}
+          {activeTab === 'SETTINGS_RBAC' && <BusinessSettings />}
+          {activeTab === 'AUDIT_HISTORY' && <AuditHistoryView />}
+        </React.Suspense>
+      </Layout>
+
+      <SessionTimeoutWarningModal
+        isOpen={isTimeoutWarningOpen}
+        secondsRemaining={timeoutCountdownSeconds}
+        onRenewSession={renewSession}
+        onLogoutNow={logout}
+      />
+    </>
   );
 };
 

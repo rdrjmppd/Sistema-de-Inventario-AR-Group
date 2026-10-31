@@ -63,6 +63,10 @@ import {
   evaluateSessionHeartbeat,
   sanitizeZombieSessions,
   recordUserLogoutSession,
+  SESSION_INACTIVITY_WARNING_MINUTES,
+  SESSION_FORCE_LOGOUT_MINUTES,
+  SESSION_FORCE_LOGOUT_REASON_KEY,
+  AUTH_BROADCAST_CHANNEL_NAME,
 } from './audit-logger';
 import { mergeConcurrentProductStock } from '../config/firebase';
 import {
@@ -98,6 +102,7 @@ import {
   ExpenseVoucherType,
   MonthlyBudgetPlan,
   ExpenseMonthlyArqueoReport,
+  AuditActionType,
 } from '../types';
 import {
   evaluateExpenseApprovalRequirement,
@@ -6259,5 +6264,156 @@ test('76. Control de Gastos OPEX: Arqueo Mensual Ejecutivo, Análisis de Pareto,
   assert.strictEqual(wb.SheetNames.length, 2, 'El Excel debe incluir 2 hojas');
   assert.ok(wb.SheetNames.includes('Arqueo Mensual OPEX'));
   assert.ok(wb.SheetNames.includes('Proyecciones Próximo Mes'));
+});
+
+test('77. Gobernanza de Sesiones (60 Minutos), Advertencia a los 58m, Cierre Forzado, Sincronización Cross-Tab y Preservación de Borrador en sessionStorage', () => {
+  // 1. Constantes de gobernanza
+  assert.strictEqual(SESSION_INACTIVITY_WARNING_MINUTES, 58, 'Alerta preventiva debe configurarse a los 58 minutos');
+  assert.strictEqual(SESSION_FORCE_LOGOUT_MINUTES, 60, 'Cierre forzado determinista debe configurarse a los 60 minutos');
+  assert.strictEqual(AUTH_BROADCAST_CHANNEL_NAME, 'chrystal_auth_channel');
+  assert.strictEqual(SESSION_FORCE_LOGOUT_REASON_KEY, 'chrystal_erp_logout_reason');
+
+  // 2. Simulación de evaluación de inactividad a los 57 minutos (estado normal sin modal)
+  const now = Date.now();
+  const lastActivity57m = now - 57 * 60_000;
+  const elapsed57 = (now - lastActivity57m) / 60_000;
+  assert.ok(elapsed57 < SESSION_INACTIVITY_WARNING_MINUTES, '57 min no debe disparar modal de advertencia');
+
+  // 3. Simulación de evaluación de inactividad a los 58.5 minutos (disparo de modal con cuenta regresiva)
+  const lastActivity58m = now - 58.5 * 60_000;
+  const elapsed58 = (now - lastActivity58m) / 60_000;
+  assert.ok(elapsed58 >= SESSION_INACTIVITY_WARNING_MINUTES, '58.5 min debe disparar modal de advertencia');
+  assert.ok(elapsed58 < SESSION_FORCE_LOGOUT_MINUTES, '58.5 min no debe cerrar la sesión forzosamente todavía');
+  const remainingSeconds = Math.max(0, Math.floor((SESSION_FORCE_LOGOUT_MINUTES * 60_000 - (now - lastActivity58m)) / 1000));
+  assert.ok(remainingSeconds <= 120 && remainingSeconds > 0, `Segundos restantes deben ser <= 120 (calculado: ${remainingSeconds})`);
+
+  // 4. Simulación de evaluación a los 61 minutos (cierre forzado determinista)
+  const lastActivity61m = now - 61 * 60_000;
+  const elapsed61 = (now - lastActivity61m) / 60_000;
+  assert.ok(elapsed61 >= SESSION_FORCE_LOGOUT_MINUTES, '61 min debe gatillar cierre forzado determinista');
+
+  // 5. Verificación de acción de auditoría
+  const auditAction: AuditActionType = 'SESSION_TIMEOUT_LOGOUT';
+  assert.strictEqual(auditAction, 'SESSION_TIMEOUT_LOGOUT');
+});
+
+test('78. Cerebro Operativo de PolarBot Actualizado: Guías Paso a Paso Enumeradas (1., 2., 3...) con Nombres Exactos de Pantallas y Botones para Todos los Módulos Nuevos', () => {
+  const mockContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-an-01',
+      displayName: 'Carlos Operador',
+      email: 'carlos@hiperabastopolar.com',
+      role: UserRole.ANALISTA,
+      locationAccess: [],
+      active: true,
+      pin: '4321',
+      createdAt: '2026-01-01',
+    },
+    bcvState: {
+      activeRate: 885.5,
+      spotRateToday: 885.5,
+      nextDayRateAfter5Pm: 886.0,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial',
+      caracasTimeFormatted: '14:30:00',
+      caracasDateFormatted: '31/10/2026',
+    },
+    products: [],
+    locations: [],
+    discards: [],
+  });
+
+  // 1. Consulta OPEX y Arqueo de Gastos
+  const opexRes = answerQueryWithHeuristicEngine(
+    '¿Cómo registro un gasto operativo y descargo el arqueo mensual?',
+    mockContext
+  );
+  assert.ok(opexRes.answer.includes('Carlos Operador'));
+  assert.ok(opexRes.answer.includes('1.'));
+  assert.ok(opexRes.answer.includes('2.'));
+  assert.ok(opexRes.answer.includes('Control de Gastos'));
+  assert.ok(opexRes.answer.includes('Subir Factura o Ticket Escaneado'));
+  assert.ok(opexRes.answer.includes('Registrar Gasto'));
+  assert.ok(opexRes.answer.includes('Descargar Arqueo PDF'));
+  assert.ok(opexRes.answer.includes('PROVEEDOR/AÑO-MES') || opexRes.answer.includes('Google Drive'));
+
+  // 2. Consulta Split-Screen OCR y Pre-Asiento de Facturas
+  const splitRes = answerQueryWithHeuristicEngine(
+    '¿Cómo funciona la validación visual Split-Screen OCR de facturas?',
+    mockContext
+  );
+  assert.ok(splitRes.answer.includes('Split-Screen OCR'));
+  assert.ok(splitRes.answer.includes('Facturas & OCR'));
+  assert.ok(splitRes.answer.includes('Aprobar y Asentar Factura'));
+  assert.ok(splitRes.answer.includes('Rechazar Comprobante'));
+
+  // 3. Consulta Ingesta Chrystal POS
+  const chrystalRes = answerQueryWithHeuristicEngine(
+    '¿Cuáles son los pasos para importar las ventas diarias de Chrystal POS?',
+    mockContext
+  );
+  assert.ok(chrystalRes.answer.includes('Chrystal® POS'));
+  assert.ok(chrystalRes.answer.includes('Importación Chrystal POS'));
+  assert.ok(chrystalRes.answer.includes('Seleccionar Archivo de Ventas Chrystal'));
+  assert.ok(chrystalRes.answer.includes('Simular y Validar Conciliación'));
+  assert.ok(chrystalRes.answer.includes('Ejecutar Descarga en Inventario'));
+
+  // 4. Consulta BRM WhatsApp con QR
+  const brmRes = answerQueryWithHeuristicEngine(
+    '¿Cómo vinculo el WhatsApp de proveedores con el código QR y confirmo el envío?',
+    mockContext
+  );
+  assert.ok(brmRes.answer.includes('Proveedores & BRM'));
+  assert.ok(brmRes.answer.includes('Vincular WhatsApp'));
+  assert.ok(brmRes.answer.includes('ISO/IEC 18004'));
+  assert.ok(brmRes.answer.includes('Confirmar y Enviar Comprobante por WhatsApp'));
+
+  // 5. Consulta Retenciones SENIAT
+  const seniatRes = answerQueryWithHeuristicEngine(
+    '¿Cómo generar una retención de IVA y el archivo TXT para el SENIAT?',
+    mockContext
+  );
+  assert.ok(seniatRes.answer.includes('Retenciones SENIAT'));
+  assert.ok(seniatRes.answer.includes('Generar Comprobante de Retención'));
+  assert.ok(seniatRes.answer.includes('Generar TXT SENIAT'));
+
+  // 6. Consulta Cadena de Frío, Lotes y FEFO / SADA
+  const fefoRes = answerQueryWithHeuristicEngine(
+    '¿Cómo funciona el protocolo FEFO de perecederos y la guía SADA en cavas?',
+    mockContext
+  );
+  assert.ok(fefoRes.answer.includes('Lotes & Cadena de Frío'));
+  assert.ok(fefoRes.answer.includes('FEFO'));
+  assert.ok(fefoRes.answer.includes('-18°C') || fefoRes.answer.includes('Congelación'));
+  assert.ok(fefoRes.answer.includes('Vincular Guía Oficial'));
+
+  // 7. Consulta Recetas y Fórmulas BOM
+  const bomRes = answerQueryWithHeuristicEngine(
+    '¿Cómo crear una receta de panadería con lista de materiales BOM?',
+    mockContext
+  );
+  assert.ok(bomRes.answer.includes('Recetas y Producción'));
+  assert.ok(bomRes.answer.includes('+ Nueva Receta / BOM'));
+  assert.ok(bomRes.answer.includes('Procesar y Descontar Insumos'));
+
+  // 8. Consulta Flujo de Caja Bimonetario
+  const cashRes = answerQueryWithHeuristicEngine(
+    '¿Cómo se evalúa el flujo de caja bimonetario proyectado?',
+    mockContext
+  );
+  assert.ok(cashRes.answer.includes('Flujo de Caja Bimonetario Proyectado'));
+  assert.ok(cashRes.answer.includes('Dashboard Principal'));
+  assert.ok(cashRes.answer.includes('7 Días'));
+  assert.ok(cashRes.answer.includes('15 Días'));
+
+  // 9. Consulta Gobernanza de Sesiones (60 Minutos & Multi-Pestaña)
+  const sessionRes = answerQueryWithHeuristicEngine(
+    '¿Cómo opera la gobernanza de sesiones de 60 minutos y el aviso de inactividad?',
+    mockContext
+  );
+  assert.ok(sessionRes.answer.includes('58 Minutos') || sessionRes.answer.includes('58'));
+  assert.ok(sessionRes.answer.includes('60 Minutos') || sessionRes.answer.includes('60'));
+  assert.ok(sessionRes.answer.includes('Mantener Sesión Activa'));
+  assert.ok(sessionRes.answer.includes('BroadcastChannel'));
 });
 

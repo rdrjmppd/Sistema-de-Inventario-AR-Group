@@ -717,7 +717,7 @@ export function exportExpenseArqueoPdfDocument(
 export function buildExpenseArqueoWorkbook(
   report: ExpenseMonthlyArqueoReport,
   companyInput?: Partial<CompanyFiscalProfile> | null
-): XLSX.WorkBook {
+): XLSXTypes.WorkBook {
   const company = resolveCompanyProfile(companyInput);
   const wb = XLSX.utils.book_new();
 

@@ -10,6 +10,10 @@ import {
   saveSessionHistory,
   SESSION_HEARTBEAT_INTERVAL_MS,
   SESSION_INACTIVITY_TIMEOUT_MINUTES,
+  SESSION_INACTIVITY_WARNING_MINUTES,
+  SESSION_FORCE_LOGOUT_MINUTES,
+  SESSION_FORCE_LOGOUT_REASON_KEY,
+  AUTH_BROADCAST_CHANNEL_NAME,
 } from '../lib/audit-logger';
 
 interface AuthContextType {
@@ -25,6 +29,11 @@ interface AuthContextType {
   toggleUserActive: (uid: string) => void;
   hasPermission: (allowedRoles: UserRole[]) => boolean;
   clearSessionHistory: () => void;
+  isTimeoutWarningOpen: boolean;
+  timeoutCountdownSeconds: number;
+  renewSession: () => void;
+  logoutReason: string | null;
+  clearLogoutReason: () => void;
 }
 
 export function checkUserRolePermission(role: UserRole, allowedRoles: UserRole[]): boolean {
@@ -154,7 +163,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return sanitizeZombieSessions(loadStoredSessionHistory());
   });
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [isTimeoutWarningOpen, setIsTimeoutWarningOpen] = useState(false);
+  const [timeoutCountdownSeconds, setTimeoutCountdownSeconds] = useState(120);
+  const [logoutReason, setLogoutReason] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(SESSION_FORCE_LOGOUT_REASON_KEY);
+    } catch {
+      return null;
+    }
+  });
   const lastActivityEpochRef = useRef<number>(Date.now());
+
+  const clearLogoutReason = () => {
+    setLogoutReason(null);
+    try {
+      localStorage.removeItem(SESSION_FORCE_LOGOUT_REASON_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const renewSession = () => {
+    lastActivityEpochRef.current = Date.now();
+    setIsTimeoutWarningOpen(false);
+    setTimeoutCountdownSeconds(120);
+    if (user && activeSessionId) {
+      setSessionHistory((prev) => {
+        const { updatedHistory } = recordOrResumeUserSession(user, prev);
+        return updatedHistory;
+      });
+    }
+  };
 
   useEffect(() => {
     try {
@@ -182,13 +221,82 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [user]);
 
-  // 30-Minute Inactivity & 60-Second Heartbeat Continuity Protocol
+  // Cross-Tab Single Active Session Governance via BroadcastChannel & Storage Fallback
   useEffect(() => {
-    if (!user || !activeSessionId) return;
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel(AUTH_BROADCAST_CHANNEL_NAME);
+      bc.onmessage = (event) => {
+        const data = event.data;
+        if (!data) return;
+
+        if (data.type === 'TIMEOUT_LOGOUT' || data.type === 'LOGOUT') {
+          if (user) {
+            setUser(null);
+            setActiveSessionId(null);
+            setIsTimeoutWarningOpen(false);
+            if (data.reason) {
+              setLogoutReason(data.reason);
+            }
+          }
+        } else if (data.type === 'LOGIN' && data.userId) {
+          if (user && user.uid !== data.userId) {
+            const target = users.find((u) => u.uid === data.userId);
+            if (target) {
+              setUser(target);
+              setActiveSessionId(data.sessionId || null);
+            }
+          }
+        }
+      };
+    } catch {
+      // BroadcastChannel not available in environment
+    }
+
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_SESSION) {
+        if (!e.newValue) {
+          setUser(null);
+          setActiveSessionId(null);
+          setIsTimeoutWarningOpen(false);
+        } else {
+          try {
+            const parsed = JSON.parse(e.newValue);
+            if (parsed && (!user || user.uid !== parsed.uid)) {
+              setUser(parsed);
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } else if (e.key === SESSION_FORCE_LOGOUT_REASON_KEY && e.newValue) {
+        setLogoutReason(e.newValue);
+      }
+    };
+
+    window.addEventListener('storage', handleStorageEvent);
+
+    return () => {
+      if (bc) bc.close();
+      window.removeEventListener('storage', handleStorageEvent);
+    };
+  }, [user, users]);
+
+  // 60-Minute Inactivity Protocol, 58-Minute Warning Modal & Heartbeat
+  useEffect(() => {
+    if (!user || !activeSessionId) {
+      setIsTimeoutWarningOpen(false);
+      return;
+    }
 
     const handleUserActivity = () => {
       const nowEpoch = Date.now();
       lastActivityEpochRef.current = nowEpoch;
+
+      if (isTimeoutWarningOpen) {
+        setIsTimeoutWarningOpen(false);
+        setTimeoutCountdownSeconds(120);
+      }
 
       // If session was SUSPENDIDA due to >30m inactivity, resume the same session immediately
       setSessionHistory((prev) => {
@@ -203,27 +311,79 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     window.addEventListener('pointerdown', handleUserActivity, { passive: true });
     window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('touchstart', handleUserActivity, { passive: true });
+    window.addEventListener('wheel', handleUserActivity, { passive: true });
     window.addEventListener('focus', handleUserActivity, { passive: true });
 
     const intervalId = window.setInterval(() => {
-      const idleMinutes = (Date.now() - lastActivityEpochRef.current) / 60_000;
-      setSessionHistory((prev) => {
-        const { updatedHistory } = evaluateSessionHeartbeat(activeSessionId, prev, {
-          elapsedMinutesOverride:
-            idleMinutes > SESSION_INACTIVITY_TIMEOUT_MINUTES ? idleMinutes : 0,
-          resumeOnActivity: idleMinutes <= SESSION_INACTIVITY_TIMEOUT_MINUTES,
+      const nowEpoch = Date.now();
+      const elapsedMs = nowEpoch - lastActivityEpochRef.current;
+      const idleMinutes = elapsedMs / 60_000;
+
+      // 1. Cierre Forzado Determinista a los 60 minutos
+      if (idleMinutes >= SESSION_FORCE_LOGOUT_MINUTES) {
+        const reasonMsg =
+          'Sesión cerrada automáticamente por 60 minutos de inactividad física por motivos de seguridad institucional.';
+        try {
+          localStorage.setItem(SESSION_FORCE_LOGOUT_REASON_KEY, reasonMsg);
+        } catch {
+          // ignore
+        }
+        setLogoutReason(reasonMsg);
+        setIsTimeoutWarningOpen(false);
+
+        if (activeSessionId) {
+          setSessionHistory((prev) => recordUserLogoutSession(activeSessionId, prev));
+          setActiveSessionId(null);
+        }
+        setUser(null);
+
+        try {
+          const bc = new BroadcastChannel(AUTH_BROADCAST_CHANNEL_NAME);
+          bc.postMessage({ type: 'TIMEOUT_LOGOUT', reason: reasonMsg });
+          bc.close();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      // 2. Alerta Preventiva a los 58 minutos (120 segundos de cuenta regresiva)
+      if (idleMinutes >= SESSION_INACTIVITY_WARNING_MINUTES) {
+        const remainingSec = Math.max(
+          0,
+          Math.floor((SESSION_FORCE_LOGOUT_MINUTES * 60_000 - elapsedMs) / 1000)
+        );
+        setIsTimeoutWarningOpen(true);
+        setTimeoutCountdownSeconds(remainingSec);
+      } else {
+        if (isTimeoutWarningOpen) {
+          setIsTimeoutWarningOpen(false);
+        }
+      }
+
+      // 3. Latido de continuidad de sesión en segundo plano (cada 60 segundos)
+      if (Math.floor(nowEpoch / 1000) % 60 === 0) {
+        setSessionHistory((prev) => {
+          const { updatedHistory } = evaluateSessionHeartbeat(activeSessionId, prev, {
+            elapsedMinutesOverride:
+              idleMinutes > SESSION_INACTIVITY_TIMEOUT_MINUTES ? idleMinutes : 0,
+            resumeOnActivity: idleMinutes <= SESSION_INACTIVITY_TIMEOUT_MINUTES,
+          });
+          return updatedHistory;
         });
-        return updatedHistory;
-      });
-    }, SESSION_HEARTBEAT_INTERVAL_MS);
+      }
+    }, 1000);
 
     return () => {
       window.removeEventListener('pointerdown', handleUserActivity);
       window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('touchstart', handleUserActivity);
+      window.removeEventListener('wheel', handleUserActivity);
       window.removeEventListener('focus', handleUserActivity);
       window.clearInterval(intervalId);
     };
-  }, [user, activeSessionId]);
+  }, [user, activeSessionId, isTimeoutWarningOpen]);
 
   const login = (email: string, pin: string) => {
     const cleanEmail = email.trim().toLowerCase();
@@ -267,6 +427,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setActiveSessionId(session.id);
     setSessionHistory(updatedHistory);
     setUser(targetUser);
+    clearLogoutReason();
+
+    try {
+      const bc = new BroadcastChannel(AUTH_BROADCAST_CHANNEL_NAME);
+      bc.postMessage({ type: 'LOGIN', userId: targetUser.uid, sessionId: session.id });
+      bc.close();
+    } catch {
+      // ignore
+    }
 
     return { success: true };
   };
@@ -277,6 +446,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveSessionId(null);
     }
     setUser(null);
+    setIsTimeoutWarningOpen(false);
+
+    try {
+      const bc = new BroadcastChannel(AUTH_BROADCAST_CHANNEL_NAME);
+      bc.postMessage({ type: 'LOGOUT' });
+      bc.close();
+    } catch {
+      // ignore
+    }
   };
 
   const switchRoleDemo = (role: UserRole) => {
@@ -294,6 +472,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setActiveSessionId(session.id);
       setSessionHistory(updatedHistory);
       setUser(target);
+      clearLogoutReason();
+
+      try {
+        const bc = new BroadcastChannel(AUTH_BROADCAST_CHANNEL_NAME);
+        bc.postMessage({ type: 'LOGIN', userId: target.uid, sessionId: session.id });
+        bc.close();
+      } catch {
+        // ignore
+      }
     }
   };
 
@@ -343,6 +530,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleUserActive,
         hasPermission,
         clearSessionHistory,
+        isTimeoutWarningOpen,
+        timeoutCountdownSeconds,
+        renewSession,
+        logoutReason,
+        clearLogoutReason,
       }}
     >
       {children}

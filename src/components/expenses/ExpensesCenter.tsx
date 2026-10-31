@@ -120,6 +120,101 @@ export const ExpensesCenter: React.FC<ExpensesCenterProps> = ({ onNavigate }) =>
   const [scannedAttachment, setScannedAttachment] = useState<IndexedInvoiceAttachment | undefined>(undefined);
   const [isSimulatingOcr, setIsSimulatingOcr] = useState(false);
 
+  // Clave de almacenamiento de borrador protegido para el Arqueo y Registro de Gastos
+  const DRAFT_STORAGE_KEY = 'chrystal_draft_expense_form';
+
+  // Carga automática de borrador protegido tras login o reconexión
+  React.useEffect(() => {
+    try {
+      const savedDraft = sessionStorage.getItem(DRAFT_STORAGE_KEY);
+      if (savedDraft) {
+        const parsed = JSON.parse(savedDraft);
+        if (parsed.voucherType) setVoucherType(parsed.voucherType);
+        if (parsed.voucherNumber) setVoucherNumber(parsed.voucherNumber);
+        if (parsed.controlNumber) setControlNumber(parsed.controlNumber);
+        if (parsed.category) setCategory(parsed.category);
+        if (parsed.description) setDescription(parsed.description);
+        if (parsed.beneficiaryName) setBeneficiaryName(parsed.beneficiaryName);
+        if (parsed.beneficiaryRif) setBeneficiaryRif(parsed.beneficiaryRif);
+        if (parsed.beneficiaryType) setBeneficiaryType(parsed.beneficiaryType);
+        if (parsed.locationId) setLocationId(parsed.locationId);
+        if (parsed.issueDate) setIssueDate(parsed.issueDate);
+        if (parsed.paymentCondition) setPaymentCondition(parsed.paymentCondition);
+        if (parsed.creditDays !== undefined) setCreditDays(parsed.creditDays);
+        if (parsed.hasEarlyDiscount !== undefined) setHasEarlyDiscount(parsed.hasEarlyDiscount);
+        if (parsed.earlyDiscountPercent !== undefined) setEarlyDiscountPercent(parsed.earlyDiscountPercent);
+        if (parsed.earlyDiscountDeadline) setEarlyDiscountDeadline(parsed.earlyDiscountDeadline);
+        if (parsed.hasPenalty !== undefined) setHasPenalty(parsed.hasPenalty);
+        if (parsed.penaltyRateMonthly !== undefined) setPenaltyRateMonthly(parsed.penaltyRateMonthly);
+        if (parsed.currency) setCurrency(parsed.currency);
+        if (parsed.amountOriginal) setAmountOriginal(parsed.amountOriginal);
+        if (parsed.taxIncluded !== undefined) setTaxIncluded(parsed.taxIncluded);
+        if (parsed.islrRetentionSuggested) setIslrRetentionSuggested(parsed.islrRetentionSuggested);
+        if (parsed.activeSubTab) setActiveSubTab(parsed.activeSubTab);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Resguardo automático de borrador en sessionStorage ante cambios de formulario
+  React.useEffect(() => {
+    try {
+      const draft = {
+        voucherType,
+        voucherNumber,
+        controlNumber,
+        category,
+        description,
+        beneficiaryName,
+        beneficiaryRif,
+        beneficiaryType,
+        locationId,
+        issueDate,
+        paymentCondition,
+        creditDays,
+        hasEarlyDiscount,
+        earlyDiscountPercent,
+        earlyDiscountDeadline,
+        hasPenalty,
+        penaltyRateMonthly,
+        currency,
+        amountOriginal,
+        taxIncluded,
+        islrRetentionSuggested,
+        activeSubTab,
+      };
+      if (voucherNumber || description || beneficiaryName || amountOriginal) {
+        sessionStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+      }
+    } catch {
+      // ignore
+    }
+  }, [
+    voucherType,
+    voucherNumber,
+    controlNumber,
+    category,
+    description,
+    beneficiaryName,
+    beneficiaryRif,
+    beneficiaryType,
+    locationId,
+    issueDate,
+    paymentCondition,
+    creditDays,
+    hasEarlyDiscount,
+    earlyDiscountPercent,
+    earlyDiscountDeadline,
+    hasPenalty,
+    penaltyRateMonthly,
+    currency,
+    amountOriginal,
+    taxIncluded,
+    islrRetentionSuggested,
+    activeSubTab,
+  ]);
+
   // Estados de Filtro en Libro Mayor
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
@@ -256,13 +351,18 @@ export const ExpensesCenter: React.FC<ExpensesCenterProps> = ({ onNavigate }) =>
         setSelectedExpenseForDrive(res.expense);
       }
 
-      // Limpiar formulario parcial
+      // Limpiar formulario parcial y borrador resguardado
       setVoucherNumber('');
       setControlNumber('');
       setDescription('');
       setAmountOriginal('');
       setScannedAttachment(undefined);
       setManagerPinOverride('');
+      try {
+        sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
     }
   };
 

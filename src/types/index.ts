@@ -527,7 +527,8 @@ export type AuditActionType =
   | 'EXPENSE_PAYMENT'
   | 'EXPENSE_BUDGET_OVERRIDE'
   | 'EXPENSE_MONTHLY_CLOSE'
-  | 'EXPENSE_DRIVE_BACKUP';
+  | 'EXPENSE_DRIVE_BACKUP'
+  | 'SESSION_TIMEOUT_LOGOUT';
 
 export interface AuditLogEntry {
   id: string;

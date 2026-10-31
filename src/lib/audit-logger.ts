@@ -12,7 +12,11 @@ const STORAGE_KEY_AUDIT_LOGS = 'argroup_erp_2026_audit_logs';
 const STORAGE_KEY_SESSION_HISTORY = 'argroup_erp_2026_session_history';
 
 export const SESSION_INACTIVITY_TIMEOUT_MINUTES = 30;
+export const SESSION_INACTIVITY_WARNING_MINUTES = 58;
+export const SESSION_FORCE_LOGOUT_MINUTES = 60;
 export const SESSION_HEARTBEAT_INTERVAL_MS = 60_000;
+export const SESSION_FORCE_LOGOUT_REASON_KEY = 'chrystal_erp_logout_reason';
+export const AUTH_BROADCAST_CHANNEL_NAME = 'chrystal_auth_channel';
 
 /**
  * Formats current Caracas time as "DD/MM/YYYY HH:mm:ss".

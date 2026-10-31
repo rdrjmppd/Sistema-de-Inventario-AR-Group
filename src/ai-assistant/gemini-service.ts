@@ -181,7 +181,7 @@ Un usuario con rol **GERENTE** o **SUPERADMIN** revisa la pérdida en USD y Bol�
     q.includes('pollo') ||
     q.includes('pechuga') ||
     q.includes('alita') ||
-    q.includes('alas') ||
+    /\balas\b/.test(q) ||
     q.includes('muslo') ||
     q.includes('milanesa')
   ) {
@@ -249,14 +249,17 @@ El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) r
 
   // 4B3. Rendimiento Cárnico — Desposte de RES (Bovino)
   if (
-    q.includes('res') ||
+    /\bres\b/.test(q) ||
+    q.includes('canal de res') ||
+    q.includes('carne de res') ||
     q.includes('solomo') ||
     q.includes('lomito') ||
     q.includes('chocozuela') ||
     q.includes('pulpa negra') ||
     q.includes('costilla') ||
     q.includes('lagarto') ||
-    q.includes('vacuno')
+    q.includes('vacuno') ||
+    q.includes('bovino')
   ) {
     return {
       answer: `Hola ${userName}. Con gusto te oriento en el desposte de canal bovina (**Res**) en el módulo **"Operaciones > Rendimiento Cárnico"**:
@@ -452,7 +455,36 @@ Para consultar el análisis detallado de rotación por volumen y facturación ac
     };
   }
 
-  // 6. Auditoría Forense OCR de Pagos
+  // 6. Validación Visual Split-Screen OCR y Pre-Asiento de Facturas
+  if (
+    q.includes('split') ||
+    q.includes('pre-asiento') ||
+    q.includes('asentar factura') ||
+    q.includes('aprobar factura') ||
+    q.includes('rechazar comprobante') ||
+    (q.includes('factura') && (q.includes('visor') || q.includes('pantalla dividida') || q.includes('aprobar')))
+  ) {
+    return {
+      answer: `Hola ${userName}. La validación visual **Split-Screen OCR** en **"Facturas & OCR"** te permite contrastar la factura original contra los datos leídos por la IA antes de asentar en inventario y libro mayor:
+
+**Guía Paso a Paso:**
+1. Dirígete a **"Facturas & OCR"** en el menú lateral.
+2. Pulsa el botón **"Cargar Factura / Comprobante"** y selecciona la imagen o PDF del proveedor.
+3. El sistema activa la vista Split-Screen:
+   * En computadoras de escritorio: Pantalla dividida 50% al documento original escaneado y 50% a los campos extraídos.
+   * En teléfonos móviles o tablets (<768px): Conmuta ágilmente entre las pestañas táctiles **"📄 Ver Documento Original"** (con zoom y paneo) y **"✍️ Datos Extraídos"** con el botón flotante inferior.
+4. Audita visualmente RIF, N° de Factura, N° de Control, Base Imponible, Exento, IVA (16%) y el dictamen de veracidad forense.
+5. Si los datos son correctos, haz clic en el botón verde **"Aprobar y Asentar Factura"** para ingresar la mercancía al inventario y generar la cuenta por pagar en Libro Mayor.
+6. Si detectas anomalías o datos adulterados, pulsa el botón rojo **"Rechazar Comprobante"**, especifica el motivo y la operación se cancelará sin afectar el sistema.`,
+      suggestedPrompts: [
+        '¿Cómo se registran los gastos operativos (OPEX)?',
+        '¿Cómo vincular WhatsApp en el portal BRM?',
+        '¿Cómo importar ventas diarias de Chrystal POS?',
+      ],
+    };
+  }
+
+  // 7. Auditoría Forense OCR de Pagos
   if (
     q.includes('ocr') ||
     q.includes('comprobante') ||
@@ -539,7 +571,243 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     };
   }
 
-  // 9. Documentos PDF / Excel / Branding / Sesiones
+  // 9. Control de Gastos Operativos (OPEX), Aprobación Gerencial y Resguardo Drive
+  if (
+    q.includes('gasto') ||
+    q.includes('opex') ||
+    q.includes('arqueo') ||
+    q.includes('presupuesto') ||
+    q.includes('google drive') ||
+    q.includes('drive')
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo de **"Control de Gastos (OPEX)"** gestiona los egresos operativos de la empresa con aprobación gerencial, alertas presupuestarias y resguardo estructurado en Google Drive:
+
+**Guía Paso a Paso para Registrar y Liquidar un Gasto:**
+1. Ingresa a **"Control de Gastos"** en el menú lateral principal.
+2. En la sub-pestaña **"Registro y Carga de Gasto"**, pulsa el botón **"Subir Factura o Ticket Escaneado"** (admite JPG, PNG y PDF). El lector OCR prellenará automáticamente N° de Factura, N° de Control, Monto y Datos del Beneficiario.
+3. Selecciona la **"Categoría del Gasto"** (Oficina y Papelería, Equipos de Mantenimiento, Materiales de Construcción, Climatización A/C, Servidores y Cómputo, Servicio Técnico, Servicios Públicos, Fletes y Envíos, Asesoría Legal y Fiscal).
+4. Elige la **"Condición de Pago"** (*Contado* o *Crédito*). Si es a crédito, define los días de crédito y si aplican descuentos por pronto pago o recargos por mora.
+5. Si el importe supera los **$100 USD**, requiere **doble firma** (medida de seguridad donde una persona solicita la operación y un gerente la aprueba con su clave confidencial). Si no posees PIN gerencial, pulsa **"+ Registrar Gasto"** y el registro irá a la sub-pestaña **"Bandeja de Aprobación (> $100 USD)"** para ser avalado con el botón **"Firmar y Aprobar Gasto"**.
+6. Al registrarse, se abrirá la ventana de asistencia de Google Drive: pulsa **"Copiar Ruta Sugerida"**, guarda el archivo en la estructura \`PROVEEDOR/AÑO-MES\` y haz clic en **"Marcar Resguardo Realizado"**.
+7. Para registrar el desembolso en tesorería, ve a la sub-pestaña **"Libro Mayor de Gastos"**, busca el gasto y pulsa **"Registrar Pago"**.
+8. A fin de mes, entra en la sub-pestaña **"Arqueo Mensual"** (revisión y cuadre detallado de facturas pagadas) y pulsa **"Descargar Arqueo PDF"** o **"Descargar Libro Excel (.xlsx)"** para obtener el reporte con análisis de Pareto y microgastos hormiga.`,
+      suggestedPrompts: [
+        '¿Cómo funciona la validación visual Split-Screen OCR?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+        '¿Cómo se proyecta el flujo de caja bimonetario?',
+      ],
+    };
+  }
+
+  // 11. Ingesta Aislada de Ventas Diarias de Chrystal® POS (Excel/CSV)
+  if (
+    q.includes('chrystal') ||
+    q.includes('pos') ||
+    q.includes('ingesta') ||
+    q.includes('cierre z') ||
+    q.includes('importar ventas') ||
+    q.includes('archivo de ventas')
+  ) {
+    return {
+      answer: `Hola ${userName}. La **Ingesta Aislada de Ventas Diarias de Chrystal® POS** permite sincronizar las ventas de las cajas registradoras sin necesidad de cables ni conexiones API internas:
+
+**Guía Paso a Paso:**
+1. Exporta el reporte diario de ventas o cierre Z (reporte final diario de dinero vendido) desde las cajas registradoras de Chrystal en formato Excel (.xlsx, .xls) o CSV.
+2. Entra al módulo **"Importación Chrystal POS"** en el menú lateral del ERP.
+3. Pulsa el botón **"Seleccionar Archivo de Ventas Chrystal"** o arrastra el archivo exportado a la zona de carga.
+4. El sistema auto-detecta la estructura del archivo y mapea los códigos de barra o SKUs (código único que identifica a cada producto para no confundir marcas ni presentaciones).
+5. Pulsa el botón **"Simular y Validar Conciliación"** para previsualizar el volumen de unidades vendidas, el monto total en USD/VES y revisar la lista de "Ítems no encontrados" (si algún código nuevo no ha sido creado en el catálogo maestro).
+6. Pulsa el botón azul **"Ejecutar Descarga en Inventario"**. El sistema rebajará automáticamente las existencias físicas de los productos válidos en la sede seleccionada sin interrumpir el proceso por los ítems no registrados.`,
+      suggestedPrompts: [
+        '¿Cómo registrar un nuevo SKU en el catálogo?',
+        '¿Cómo funciona el flujo de caja bimonetario proyectado?',
+        '¿Qué productos están en quiebre de stock?',
+      ],
+    };
+  }
+
+  // 12. Portal BRM de Proveedores & Enlace WhatsApp con Código QR ISO
+  if (
+    q.includes('whatsapp') ||
+    q.includes('brm') ||
+    q.includes('qr') ||
+    q.includes('vincular whatsapp') ||
+    q.includes('enviar comprobante')
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo **"Proveedores & BRM"** integra comunicación bidireccional mediante WhatsApp Web con Código QR ISO y candado anti-envíos accidentales:
+
+**Guía Paso a Paso para Enlazar WhatsApp y Enviar Documentos:**
+1. Ingresa a **"Proveedores & BRM"** en el menú lateral.
+2. En la barra superior, haz clic en el botón **"Vincular WhatsApp"**.
+3. El sistema generará un **Código QR dinámico auténtico (ISO/IEC 18004)** en un canvas 2D idéntico a WhatsApp Web.
+4. Abre WhatsApp en el celular corporativo, ve a *Dispositivos vinculados > Vincular un dispositivo* y escanea el código en pantalla. El sistema cambiará a estado verde "Conectado".
+5. Para consultar o chatear con un proveedor, selecciónalo en el directorio y se abrirá su ventana de chat en tiempo real.
+6. **Prevención de Envíos Involuntarios**: Cuando generes una Retención SENIAT o una Orden de Compra y pulses **"Exportar a BRM WhatsApp"**, el sistema no despachará el archivo en automático; te transferirá al chat con el documento PDF pre-cargado.
+7. Revisa el documento y pulsa conscientemente el botón verde **"Confirmar y Enviar Comprobante por WhatsApp"** para completar el envío.`,
+      suggestedPrompts: [
+        '¿Cómo emito un comprobante de retención SENIAT?',
+        '¿Cómo funciona el control de gastos OPEX?',
+        '¿Cómo funciona la validación visual Split-Screen OCR?',
+      ],
+    };
+  }
+
+  // 13. Retenciones Fiscales SENIAT (IVA 75%/100% e ISLR)
+  if (
+    q.includes('retencion') ||
+    q.includes('retención') ||
+    q.includes('seniat') ||
+    q.includes('txt') ||
+    q.includes('islr')
+  ) {
+    return {
+      answer: `Hola ${userName}. La gestión de **Retenciones Fiscales SENIAT** calcula y emite los comprobantes oficiales de IVA (75% o 100%) e ISLR con correlativo fiscal y formato TXT:
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Retenciones SENIAT"** en el menú lateral.
+2. En la tabla de facturas pendientes de retención, selecciona la factura de compra emitida por el proveedor.
+3. Elige el porcentaje de retención de IVA:
+   * **75%**: Alícuota estándar para Contribuyentes Especiales.
+   * **100%**: Compras a proveedores sin RIF actualizado, operaciones sin factura electrónica o adquisiciones a personas naturales.
+4. El sistema calculará la retención de ISLR correspondiente según la actividad económica (servicios, fletes, comisiones).
+5. Haz clic en el botón **"Generar Comprobante de Retención"**.
+6. Para archivo fiscal y entrega:
+   * Pulsa **"Descargar PDF Oficial"** para imprimir o archivar.
+   * Pulsa **"Generar TXT SENIAT"** para descargar el archivo estructurado para el portal fiscal del SENIAT.
+   * Pulsa **"Enviar a BRM WhatsApp"** para transferir el comprobante al chat del proveedor con confirmación manual de envío.`,
+      suggestedPrompts: [
+        '¿Cómo vincular WhatsApp en el portal BRM?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+        '¿Cómo se proyecta el flujo de caja bimonetario?',
+      ],
+    };
+  }
+
+  // 14. Cadena de Frío, Lotes y FEFO / SADA
+  if (
+    q.includes('fefo') ||
+    q.includes('cadena de frio') ||
+    q.includes('cadena de frío') ||
+    q.includes('cava') ||
+    q.includes('lote') ||
+    q.includes('sada') ||
+    q.includes('perecedero')
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo **"Lotes & Cadena de Frío"** controla la vida útil de los perecederos bajo protocolo **FEFO** (First Expired, First Out — primero en vencer, primero en salir) y supervisa las temperaturas frigoríficas:
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Lotes & Cadena de Frío"** en el menú lateral.
+2. Al recibir mercancía cárnica, láctea o congelada, pulsa **"+ Registrar Nuevo Lote"**.
+3. Ingresa el N° de Lote del fabricante, la Fecha de Vencimiento y registra la temperatura de recepción en el termógrafo del transporte.
+4. Asigna la ubicación de almacenamiento:
+   * **Cava de Congelación**: Entre -18°C y -22°C (carnes, pollo, mariscos, pulpas congeladas).
+   * **Cava de Conservación**: Entre 0°C y 4°C (lácteos, charcutería, embutidos).
+5. El semáforo FEFO clasificará el lote:
+   * 🔴 **Rojo**: Menos de 30 días de vida útil (prioridad máxima de despacho y venta).
+   * 🟡 **Amarillo**: Entre 31 y 60 días de vida útil.
+   * 🟢 **Verde**: Más de 60 días de vida útil.
+6. Si se trata de un rubro regulado por Sunagro, ingresa el número de control en el campo **"N° Guía SADA"** (ej. \`SADA-049821\`) y pulsa **"Vincular Guía Oficial"**.`,
+      suggestedPrompts: [
+        '¿Cómo funciona el rendimiento cárnico de desposte?',
+        '¿Cómo solicito una baja de inventario por vencimiento?',
+        '¿Qué productos están en quiebre de stock?',
+      ],
+    };
+  }
+
+  // 15. Recetas de Producción / BOM / Panadería
+  if (
+    q.includes('receta') ||
+    q.includes('bom') ||
+    q.includes('panader') ||
+    q.includes('produccion') ||
+    q.includes('producción') ||
+    q.includes('formula') ||
+    q.includes('fórmula') ||
+    q.includes('pan canilla')
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo **"Recetas y Producción"** gestiona la manufactura interna de panadería, pastelería y charcutería mediante listas de materiales (**BOM**):
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Recetas y Producción"** en el menú lateral.
+2. Para diseñar una nueva fórmula, pulsa **"+ Nueva Receta / BOM"**.
+3. Selecciona el producto final (ej. Pan Canilla, Torta de Vainilla, Jamón Horneado) e indica el rendimiento de la tanda (unidades o Kg obtenidos).
+4. Agrega los insumos en la **"Lista de Materiales e Insumos"** (harina de trigo, levadura, manteca, azúcar, sal) con la cantidad exacta requerida. El sistema calcula en vivo el costo unitario de elaboración.
+5. Para producir en planta, haz clic en **"Ejecutar Orden de Producción"**, define cuántas tandas se procesaron y pulsa el botón **"Procesar y Descontar Insumos"**.
+6. El sistema descontará automáticamente los insumos utilizados del almacén de materias primas y sumará las unidades de producto terminado al catálogo disponible para venta.`,
+      suggestedPrompts: [
+        '¿Cómo dar de alta un nuevo producto en el catálogo?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+        '¿Cómo registrar un gasto en control de gastos?',
+      ],
+    };
+  }
+
+  // 16. Flujo de Caja Proyectado Bimonetario
+  if (
+    q.includes('flujo de caja') ||
+    q.includes('cash flow') ||
+    q.includes('proyeccion') ||
+    q.includes('proyección') ||
+    q.includes('liquidez') ||
+    q.includes('cuentas por pagar')
+  ) {
+    return {
+      answer: `Hola ${userName}. El panel **"Flujo de Caja Bimonetario Proyectado"** en el **Dashboard Principal** permite planificar la tesorería bajo un criterio conservador estricto:
+
+**Estructura y Modo de Operación:**
+1. Ingresa a **"Dashboard Principal"** en el menú lateral.
+2. Localiza la sección ejecutiva **"Flujo de Caja Bimonetario Proyectado"**.
+3. Utiliza el selector superior para alternar entre **Dólares ($ USD)** y **Bolívares (Bs. VES)** a la tasa oficial BCV.
+4. Revisa los cuatro horizontes de proyección:
+   * **Hoy (Inmediato)**: Saldo disponible bancario menos compromisos vencidos hoy.
+   * **Próximos 7 Días**: Compromisos exigibles a corto plazo con proveedores.
+   * **Próximos 15 Días (Quincena SENIAT)**: Provisiones fiscales de retenciones quincenales y facturas programadas.
+   * **Próximos 30 Días**: Cierre mensual de obligaciones.
+5. El panel contrasta la liquidez disponible real en bancos frente a las cuentas por pagar registradas, alertando en amarillo o rojo si el saldo neto proyectado entra en déficit.`,
+      suggestedPrompts: [
+        '¿Cuál es la valorización total del inventario?',
+        '¿Cómo registrar un gasto operativo en OPEX?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+      ],
+    };
+  }
+
+  // 17. Gobernanza de Sesiones (60 Minutos & Multi-Pestaña)
+  if (
+    q.includes('inactividad') ||
+    q.includes('60 minuto') ||
+    q.includes('58 minuto') ||
+    q.includes('tiempo de espera') ||
+    q.includes('pestaña') ||
+    q.includes('tabs') ||
+    ((q.includes('sesion') || q.includes('sesión')) &&
+      (q.includes('gobernanza') || q.includes('cerrar') || q.includes('tiempo') || q.includes('aviso') || q.includes('inactiva')))
+  ) {
+    return {
+      answer: `Hola ${userName}. La política de **Gobernanza de Sesiones** de **Chrystal® ERP** protege el acceso al sistema frente a estaciones de trabajo desatendidas:
+
+**Protocolo de Seguridad y Funcionamiento:**
+1. **Detección de Inactividad Física**: El sistema evalúa continuamente eventos del operador (teclado, ratón, pantallas táctiles y scroll).
+2. **Alerta Preventiva a los 58 Minutos**: Si transcurren 58 minutos sin actividad, se despliega el modal **"¿Sigues en tu estación de trabajo?"** con una cuenta regresiva de 120 segundos.
+   * Para seguir conectado: Pulsa el botón **"Mantener Sesión Activa"** (o presiona cualquier tecla), lo cual restablece el temporizador.
+   * Para salir inmediatamente: Pulsa **"Cerrar Ahora"**.
+3. **Cierre Forzado a los 60 Minutos**: Si se agota la cuenta regresiva, el sistema cierra la sesión forzosamente, redirige al Login y muestra el aviso de seguridad institucional.
+4. **Protección de Borradores**: Si estabas cargando un formulario de gasto o arqueo, el borrador se preserva en \`sessionStorage\` y se restablece al iniciar sesión nuevamente.
+5. **Sesión Única Multi-Pestaña**: Gracias a la sincronización por \`BroadcastChannel\`, si cierras sesión o cambias de usuario en una pestaña del navegador, todas las demás pestañas abiertas se actualizan en el mismo instante.`,
+      suggestedPrompts: [
+        '¿Cómo solicitar una baja de inventario con doble firma?',
+        '¿Cómo funciona el control de gastos OPEX?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+      ],
+    };
+  }
+
+  // 18. Documentos PDF / Excel / Branding
   if (
     q.includes('pdf') ||
     q.includes('excel') ||
@@ -547,16 +815,14 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     q.includes('reporte') ||
     q.includes('branding') ||
     q.includes('logo') ||
-    q.includes('membrete') ||
-    q.includes('sesion') ||
-    q.includes('sesión')
+    q.includes('membrete')
   ) {
     return {
       answer: `Hola ${userName}. Estándar documental y de gobernanza en **Chrystal® ERP**:
 
 * **Excel OpenXML (.xlsx)**: Membrete fiscal de **${COMPANY_IDENTITY.razonSocial}** (RIF: ${COMPANY_IDENTITY.rif}, SADA: ${COMPANY_IDENTITY.sada}), bordes ejecutivos visibles y pestaña \`3_Fichas_Producto_Celda\` con fichas individuales delimitadas.
 * **PDF Ejecutivo**: Cabecera con logo oficial de **${COMPANY_IDENTITY.brandingName}**, marca de agua central al 7% de opacidad en todas las páginas, análisis de liquidez de SKUs Clase A y pie de página legal (${COMPANY_IDENTITY.copyright}).
-* **Continuidad de Sesiones (30 min)**: Recargar el navegador reanuda la misma sesión activa con latido cada 60s y suspensión automática tras 30 minutos de inactividad.`,
+* **Gobernanza de Sesiones (60 min)**: Cierre forzado determinista tras 60 minutos de inactividad con modal de advertencia a los 58 minutos y sincronización multi-pestaña.`,
       suggestedPrompts: [
         '¿Cómo solicito una baja de inventario?',
         '¿Cuál es la valorización total del inventario?',
@@ -565,7 +831,7 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     };
   }
 
-  // 10. Comprobar si contiene términos operativos del ERP o si es fuera de alcance
+  // 19. Comprobar si contiene términos operativos del ERP o si es fuera de alcance
   const erpKeywords = [
     'inventario',
     'producto',
@@ -598,6 +864,42 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     'canal',
     'agricola',
     'agrícola',
+    'gasto',
+    'opex',
+    'arqueo',
+    'presupuesto',
+    'drive',
+    'split',
+    'pre-asiento',
+    'chrystal',
+    'pos',
+    'whatsapp',
+    'brm',
+    'qr',
+    'retencion',
+    'retención',
+    'seniat',
+    'txt',
+    'islr',
+    'fefo',
+    'frio',
+    'frío',
+    'cava',
+    'lote',
+    'sada',
+    'receta',
+    'bom',
+    'panader',
+    'produccion',
+    'producción',
+    'formula',
+    'fórmula',
+    'flujo',
+    'caja',
+    'liquidez',
+    'sesion',
+    'sesión',
+    'inactividad',
   ];
 
   const hasErpKeyword = erpKeywords.some(kw => q.includes(kw));
