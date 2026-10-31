@@ -33,6 +33,8 @@ export default defineConfig(() => {
                 '**/*.log',
                 '**/.system_generated/**',
                 '**/pending_queue.json',
+                '**/.whatsapp_sessions/**',
+                '**/.whatsapp_sessions*',
               ],
             },
     },

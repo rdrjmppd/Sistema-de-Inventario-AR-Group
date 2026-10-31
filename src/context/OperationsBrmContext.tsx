@@ -535,9 +535,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
-  // Polling automático mientras se espera el escaneo del código QR (Auto-detección de vinculación en vivo)
+  // Polling automático al servidor (SSoT en tiempo real - Patrón Puro Apure ERP)
   useEffect(() => {
-    if (brmSession.state !== 'QR_READY' && brmSession.state !== 'GENERATING_QR') return;
     let timer: NodeJS.Timeout | null = null;
     let cancelled = false;
 
@@ -545,15 +544,22 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       fetch('/api/brm/whatsapp/status')
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
-          if (!cancelled && data && data.state) {
+          if (!cancelled && data && (data.state || data.estado)) {
+            const serverState = data.state || data.estado;
+            const liveQrUri = data.qrCodeDataUri || data.qrDataUri;
             setBrmSession((prev) => {
               if (
-                prev.state !== data.state ||
+                prev.state !== serverState ||
                 prev.corporatePhoneE164 !== data.corporatePhoneE164 ||
                 prev.qrPayloadData !== data.qrPayloadData ||
-                prev.qrCodeDataUri !== data.qrCodeDataUri
+                prev.qrCodeDataUri !== liveQrUri
               ) {
-                return { ...prev, ...data };
+                return {
+                  ...prev,
+                  ...data,
+                  state: serverState,
+                  qrCodeDataUri: liveQrUri,
+                };
               }
               return prev;
             });
@@ -562,7 +568,12 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         .catch(() => {});
     };
 
-    timer = setInterval(checkStatus, 2000);
+    checkStatus();
+    const intervalTime =
+      brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR'
+        ? 2000
+        : 8000;
+    timer = setInterval(checkStatus, intervalTime);
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
@@ -897,7 +908,14 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         if (resp.ok) {
           const data = await resp.json();
-          setBrmSession((prev) => ({ ...prev, ...data }));
+          const targetState = data.state || data.estado || 'QR_READY';
+          const freshQr = data.qrCodeDataUri || data.qrDataUri;
+          setBrmSession((prev) => ({
+            ...prev,
+            ...data,
+            state: targetState,
+            qrCodeDataUri: freshQr,
+          }));
           return;
         }
       } catch {
@@ -968,7 +986,14 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         if (resp.ok) {
           const data = await resp.json();
-          setBrmSession((prev) => ({ ...prev, ...data }));
+          const targetState = data.state || data.estado || 'QR_READY';
+          const freshQr = data.qrCodeDataUri || data.qrDataUri;
+          setBrmSession((prev) => ({
+            ...prev,
+            ...data,
+            state: targetState,
+            qrCodeDataUri: freshQr,
+          }));
           return;
         }
       } catch {
