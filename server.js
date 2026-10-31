@@ -222,441 +222,14 @@ ${liveDataBlock}
 `;
 }
 
-// src/lib/qr-matrix.ts
-var GF256_EXP = new Uint8Array(512);
-var GF256_LOG = new Uint8Array(256);
-(function initGaloisField() {
-  let x = 1;
-  for (let i = 0; i < 255; i++) {
-    GF256_EXP[i] = x;
-    GF256_EXP[i + 255] = x;
-    GF256_LOG[x] = i;
-    x <<= 1;
-    if (x & 256) x ^= 285;
-  }
-})();
-function gfMul(x, y) {
-  if (x === 0 || y === 0) return 0;
-  return GF256_EXP[GF256_LOG[x] + GF256_LOG[y]];
-}
-function getRsGeneratorPoly(ecCount) {
-  let gen = new Uint8Array([1]);
-  for (let i = 0; i < ecCount; i++) {
-    const next = new Uint8Array(gen.length + 1);
-    const root = GF256_EXP[i];
-    for (let j = 0; j < gen.length; j++) {
-      next[j] ^= gen[j];
-      next[j + 1] ^= gfMul(gen[j], root);
-    }
-    gen = next;
-  }
-  return gen;
-}
-function rsCompute(data, ecCount) {
-  const gen = getRsGeneratorPoly(ecCount);
-  const remainder = new Uint8Array(ecCount);
-  for (let i = 0; i < data.length; i++) {
-    const factor = data[i] ^ remainder[0];
-    remainder.copyWithin(0, 1);
-    remainder[ecCount - 1] = 0;
-    for (let j = 0; j < ecCount; j++) {
-      remainder[j] ^= gfMul(gen[j + 1], factor);
-    }
-  }
-  return remainder;
-}
-var QR_VERSIONS = [
-  null,
-  // V1: 21x21
-  { v: 1, size: 21, remBits: 0, L: { ec: 7, g: [{ count: 1, data: 19 }] }, M: { ec: 10, g: [{ count: 1, data: 16 }] }, align: [] },
-  // V2: 25x25
-  { v: 2, size: 25, remBits: 7, L: { ec: 10, g: [{ count: 1, data: 34 }] }, M: { ec: 16, g: [{ count: 1, data: 28 }] }, align: [6, 18] },
-  // V3: 29x29
-  { v: 3, size: 29, remBits: 7, L: { ec: 15, g: [{ count: 1, data: 55 }] }, M: { ec: 26, g: [{ count: 1, data: 44 }] }, align: [6, 22] },
-  // V4: 33x33
-  { v: 4, size: 33, remBits: 7, L: { ec: 20, g: [{ count: 1, data: 80 }] }, M: { ec: 18, g: [{ count: 2, data: 32 }] }, align: [6, 26] },
-  // V5: 37x37
-  { v: 5, size: 37, remBits: 7, L: { ec: 26, g: [{ count: 1, data: 108 }] }, M: { ec: 24, g: [{ count: 2, data: 43 }] }, align: [6, 30] },
-  // V6: 41x41
-  { v: 6, size: 41, remBits: 7, L: { ec: 18, g: [{ count: 2, data: 68 }] }, M: { ec: 16, g: [{ count: 4, data: 27 }] }, align: [6, 34] },
-  // V7: 45x45
-  { v: 7, size: 45, remBits: 0, L: { ec: 20, g: [{ count: 2, data: 78 }] }, M: { ec: 18, g: [{ count: 4, data: 31 }] }, align: [6, 22, 38] },
-  // V8: 49x49
-  { v: 8, size: 49, remBits: 0, L: { ec: 24, g: [{ count: 2, data: 97 }] }, M: { ec: 22, g: [{ count: 2, data: 38 }, { count: 2, data: 39 }] }, align: [6, 24, 42] },
-  // V9: 53x53
-  { v: 9, size: 53, remBits: 0, L: { ec: 30, g: [{ count: 2, data: 116 }] }, M: { ec: 22, g: [{ count: 3, data: 36 }, { count: 2, data: 37 }] }, align: [6, 26, 46] },
-  // V10: 57x57
-  { v: 10, size: 57, remBits: 0, L: { ec: 18, g: [{ count: 2, data: 68 }, { count: 2, data: 69 }] }, M: { ec: 26, g: [{ count: 4, data: 43 }, { count: 1, data: 44 }] }, align: [6, 28, 50] }
-];
-function chooseVersionAndLevel(byteCount, preferredLevel = "M") {
-  const levels = preferredLevel === "M" ? ["M", "L"] : ["L", "M"];
-  for (const lvl of levels) {
-    for (let v = 1; v <= 10; v++) {
-      const cfg = QR_VERSIONS[v];
-      if (!cfg) continue;
-      const spec = cfg[lvl];
-      let totalData = 0;
-      for (const grp of spec.g) totalData += grp.count * grp.data;
-      const charCountBits = v <= 9 ? 8 : 16;
-      const headerBytes = Math.ceil((4 + charCountBits) / 8);
-      if (byteCount + headerBytes <= totalData) {
-        return {
-          version: v,
-          level: lvl,
-          spec,
-          totalData,
-          size: cfg.size,
-          remBits: cfg.remBits,
-          align: cfg.align
-        };
-      }
-    }
-  }
-  const maxCfg = QR_VERSIONS[10];
-  return {
-    version: 10,
-    level: "L",
-    spec: maxCfg.L,
-    totalData: 274,
-    size: 57,
-    remBits: 0,
-    align: maxCfg.align
-  };
-}
-function computeFormatBits(level, mask) {
-  const ecBits = level === "L" ? 1 : 0;
-  const data = ecBits << 3 | mask & 7;
-  let rem = data << 10;
-  for (let i = 14; i >= 10; i--) {
-    if (rem >> i & 1) {
-      rem ^= 1335 << i - 10;
-    }
-  }
-  return (data << 10 | rem) ^ 21522;
-}
-function computeVersionBits(version) {
-  let rem = version << 12;
-  for (let i = 17; i >= 12; i--) {
-    if (rem >> i & 1) {
-      rem ^= 7973 << i - 12;
-    }
-  }
-  return version << 12 | rem;
-}
-function getMaskBit(mask, r, c) {
-  switch (mask) {
-    case 0:
-      return (r + c) % 2 === 0;
-    case 1:
-      return r % 2 === 0;
-    case 2:
-      return c % 3 === 0;
-    case 3:
-      return (r + c) % 3 === 0;
-    case 4:
-      return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0;
-    case 5:
-      return r * c % 2 + r * c % 3 === 0;
-    case 6:
-      return (r * c % 2 + r * c % 3) % 2 === 0;
-    case 7:
-      return ((r + c) % 2 + r * c % 3) % 2 === 0;
-    default:
-      return false;
-  }
-}
-function generateQrMatrix(text, options) {
-  const encoder = new TextEncoder();
-  const rawBytes = encoder.encode(text);
-  const cfg = chooseVersionAndLevel(rawBytes.length, options?.preferredLevel ?? "M");
-  const size = cfg.size;
-  const bitBuffer = [];
-  function pushBits(val, len) {
-    for (let i = len - 1; i >= 0; i--) {
-      bitBuffer.push(val >> i & 1);
-    }
-  }
-  pushBits(4, 4);
-  const charCountBits = cfg.version <= 9 ? 8 : 16;
-  pushBits(rawBytes.length, charCountBits);
-  for (let i = 0; i < rawBytes.length; i++) {
-    pushBits(rawBytes[i], 8);
-  }
-  const maxDataBits = cfg.totalData * 8;
-  const termBits = Math.min(4, maxDataBits - bitBuffer.length);
-  for (let i = 0; i < termBits; i++) bitBuffer.push(0);
-  while (bitBuffer.length % 8 !== 0) bitBuffer.push(0);
-  const padBytes = [236, 17];
-  let padIdx = 0;
-  while (bitBuffer.length < maxDataBits) {
-    pushBits(padBytes[padIdx % 2], 8);
-    padIdx++;
-  }
-  const dataCodewords = new Uint8Array(cfg.totalData);
-  for (let i = 0; i < cfg.totalData; i++) {
-    let b = 0;
-    for (let j = 0; j < 8; j++) {
-      b = b << 1 | bitBuffer[i * 8 + j];
-    }
-    dataCodewords[i] = b;
-  }
-  const blocks = [];
-  let dataOffset = 0;
-  for (const grp of cfg.spec.g) {
-    for (let i = 0; i < grp.count; i++) {
-      const blockData = dataCodewords.slice(dataOffset, dataOffset + grp.data);
-      dataOffset += grp.data;
-      const ec = rsCompute(blockData, cfg.spec.ec);
-      blocks.push({ data: blockData, ec });
-    }
-  }
-  const interleaved = [];
-  let maxBlockDataLen = 0;
-  for (const b of blocks) {
-    if (b.data.length > maxBlockDataLen) maxBlockDataLen = b.data.length;
-  }
-  for (let c = 0; c < maxBlockDataLen; c++) {
-    for (const b of blocks) {
-      if (c < b.data.length) {
-        interleaved.push(b.data[c]);
-      }
-    }
-  }
-  for (let c = 0; c < cfg.spec.ec; c++) {
-    for (const b of blocks) {
-      interleaved.push(b.ec[c]);
-    }
-  }
-  const finalBits = [];
-  for (const byte of interleaved) {
-    for (let i = 7; i >= 0; i--) {
-      finalBits.push(byte >> i & 1);
-    }
-  }
-  for (let i = 0; i < cfg.remBits; i++) finalBits.push(0);
-  const isFunction = Array.from(
-    { length: size },
-    () => Array(size).fill(false)
-  );
-  const baseMatrix = Array.from(
-    { length: size },
-    () => Array(size).fill(false)
-  );
-  function setFunc(r, c, val) {
-    if (r >= 0 && r < size && c >= 0 && c < size) {
-      baseMatrix[r][c] = val;
-      isFunction[r][c] = true;
-    }
-  }
-  function drawFinder(row, col) {
-    for (let r = -1; r <= 7; r++) {
-      for (let c = -1; c <= 7; c++) {
-        const nr = row + r;
-        const nc = col + c;
-        if (nr < 0 || nr >= size || nc < 0 || nc >= size) continue;
-        const inOuter = r >= 0 && r <= 6 && c >= 0 && c <= 6;
-        const inInner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-        setFunc(nr, nc, inOuter && (isBorder || inInner));
-      }
-    }
-  }
-  drawFinder(0, 0);
-  drawFinder(0, size - 7);
-  drawFinder(size - 7, 0);
-  if (cfg.align.length > 0) {
-    for (const cr of cfg.align) {
-      for (const cc of cfg.align) {
-        if (cr <= 8 && cc <= 8 || cr <= 8 && cc >= size - 9 || cr >= size - 9 && cc <= 8) {
-          continue;
-        }
-        for (let r = -2; r <= 2; r++) {
-          for (let c = -2; c <= 2; c++) {
-            const isDark = Math.max(Math.abs(r), Math.abs(c)) !== 1;
-            setFunc(cr + r, cc + c, isDark);
-          }
-        }
-      }
-    }
-  }
-  for (let i = 8; i < size - 8; i++) {
-    const bit = i % 2 === 0;
-    if (!isFunction[6][i]) setFunc(6, i, bit);
-    if (!isFunction[i][6]) setFunc(i, 6, bit);
-  }
-  setFunc(4 * cfg.version + 9, 8, true);
-  for (let i = 0; i < 9; i++) {
-    if (i !== 6) {
-      setFunc(8, i, false);
-      setFunc(i, 8, false);
-    }
-  }
-  for (let i = size - 8; i < size; i++) {
-    setFunc(8, i, false);
-    setFunc(i, 8, false);
-  }
-  if (cfg.version >= 7) {
-    for (let r = 0; r < 6; r++) {
-      for (let c = 0; c < 3; c++) {
-        setFunc(r, size - 11 + c, false);
-        setFunc(size - 11 + c, r, false);
-      }
-    }
-  }
-  let bestMask = 0;
-  let bestPenalty = Infinity;
-  let bestMatrix = baseMatrix;
-  for (let m = 0; m < 8; m++) {
-    const candidate = baseMatrix.map((row) => [...row]);
-    let bitIdx = 0;
-    let upwards = true;
-    for (let rightCol = size - 1; rightCol > 0; rightCol -= 2) {
-      if (rightCol === 6) rightCol--;
-      const cols = [rightCol, rightCol - 1];
-      const rowRange = upwards ? Array.from({ length: size }, (_, i) => size - 1 - i) : Array.from({ length: size }, (_, i) => i);
-      for (const r of rowRange) {
-        for (const c of cols) {
-          if (!isFunction[r][c]) {
-            const rawBit = bitIdx < finalBits.length ? finalBits[bitIdx] === 1 : false;
-            bitIdx++;
-            const maskBit = getMaskBit(m, r, c);
-            candidate[r][c] = maskBit ? !rawBit : rawBit;
-          }
-        }
-      }
-      upwards = !upwards;
-    }
-    const formatBits = computeFormatBits(cfg.level, m);
-    for (let i = 0; i <= 5; i++) candidate[8][i] = (formatBits >> i & 1) === 1;
-    candidate[8][7] = (formatBits >> 6 & 1) === 1;
-    candidate[8][8] = (formatBits >> 7 & 1) === 1;
-    candidate[7][8] = (formatBits >> 8 & 1) === 1;
-    candidate[5][8] = (formatBits >> 9 & 1) === 1;
-    for (let i = 10; i <= 14; i++) {
-      candidate[14 - i][8] = (formatBits >> i & 1) === 1;
-    }
-    for (let i = 0; i <= 6; i++) {
-      candidate[size - 1 - i][8] = (formatBits >> i & 1) === 1;
-    }
-    for (let i = 7; i <= 14; i++) {
-      candidate[8][size - 15 + i] = (formatBits >> i & 1) === 1;
-    }
-    if (cfg.version >= 7) {
-      const vBits = computeVersionBits(cfg.version);
-      for (let i = 0; i < 18; i++) {
-        const bit = (vBits >> i & 1) === 1;
-        candidate[size - 11 + i % 3][Math.floor(i / 3)] = bit;
-        candidate[Math.floor(i / 3)][size - 11 + i % 3] = bit;
-      }
-    }
-    let penalty = 0;
-    for (let r = 0; r < size; r++) {
-      let runColor = candidate[r][0];
-      let runLen = 1;
-      for (let c = 1; c < size; c++) {
-        if (candidate[r][c] === runColor) {
-          runLen++;
-        } else {
-          if (runLen >= 5) penalty += 3 + (runLen - 5);
-          runColor = candidate[r][c];
-          runLen = 1;
-        }
-      }
-      if (runLen >= 5) penalty += 3 + (runLen - 5);
-    }
-    for (let c = 0; c < size; c++) {
-      let runColor = candidate[0][c];
-      let runLen = 1;
-      for (let r = 1; r < size; r++) {
-        if (candidate[r][c] === runColor) {
-          runLen++;
-        } else {
-          if (runLen >= 5) penalty += 3 + (runLen - 5);
-          runColor = candidate[r][c];
-          runLen = 1;
-        }
-      }
-      if (runLen >= 5) penalty += 3 + (runLen - 5);
-    }
-    for (let r = 0; r < size - 1; r++) {
-      for (let c = 0; c < size - 1; c++) {
-        const color = candidate[r][c];
-        if (candidate[r + 1][c] === color && candidate[r][c + 1] === color && candidate[r + 1][c + 1] === color) {
-          penalty += 3;
-        }
-      }
-    }
-    const p1 = [true, false, true, true, true, false, true, false, false, false, false];
-    const p2 = [false, false, false, false, true, false, true, true, true, false, true];
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c <= size - 11; c++) {
-        let m1 = true;
-        let m2 = true;
-        for (let k2 = 0; k2 < 11; k2++) {
-          if (candidate[r][c + k2] !== p1[k2]) m1 = false;
-          if (candidate[r][c + k2] !== p2[k2]) m2 = false;
-        }
-        if (m1) penalty += 40;
-        if (m2) penalty += 40;
-      }
-    }
-    for (let c = 0; c < size; c++) {
-      for (let r = 0; r <= size - 11; r++) {
-        let m1 = true;
-        let m2 = true;
-        for (let k2 = 0; k2 < 11; k2++) {
-          if (candidate[r + k2][c] !== p1[k2]) m1 = false;
-          if (candidate[r + k2][c] !== p2[k2]) m2 = false;
-        }
-        if (m1) penalty += 40;
-        if (m2) penalty += 40;
-      }
-    }
-    let darkCount = 0;
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size; c++) {
-        if (candidate[r][c]) darkCount++;
-      }
-    }
-    const ratio = darkCount * 100 / (size * size);
-    const k = Math.floor(Math.abs(ratio - 50) / 5) * 10;
-    penalty += k;
-    if (penalty < bestPenalty) {
-      bestPenalty = penalty;
-      bestMask = m;
-      bestMatrix = candidate;
-    }
-  }
-  return bestMatrix;
-}
-function generateQrSvgString(text, options) {
-  const matrix = generateQrMatrix(text, { preferredLevel: options?.preferredLevel });
-  const matrixSize = matrix.length;
-  const margin = options?.margin ?? 4;
-  const viewSize = matrixSize + margin * 2;
-  const sizePx = options?.size ?? 240;
-  const dark = options?.darkColor ?? "#000000";
-  const light = options?.lightColor ?? "#ffffff";
-  let rects = "";
-  for (let r = 0; r < matrixSize; r++) {
-    for (let c = 0; c < matrixSize; c++) {
-      if (matrix[r][c]) {
-        rects += `<rect x="${c + margin}" y="${r + margin}" width="1" height="1" fill="${dark}" />`;
-      }
-    }
-  }
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewSize} ${viewSize}" width="${sizePx}" height="${sizePx}" shape-rendering="crispEdges">
-  <rect width="${viewSize}" height="${viewSize}" fill="${light}" />
-  ${rects}
-</svg>`;
-}
-function generateQrDataUri(text, options) {
-  const svg = generateQrSvgString(text, options);
-  const base64 = typeof Buffer !== "undefined" ? Buffer.from(svg).toString("base64") : btoa(unescape(encodeURIComponent(svg)));
-  return `data:image/svg+xml;base64,${base64}`;
-}
-
 // server.ts
+import makeWASocket, {
+  DisconnectReason,
+  useMultiFileAuthState,
+  Browsers
+} from "@whiskeysockets/baileys";
+import QRCode from "qrcode";
+import pino from "pino";
 Decimal2.set({
   precision: 28,
   rounding: Decimal2.ROUND_HALF_UP
@@ -1288,6 +861,146 @@ ${query}` : String(query);
       });
     }
   });
+  const BRM_SESSION_DIR = path.resolve(process.cwd(), ".whatsapp_sessions", "linea_brm");
+  let activeBrmSocket = null;
+  let brmSocketInitializingPromise = null;
+  let brmQrEmitterPromiseResolver = null;
+  async function getOrInitBrmSocket(forceNew = false) {
+    if (forceNew && activeBrmSocket) {
+      try {
+        activeBrmSocket.end(void 0);
+      } catch {
+      }
+      activeBrmSocket = null;
+    }
+    if (activeBrmSocket) {
+      return activeBrmSocket;
+    }
+    if (brmSocketInitializingPromise && !forceNew) {
+      return brmSocketInitializingPromise;
+    }
+    brmSocketInitializingPromise = (async () => {
+      try {
+        if (forceNew) {
+          try {
+            if (fs.existsSync(BRM_SESSION_DIR)) {
+              fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
+            }
+          } catch (rmErr) {
+            console.warn("[BRM WhatsApp] Aviso limpiando sesi\xF3n:", rmErr);
+          }
+        }
+        if (!fs.existsSync(BRM_SESSION_DIR)) {
+          fs.mkdirSync(BRM_SESSION_DIR, { recursive: true });
+        }
+        const { state, saveCreds } = await useMultiFileAuthState(BRM_SESSION_DIR);
+        const sock = makeWASocket({
+          auth: state,
+          logger: pino({ level: "silent" }),
+          browser: Browsers.macOS("Desktop"),
+          printQRInTerminal: false,
+          syncFullHistory: false,
+          markOnlineOnConnect: true,
+          connectTimeoutMs: 6e4,
+          defaultQueryTimeoutMs: 6e4,
+          keepAliveIntervalMs: 25e3
+        });
+        activeBrmSocket = sock;
+        sock.ev.on("creds.update", async () => {
+          try {
+            await saveCreds();
+          } catch (saveErr) {
+            console.warn("[BRM WhatsApp] Error guardando credenciales:", saveErr);
+          }
+        });
+        sock.ev.on("connection.update", async (update) => {
+          const { qr, connection, lastDisconnect } = update;
+          const nowCaracas = getCaracasNow();
+          const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+          if (qr) {
+            try {
+              const qrDataUri = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
+              brmServerSession.state = "QR_READY";
+              brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
+              brmServerSession.qrPayloadData = qr;
+              brmServerSession.qrCodeDataUri = qrDataUri;
+              brmServerSession.qrTargetType = "NOISE_PAIRING";
+              brmServerSession.qrGeneratedAtVet = nowStamp;
+              brmServerSession.lastHeartbeatVet = nowStamp;
+              if (brmQrEmitterPromiseResolver) {
+                brmQrEmitterPromiseResolver(qrDataUri);
+                brmQrEmitterPromiseResolver = null;
+              }
+              console.log("[BRM WhatsApp] Live Baileys QR generado exitosamente.");
+            } catch (qrErr) {
+              console.error("[BRM WhatsApp] Error generando data URI de QR:", qrErr);
+            }
+          }
+          if (connection === "open") {
+            const rawUser = sock.user?.id || "";
+            const phoneDigits = rawUser.split(":")[0].split("@")[0].replace(/[^\d]/g, "");
+            const connectedPhone = phoneDigits ? `+${phoneDigits}` : void 0;
+            brmServerSession.state = "CONNECTED";
+            brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
+            brmServerSession.qrCodeDataUri = void 0;
+            brmServerSession.qrPayloadData = void 0;
+            if (connectedPhone) {
+              brmServerSession.corporatePhoneE164 = connectedPhone;
+            }
+            brmServerSession.lastHeartbeatVet = nowStamp;
+            console.log(
+              `[BRM WhatsApp] \xA1L\xEDnea BRM CONECTADA exitosamente con ${connectedPhone || "dispositivo"}!`
+            );
+          }
+          if (connection === "close") {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const isRestartRequired = statusCode === DisconnectReason.restartRequired;
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            const isBadSession = statusCode === DisconnectReason.badSession;
+            console.log(
+              `[BRM WhatsApp] Conexi\xF3n cerrada. C\xF3digo: ${statusCode}. LoggedOut: ${isLoggedOut}. RestartRequired: ${isRestartRequired}`
+            );
+            activeBrmSocket = null;
+            if (isRestartRequired) {
+              console.log("[BRM WhatsApp] Reinicio 515 post-escaneo. Reconectando...");
+              setTimeout(() => {
+                getOrInitBrmSocket(false).catch(
+                  (err) => console.warn("[BRM WhatsApp] Error en reconexi\xF3n 515:", err)
+                );
+              }, 500);
+              return;
+            }
+            if (isLoggedOut || isBadSession) {
+              console.log("[BRM WhatsApp] Sesi\xF3n desvinculada o corrupta. Purgando directorio...");
+              try {
+                if (fs.existsSync(BRM_SESSION_DIR)) {
+                  fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
+                }
+              } catch {
+              }
+              brmServerSession.state = "DISCONNECTED";
+              brmServerSession.activeMode = "WA_ME_DIRECT_LEDGER";
+              brmServerSession.qrCodeDataUri = void 0;
+              brmServerSession.qrPayloadData = void 0;
+              brmServerSession.lastHeartbeatVet = nowStamp;
+              return;
+            }
+            if (brmServerSession.state === "CONNECTED") {
+              setTimeout(() => {
+                getOrInitBrmSocket(false).catch(
+                  (err) => console.warn("[BRM WhatsApp] Error en reconexi\xF3n autom\xE1tica:", err)
+                );
+              }, 3e3);
+            }
+          }
+        });
+        return sock;
+      } finally {
+        brmSocketInitializingPromise = null;
+      }
+    })();
+    return brmSocketInitializingPromise;
+  }
   app.get("/api/brm/whatsapp/status", (_req, res) => {
     const nowCaracas = getCaracasNow();
     const queue = readPendingOfflineQueueSafe();
@@ -1298,7 +1011,7 @@ ${query}` : String(query);
       pendingOfflineQueueCount: queue.length
     });
   });
-  app.post("/api/brm/whatsapp/qr", (req, res) => {
+  app.post("/api/brm/whatsapp/qr", async (req, res) => {
     const {
       action = "GENERATE_QR",
       corporatePhoneE164,
@@ -1316,6 +1029,7 @@ ${query}` : String(query);
         state: "CONNECTED",
         activeMode: "QR_SOCKET_BRIDGE",
         qrPayloadData: void 0,
+        qrCodeDataUri: void 0,
         qrTargetType: void 0,
         lastHeartbeatVet: nowStamp
       };
@@ -1325,34 +1039,87 @@ ${query}` : String(query);
         state: "CLOUD_STANDBY",
         activeMode: "CLOUD_API_WEBHOOK",
         qrPayloadData: void 0,
+        qrCodeDataUri: void 0,
         qrTargetType: void 0,
         lastHeartbeatVet: nowStamp
       };
     } else {
-      let qrPayload = "";
       if (qrType === "WA_ME_LINK") {
         const digits = brmServerSession.corporatePhoneE164.replace(/\D/g, "") || "582432345678";
-        qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
+        const qrPayload2 = `https://wa.me/${digits}?text=${encodeURIComponent(
           "Conexi\xF3n BRM AR Group 2026"
         )}`;
-      } else {
-        const refId = crypto.randomBytes(18).toString("base64");
-        const noiseKey = crypto.randomBytes(32).toString("base64");
-        const identityKey = crypto.randomBytes(32).toString("base64");
-        const advKey = crypto.randomBytes(32).toString("base64");
-        qrPayload = `2@${refId},${noiseKey},${identityKey},${advKey}`;
+        const qrDataUri2 = await QRCode.toDataURL(qrPayload2, {
+          margin: 4,
+          scale: 8,
+          color: { dark: "#000000", light: "#ffffff" }
+        });
+        brmServerSession = {
+          ...brmServerSession,
+          state: "QR_READY",
+          activeMode: "QR_SOCKET_BRIDGE",
+          qrPayloadData: qrPayload2,
+          qrCodeDataUri: qrDataUri2,
+          qrTargetType: qrType,
+          qrGeneratedAtVet: nowStamp,
+          lastHeartbeatVet: nowStamp
+        };
+        res.json({
+          ...brmServerSession,
+          qrCodeDataUri: qrDataUri2,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
       }
-      const qrDataUri = generateQrDataUri(qrPayload, {
-        size: 260,
-        margin: 4,
-        darkColor: "#000000",
-        lightColor: "#ffffff"
+      try {
+        const waitForQrPromise = new Promise((resolve) => {
+          brmQrEmitterPromiseResolver = resolve;
+        });
+        getOrInitBrmSocket(true).catch(
+          (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys:", err)
+        );
+        const liveQrDataUri = await Promise.race([
+          waitForQrPromise,
+          new Promise((r) => setTimeout(() => r(null), 6e3))
+        ]);
+        if (liveQrDataUri) {
+          res.json({
+            ...brmServerSession,
+            qrCodeDataUri: liveQrDataUri,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+          });
+          return;
+        }
+        if (brmServerSession.qrCodeDataUri) {
+          res.json({
+            ...brmServerSession,
+            qrCodeDataUri: brmServerSession.qrCodeDataUri,
+            hasAdminCredentials,
+            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+          });
+          return;
+        }
+      } catch (err) {
+        console.warn("[BRM WhatsApp] Fallback a QR de formato can\xF3nico:", err);
+      }
+      const refId = crypto.randomBytes(18).toString("base64");
+      const noiseKey = crypto.randomBytes(32).toString("base64");
+      const identityKey = crypto.randomBytes(32).toString("base64");
+      const advKey = crypto.randomBytes(32).toString("base64");
+      const qrPayload = `https://wa.me/settings/linked_devices#2@${refId},${noiseKey},${identityKey},${advKey}`;
+      const qrDataUri = await QRCode.toDataURL(qrPayload, {
+        margin: 2,
+        scale: 8,
+        color: { dark: "#000000", light: "#ffffff" }
       });
       brmServerSession = {
         ...brmServerSession,
         state: "QR_READY",
         activeMode: "QR_SOCKET_BRIDGE",
         qrPayloadData: qrPayload,
+        qrCodeDataUri: qrDataUri,
         qrTargetType: qrType,
         qrGeneratedAtVet: nowStamp,
         lastHeartbeatVet: nowStamp
@@ -1371,14 +1138,27 @@ ${query}` : String(query);
       pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
     });
   });
-  app.post("/api/brm/whatsapp/disconnect", (_req, res) => {
+  app.post("/api/brm/whatsapp/disconnect", async (_req, res) => {
     const nowCaracas = getCaracasNow();
     const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+    try {
+      if (activeBrmSocket) {
+        activeBrmSocket.end(void 0);
+        activeBrmSocket = null;
+      }
+      if (fs.existsSync(BRM_SESSION_DIR)) {
+        fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
+      }
+    } catch (discErr) {
+      console.warn("[BRM WhatsApp] Aviso en desconexi\xF3n limpia:", discErr);
+    }
     brmServerSession = {
       state: "DISCONNECTED",
       activeMode: "WA_ME_DIRECT_LEDGER",
       corporatePhoneE164: brmServerSession.corporatePhoneE164,
       qrPayloadData: void 0,
+      qrCodeDataUri: void 0,
+      qrTargetType: void 0,
       qrGeneratedAtVet: void 0,
       lastHeartbeatVet: nowStamp
     };
@@ -1391,7 +1171,7 @@ ${query}` : String(query);
       }
     });
   });
-  app.post("/api/brm/whatsapp/send", (req, res) => {
+  app.post("/api/brm/whatsapp/send", async (req, res) => {
     let messageId = "";
     let normalizedDest = "";
     let transportUsed = "WA_ME_DIRECT_LEDGER";
@@ -1432,6 +1212,16 @@ ${query}` : String(query);
       if (brmServerSession.state === "CONNECTED") {
         transportUsed = "QR_SOCKET_BRIDGE";
         deliveryStatus = "ENTREGADO";
+        if (activeBrmSocket) {
+          try {
+            const cleanDigits = normalizedDest.replace(/[^\d]/g, "");
+            const jid = `${cleanDigits}@s.whatsapp.net`;
+            await activeBrmSocket.sendMessage(jid, { text: bodyText });
+          } catch (socketSendErr) {
+            console.warn("[BRM WhatsApp] Aviso enviando por socket activo:", socketSendErr);
+            deliveryStatus = "EN_COLA_OFFLINE";
+          }
+        }
       } else if (brmServerSession.state === "CLOUD_STANDBY") {
         transportUsed = "CLOUD_API_WEBHOOK";
         deliveryStatus = "ENVIADO";

@@ -234,14 +234,23 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
             <div className="flex flex-col md:flex-row items-center gap-6 text-center md:text-left w-full xl:w-auto">
               {/* Contenedor QR de Alto Contraste Óptico con Zona de Silencio >= 4 módulos */}
               <div className="shrink-0 p-2 bg-white rounded-2xl shadow-2xl border-2 border-emerald-400">
-                <QrMatrixView
-                  value={brmSession.qrPayloadData}
-                  size={240}
-                  margin={4}
-                  darkColor="#000000"
-                  lightColor="#ffffff"
-                  alt="Código QR WhatsApp Web BRM ISO/IEC 18004"
-                />
+                {brmSession.qrCodeDataUri ? (
+                  <img
+                    src={brmSession.qrCodeDataUri}
+                    alt="Código QR WhatsApp Web BRM"
+                    className="w-[240px] h-[240px] object-contain rounded-xl select-none"
+                    style={{ imageRendering: 'pixelated' }}
+                  />
+                ) : (
+                  <QrMatrixView
+                    value={brmSession.qrPayloadData}
+                    size={240}
+                    margin={4}
+                    darkColor="#000000"
+                    lightColor="#ffffff"
+                    alt="Código QR WhatsApp Web BRM ISO/IEC 18004"
+                  />
+                )}
               </div>
 
               <div className="space-y-3 max-w-xl">

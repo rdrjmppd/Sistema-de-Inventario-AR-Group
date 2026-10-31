@@ -528,6 +528,39 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, []);
 
+  // Polling automático mientras se espera el escaneo del código QR (Auto-detección de vinculación en vivo)
+  useEffect(() => {
+    if (brmSession.state !== 'QR_READY') return;
+    let timer: NodeJS.Timeout | null = null;
+    let cancelled = false;
+
+    const checkStatus = () => {
+      fetch('/api/brm/whatsapp/status')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data && data.state) {
+            setBrmSession((prev) => {
+              if (
+                prev.state !== data.state ||
+                prev.corporatePhoneE164 !== data.corporatePhoneE164 ||
+                prev.qrPayloadData !== data.qrPayloadData
+              ) {
+                return { ...prev, ...data };
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    timer = setInterval(checkStatus, 2500);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [brmSession.state]);
+
   const setDefaultScaleMode = useCallback((mode: ScaleBarcodeMode) => {
     setDefaultScaleModeState(mode);
   }, []);
