@@ -170,6 +170,13 @@ interface OperationsBrmContextType {
     corporatePhoneE164?: string,
     qrType?: 'NOISE_PAIRING' | 'WA_ME_LINK'
   ) => Promise<void>;
+  regenerateBrmQrSession: (
+    corporatePhoneE164?: string,
+    qrType?: 'NOISE_PAIRING' | 'WA_ME_LINK'
+  ) => Promise<void>;
+  requestBrmPairingCode: (
+    phoneE164?: string
+  ) => Promise<{ success: boolean; pairingCode?: string; error?: string }>;
   confirmBrmQrPairing: () => Promise<void>;
   activateBrmCloudWebhookMode: () => Promise<void>;
   disconnectBrmSessionClean: () => Promise<void>;
@@ -921,6 +928,91 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
           qrGeneratedAtVet: nowStamp,
           lastHeartbeatVet: nowStamp,
         }));
+      }
+    },
+    [brmSession.corporatePhoneE164]
+  );
+
+  const regenerateBrmQrSession = useCallback(
+    async (
+      corporatePhoneE164?: string,
+      qrType: 'NOISE_PAIRING' | 'WA_ME_LINK' = 'NOISE_PAIRING'
+    ) => {
+      const now = getCaracasNow();
+      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
+      const targetPhone =
+        corporatePhoneE164 ||
+        brmSession.corporatePhoneE164 ||
+        DEFAULT_CORPORATE_BRM_PHONE_E164;
+
+      // Poner inmediatamente el estado en GENERATING_QR y limpiar el QR previo en memoria
+      setBrmSession((prev) => ({
+        ...prev,
+        state: 'GENERATING_QR',
+        qrCodeDataUri: undefined,
+        qrPayloadData: undefined,
+        pairingCode: undefined,
+        corporatePhoneE164: targetPhone,
+        qrTargetType: qrType,
+        lastHeartbeatVet: nowStamp,
+      }));
+
+      try {
+        const resp = await fetch('/api/brm/whatsapp/force-qr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            corporatePhoneE164: targetPhone,
+            qrType,
+          }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setBrmSession((prev) => ({ ...prev, ...data }));
+          return;
+        }
+      } catch {
+        // Fallback resiliente
+      }
+    },
+    [brmSession.corporatePhoneE164]
+  );
+
+  const requestBrmPairingCode = useCallback(
+    async (
+      phoneE164?: string
+    ): Promise<{ success: boolean; pairingCode?: string; error?: string }> => {
+      const targetPhone =
+        phoneE164 ||
+        brmSession.corporatePhoneE164 ||
+        DEFAULT_CORPORATE_BRM_PHONE_E164;
+
+      try {
+        const resp = await fetch('/api/brm/whatsapp/pairing-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ corporatePhoneE164: targetPhone }),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.success && data.pairingCode) {
+          setBrmSession((prev) => ({
+            ...prev,
+            ...data,
+            pairingCode: data.pairingCode,
+            state: 'QR_READY',
+            qrTargetType: 'PAIRING_CODE',
+          }));
+          return { success: true, pairingCode: data.pairingCode };
+        }
+        return {
+          success: false,
+          error: data.error || 'Error al solicitar código de vinculación.',
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          error: err?.message || 'Error de conexión con el servidor.',
+        };
       }
     },
     [brmSession.corporatePhoneE164]
@@ -1789,6 +1881,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         confirmStagedRetentionDispatch,
         clearStagedRetentionDispatch,
         requestBrmQrSession,
+        regenerateBrmQrSession,
+        requestBrmPairingCode,
         confirmBrmQrPairing,
         activateBrmCloudWebhookMode,
         disconnectBrmSessionClean,

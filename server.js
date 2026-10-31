@@ -866,12 +866,37 @@ ${query}` : String(query);
   let brmSocketInitializingPromise = null;
   let brmQrEmitterPromiseResolver = null;
   async function getOrInitBrmSocket(forceNew = false) {
-    if (forceNew && activeBrmSocket) {
-      try {
-        activeBrmSocket.end(void 0);
-      } catch {
+    if (forceNew) {
+      if (activeBrmSocket) {
+        try {
+          activeBrmSocket.ev.removeAllListeners("connection.update");
+          activeBrmSocket.ev.removeAllListeners("creds.update");
+          activeBrmSocket.ev.removeAllListeners("messages.upsert");
+          activeBrmSocket.ev?.removeAllListeners?.();
+        } catch {
+        }
+        try {
+          activeBrmSocket.ws?.close?.();
+        } catch {
+        }
+        try {
+          activeBrmSocket.end(void 0);
+        } catch {
+        }
+        activeBrmSocket = null;
       }
-      activeBrmSocket = null;
+      brmSocketInitializingPromise = null;
+      brmQrEmitterPromiseResolver = null;
+      brmServerSession.qrCodeDataUri = void 0;
+      brmServerSession.qrPayloadData = void 0;
+      brmServerSession.pairingCode = void 0;
+      try {
+        if (fs.existsSync(BRM_SESSION_DIR)) {
+          fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
+        }
+      } catch (rmErr) {
+        console.warn("[BRM WhatsApp] Aviso limpiando sesi\xF3n:", rmErr);
+      }
     }
     if (activeBrmSocket) {
       return activeBrmSocket;
@@ -881,15 +906,6 @@ ${query}` : String(query);
     }
     brmSocketInitializingPromise = (async () => {
       try {
-        if (forceNew) {
-          try {
-            if (fs.existsSync(BRM_SESSION_DIR)) {
-              fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
-            }
-          } catch (rmErr) {
-            console.warn("[BRM WhatsApp] Aviso limpiando sesi\xF3n:", rmErr);
-          }
-        }
         if (!fs.existsSync(BRM_SESSION_DIR)) {
           fs.mkdirSync(BRM_SESSION_DIR, { recursive: true });
         }
@@ -919,10 +935,15 @@ ${query}` : String(query);
           const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
           if (qr) {
             try {
-              const qrDataUri = await QRCode.toDataURL(qr, { margin: 2, scale: 8 });
+              const rawNoiseQr = qr.replace(/^https:\/\/wa\.me\/settings\/linked_devices#/, "");
+              const qrDataUri = await QRCode.toDataURL(rawNoiseQr, {
+                margin: 2,
+                scale: 8,
+                color: { dark: "#000000", light: "#ffffff" }
+              });
               brmServerSession.state = "QR_READY";
               brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
-              brmServerSession.qrPayloadData = qr;
+              brmServerSession.qrPayloadData = rawNoiseQr;
               brmServerSession.qrCodeDataUri = qrDataUri;
               brmServerSession.qrTargetType = "NOISE_PAIRING";
               brmServerSession.qrGeneratedAtVet = nowStamp;
@@ -931,7 +952,7 @@ ${query}` : String(query);
                 brmQrEmitterPromiseResolver(qrDataUri);
                 brmQrEmitterPromiseResolver = null;
               }
-              console.log("[BRM WhatsApp] Live Baileys QR generado exitosamente.");
+              console.log("[BRM WhatsApp] Live Baileys QR generado exitosamente (Payload nativo 2@ para WhatsApp Scanner).");
             } catch (qrErr) {
               console.error("[BRM WhatsApp] Error generando data URI de QR:", qrErr);
             }
@@ -944,6 +965,7 @@ ${query}` : String(query);
             brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
             brmServerSession.qrCodeDataUri = void 0;
             brmServerSession.qrPayloadData = void 0;
+            brmServerSession.pairingCode = void 0;
             if (connectedPhone) {
               brmServerSession.corporatePhoneE164 = connectedPhone;
             }
@@ -982,6 +1004,16 @@ ${query}` : String(query);
               brmServerSession.activeMode = "WA_ME_DIRECT_LEDGER";
               brmServerSession.qrCodeDataUri = void 0;
               brmServerSession.qrPayloadData = void 0;
+              brmServerSession.pairingCode = void 0;
+              brmServerSession.lastHeartbeatVet = nowStamp;
+              return;
+            }
+            if (brmServerSession.state === "QR_READY" || brmServerSession.state === "GENERATING_QR") {
+              console.log(`[BRM WhatsApp] Socket cerrado en fase de QR (${statusCode || "desconexi\xF3n"}). Limpiando sesi\xF3n zombie.`);
+              brmServerSession.state = "DISCONNECTED";
+              brmServerSession.qrCodeDataUri = void 0;
+              brmServerSession.qrPayloadData = void 0;
+              brmServerSession.pairingCode = void 0;
               brmServerSession.lastHeartbeatVet = nowStamp;
               return;
             }
@@ -1011,11 +1043,106 @@ ${query}` : String(query);
       pendingOfflineQueueCount: queue.length
     });
   });
+  app.post("/api/brm/whatsapp/force-qr", async (req, res) => {
+    const { corporatePhoneE164, qrType = "NOISE_PAIRING" } = req.body || {};
+    const nowCaracas = getCaracasNow();
+    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+    if (corporatePhoneE164) {
+      const norm = normalizeServerPhoneE164(corporatePhoneE164);
+      if (norm) brmServerSession.corporatePhoneE164 = norm;
+    }
+    try {
+      brmServerSession.state = "GENERATING_QR";
+      brmServerSession.qrCodeDataUri = void 0;
+      brmServerSession.qrPayloadData = void 0;
+      brmServerSession.pairingCode = void 0;
+      brmServerSession.lastHeartbeatVet = nowStamp;
+      const waitForQrPromise = new Promise((resolve) => {
+        brmQrEmitterPromiseResolver = resolve;
+      });
+      await getOrInitBrmSocket(true);
+      const liveQrDataUri = await Promise.race([
+        waitForQrPromise,
+        new Promise((r) => setTimeout(() => r(null), 1e4))
+      ]);
+      if (liveQrDataUri || brmServerSession.qrCodeDataUri) {
+        const validUri = liveQrDataUri || brmServerSession.qrCodeDataUri;
+        brmServerSession.state = "QR_READY";
+        brmServerSession.qrCodeDataUri = validUri;
+        res.json({
+          ...brmServerSession,
+          success: true,
+          qrCodeDataUri: validUri,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
+      }
+      res.json({
+        ...brmServerSession,
+        state: "GENERATING_QR",
+        qrCodeDataUri: void 0,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+    } catch (err) {
+      console.error("[BRM WhatsApp] Error en force-qr:", err);
+      res.status(500).json({
+        ...brmServerSession,
+        state: "DISCONNECTED",
+        error: err?.message || "Error regenerando c\xF3digo QR"
+      });
+    }
+  });
+  app.post("/api/brm/whatsapp/pairing-code", async (req, res) => {
+    const { corporatePhoneE164 } = req.body || {};
+    const nowCaracas = getCaracasNow();
+    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+    const targetPhone = corporatePhoneE164 || brmServerSession.corporatePhoneE164;
+    const phoneDigits = targetPhone.replace(/\D/g, "");
+    if (!phoneDigits || phoneDigits.length < 10) {
+      res.status(400).json({
+        ...brmServerSession,
+        success: false,
+        error: "Debe ingresar un n\xFAmero de tel\xE9fono v\xE1lido (E.164 con c\xF3digo de pa\xEDs, ej. +584121234567)."
+      });
+      return;
+    }
+    try {
+      brmServerSession.state = "GENERATING_QR";
+      brmServerSession.lastHeartbeatVet = nowStamp;
+      const sock = await getOrInitBrmSocket(false);
+      await new Promise((r) => setTimeout(r, 1500));
+      const rawCode = await sock.requestPairingCode(phoneDigits);
+      const formattedCode = rawCode?.match(/.{1,4}/g)?.join("-") || rawCode;
+      brmServerSession.state = "QR_READY";
+      brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
+      brmServerSession.pairingCode = formattedCode;
+      brmServerSession.qrTargetType = "PAIRING_CODE";
+      brmServerSession.lastHeartbeatVet = nowStamp;
+      console.log(`[BRM WhatsApp] Pairing Code oficial emitido por WhatsApp: ${formattedCode}`);
+      res.json({
+        ...brmServerSession,
+        success: true,
+        pairingCode: formattedCode,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+    } catch (err) {
+      console.error("[BRM WhatsApp] Error solicitando pairing code:", err);
+      res.status(500).json({
+        ...brmServerSession,
+        success: false,
+        error: `No se pudo obtener el c\xF3digo de WhatsApp: ${err?.message || err}`
+      });
+    }
+  });
   app.post("/api/brm/whatsapp/qr", async (req, res) => {
     const {
       action = "GENERATE_QR",
       corporatePhoneE164,
-      qrType = "NOISE_PAIRING"
+      qrType = "NOISE_PAIRING",
+      force = false
     } = req.body || {};
     const nowCaracas = getCaracasNow();
     const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
@@ -1030,124 +1157,188 @@ ${query}` : String(query);
         activeMode: "QR_SOCKET_BRIDGE",
         qrPayloadData: void 0,
         qrCodeDataUri: void 0,
+        pairingCode: void 0,
         qrTargetType: void 0,
         lastHeartbeatVet: nowStamp
       };
-    } else if (action === "USE_CLOUD_WEBHOOK") {
+      res.json({
+        ...brmServerSession,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
+    }
+    if (action === "USE_CLOUD_WEBHOOK") {
       brmServerSession = {
         ...brmServerSession,
         state: "CLOUD_STANDBY",
         activeMode: "CLOUD_API_WEBHOOK",
         qrPayloadData: void 0,
         qrCodeDataUri: void 0,
+        pairingCode: void 0,
         qrTargetType: void 0,
         lastHeartbeatVet: nowStamp
       };
-    } else {
-      if (qrType === "WA_ME_LINK") {
-        const digits = brmServerSession.corporatePhoneE164.replace(/\D/g, "") || "582432345678";
-        const qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
-          "Conexi\xF3n BRM AR Group 2026"
-        )}`;
-        const qrDataUri = await QRCode.toDataURL(qrPayload, {
-          margin: 4,
-          scale: 8,
-          color: { dark: "#000000", light: "#ffffff" }
-        });
-        brmServerSession = {
+      res.json({
+        ...brmServerSession,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
+    }
+    if (action === "REQUEST_PAIRING_CODE" || action === "PAIRING_CODE") {
+      const targetPhone = corporatePhoneE164 || brmServerSession.corporatePhoneE164;
+      const phoneDigits = targetPhone.replace(/\D/g, "");
+      if (!phoneDigits || phoneDigits.length < 10) {
+        res.status(400).json({
           ...brmServerSession,
-          state: "QR_READY",
-          activeMode: "QR_SOCKET_BRIDGE",
-          qrPayloadData: qrPayload,
-          qrCodeDataUri: qrDataUri,
-          qrTargetType: qrType,
-          qrGeneratedAtVet: nowStamp,
-          lastHeartbeatVet: nowStamp
-        };
-        res.json({
-          ...brmServerSession,
-          qrCodeDataUri: qrDataUri,
-          hasAdminCredentials,
-          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+          success: false,
+          error: "N\xFAmero de tel\xE9fono inv\xE1lido para vincular con c\xF3digo."
         });
         return;
       }
       try {
-        if (brmServerSession.state === "CONNECTED") {
-          res.json({
-            ...brmServerSession,
-            hasAdminCredentials,
-            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-          });
-          return;
-        }
-        const forceReset = action === "REGENERATE_QR";
-        if (!forceReset && brmServerSession.state === "QR_READY" && brmServerSession.qrCodeDataUri) {
-          res.json({
-            ...brmServerSession,
-            hasAdminCredentials,
-            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-          });
-          return;
-        }
-        brmServerSession.state = "GENERATING_QR";
+        const sock = await getOrInitBrmSocket(false);
+        await new Promise((r) => setTimeout(r, 1500));
+        const rawCode = await sock.requestPairingCode(phoneDigits);
+        const formattedCode = rawCode?.match(/.{1,4}/g)?.join("-") || rawCode;
+        brmServerSession.state = "QR_READY";
+        brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
+        brmServerSession.pairingCode = formattedCode;
+        brmServerSession.qrTargetType = "PAIRING_CODE";
         brmServerSession.lastHeartbeatVet = nowStamp;
-        const waitForQrPromise = new Promise((resolve) => {
-          brmQrEmitterPromiseResolver = resolve;
-        });
-        getOrInitBrmSocket(forceReset).catch(
-          (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys:", err)
-        );
-        const liveQrDataUri = await Promise.race([
-          waitForQrPromise,
-          new Promise((r) => setTimeout(() => r(null), 1e4))
-        ]);
-        if (liveQrDataUri || brmServerSession.qrCodeDataUri) {
-          const validUri = liveQrDataUri || brmServerSession.qrCodeDataUri;
-          brmServerSession.state = "QR_READY";
-          brmServerSession.qrCodeDataUri = validUri;
-          res.json({
-            ...brmServerSession,
-            qrCodeDataUri: validUri,
-            hasAdminCredentials,
-            pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-          });
-          return;
-        }
         res.json({
           ...brmServerSession,
-          state: "GENERATING_QR",
-          qrCodeDataUri: void 0,
+          success: true,
+          pairingCode: formattedCode,
           hasAdminCredentials,
           pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
         });
         return;
       } catch (err) {
-        console.warn("[BRM WhatsApp] Error gestionando conexi\xF3n Baileys:", err);
+        console.error("[BRM WhatsApp] Error solicitando pairing code:", err);
+        res.status(500).json({
+          ...brmServerSession,
+          success: false,
+          error: `Error al generar c\xF3digo: ${err?.message || err}`
+        });
+        return;
+      }
+    }
+    if (qrType === "WA_ME_LINK") {
+      const digits = brmServerSession.corporatePhoneE164.replace(/\D/g, "") || "582432345678";
+      const qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
+        "Conexi\xF3n BRM AR Group 2026"
+      )}`;
+      const qrDataUri = await QRCode.toDataURL(qrPayload, {
+        margin: 4,
+        scale: 8,
+        color: { dark: "#000000", light: "#ffffff" }
+      });
+      brmServerSession = {
+        ...brmServerSession,
+        state: "QR_READY",
+        activeMode: "QR_SOCKET_BRIDGE",
+        qrPayloadData: qrPayload,
+        qrCodeDataUri: qrDataUri,
+        pairingCode: void 0,
+        qrTargetType: qrType,
+        qrGeneratedAtVet: nowStamp,
+        lastHeartbeatVet: nowStamp
+      };
+      res.json({
+        ...brmServerSession,
+        qrCodeDataUri: qrDataUri,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
+    }
+    try {
+      if (brmServerSession.state === "CONNECTED" && !force && action !== "REGENERATE_QR") {
         res.json({
           ...brmServerSession,
-          state: "DISCONNECTED",
-          qrCodeDataUri: void 0,
           hasAdminCredentials,
           pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
         });
         return;
       }
+      const forceReset = action === "REGENERATE_QR" || force === true;
+      if (!forceReset && activeBrmSocket && brmServerSession.state === "QR_READY" && brmServerSession.qrCodeDataUri) {
+        res.json({
+          ...brmServerSession,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
+      }
+      brmServerSession.state = "GENERATING_QR";
+      brmServerSession.qrCodeDataUri = void 0;
+      brmServerSession.qrPayloadData = void 0;
+      brmServerSession.pairingCode = void 0;
+      brmServerSession.lastHeartbeatVet = nowStamp;
+      const waitForQrPromise = new Promise((resolve) => {
+        brmQrEmitterPromiseResolver = resolve;
+      });
+      getOrInitBrmSocket(forceReset).catch(
+        (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys:", err)
+      );
+      const liveQrDataUri = await Promise.race([
+        waitForQrPromise,
+        new Promise((r) => setTimeout(() => r(null), 1e4))
+      ]);
+      if (liveQrDataUri || brmServerSession.qrCodeDataUri) {
+        const validUri = liveQrDataUri || brmServerSession.qrCodeDataUri;
+        brmServerSession.state = "QR_READY";
+        brmServerSession.qrCodeDataUri = validUri;
+        res.json({
+          ...brmServerSession,
+          qrCodeDataUri: validUri,
+          hasAdminCredentials,
+          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+        });
+        return;
+      }
+      res.json({
+        ...brmServerSession,
+        state: "GENERATING_QR",
+        qrCodeDataUri: void 0,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
+    } catch (err) {
+      console.warn("[BRM WhatsApp] Error gestionando conexi\xF3n Baileys:", err);
+      res.json({
+        ...brmServerSession,
+        state: "DISCONNECTED",
+        qrCodeDataUri: void 0,
+        hasAdminCredentials,
+        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+      });
+      return;
     }
-    res.json({
-      ...brmServerSession,
-      hasAdminCredentials,
-      pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-    });
   });
   app.post("/api/brm/whatsapp/disconnect", async (_req, res) => {
     const nowCaracas = getCaracasNow();
     const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
     try {
       if (activeBrmSocket) {
+        try {
+          activeBrmSocket.ev.removeAllListeners("connection.update");
+          activeBrmSocket.ev.removeAllListeners("creds.update");
+          activeBrmSocket.ev?.removeAllListeners?.();
+        } catch {
+        }
+        try {
+          activeBrmSocket.ws?.close?.();
+        } catch {
+        }
         activeBrmSocket.end(void 0);
         activeBrmSocket = null;
       }
+      brmSocketInitializingPromise = null;
+      brmQrEmitterPromiseResolver = null;
       if (fs.existsSync(BRM_SESSION_DIR)) {
         fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
       }
@@ -1160,6 +1351,7 @@ ${query}` : String(query);
       corporatePhoneE164: brmServerSession.corporatePhoneE164,
       qrPayloadData: void 0,
       qrCodeDataUri: void 0,
+      pairingCode: void 0,
       qrTargetType: void 0,
       qrGeneratedAtVet: void 0,
       lastHeartbeatVet: nowStamp
