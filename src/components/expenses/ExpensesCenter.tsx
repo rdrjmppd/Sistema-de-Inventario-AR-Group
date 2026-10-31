@@ -45,6 +45,7 @@ import {
   EXPENSE_CATEGORIES_METADATA,
   EXPENSE_APPROVAL_THRESHOLD_USD,
   buildSuggestedDrivePath,
+  generateMonthlyExpenseArqueoData,
   exportExpenseArqueoPdfDocument,
   buildExpenseArqueoWorkbook,
 } from '../../lib/expenses-engine';
@@ -388,22 +389,27 @@ export const ExpensesCenter: React.FC<ExpensesCenterProps> = ({ onNavigate }) =>
     return expenses.filter((e) => e.approvalStatus === 'PENDIENTE_APROBACION');
   }, [expenses]);
 
-  // Arqueo actual del periodo seleccionado
+  // Arqueo actual del periodo seleccionado (cálculo puro sin mutar estado en render)
   const currentArqueoReport = useMemo(() => {
-    const existing = monthlyArqueoReports.find((r) => r.periodYearMonth === selectedPeriod);
-    if (existing) return existing;
-    return generateArqueoReport(selectedPeriod, user?.displayName);
-  }, [monthlyArqueoReports, selectedPeriod, generateArqueoReport, user]);
+    return generateMonthlyExpenseArqueoData(
+      expenses,
+      budgetPlan,
+      selectedPeriod,
+      user?.displayName || 'Administrador Financiero'
+    );
+  }, [expenses, budgetPlan, selectedPeriod, user]);
 
   // Descargar PDF del Arqueo
   const handleDownloadArqueoPdf = () => {
-    const doc = exportExpenseArqueoPdfDocument(currentArqueoReport, config.companyProfile);
+    const report = generateArqueoReport(selectedPeriod, user?.displayName);
+    const doc = exportExpenseArqueoPdfDocument(report, config.companyProfile);
     doc.save(`ARQUEO_GASTOS_OPEX_${selectedPeriod}_HIPER_ABASTO_POLAR.pdf`);
   };
 
   // Descargar Excel del Arqueo
   const handleDownloadArqueoExcel = () => {
-    const wb = buildExpenseArqueoWorkbook(currentArqueoReport, config.companyProfile);
+    const report = generateArqueoReport(selectedPeriod, user?.displayName);
+    const wb = buildExpenseArqueoWorkbook(report, config.companyProfile);
     XLSX.writeFile(wb, `ARQUEO_GASTOS_OPEX_${selectedPeriod}_HIPER_ABASTO_POLAR.xlsx`);
   };
 

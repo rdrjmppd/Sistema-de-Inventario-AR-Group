@@ -220,8 +220,7 @@ export function calculateOverduePenalty(
   }
 
   const now = referenceDateIso ? new Date(referenceDateIso) : new Date();
-  const due = new Date(expense.dueDate);
-  due.setHours(23, 59, 59, 999);
+  const due = new Date(`${expense.dueDate.slice(0, 10)}T23:59:59.999Z`);
 
   const diffMs = now.getTime() - due.getTime();
   if (diffMs <= 0) {
@@ -233,7 +232,7 @@ export function calculateOverduePenalty(
     };
   }
 
-  const daysOverdue = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const daysOverdue = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   let penaltyDec = toDecimal(0);
 
   // Recargo fijo en dólares
