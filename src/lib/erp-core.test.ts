@@ -103,6 +103,7 @@ import {
   MonthlyBudgetPlan,
   ExpenseMonthlyArqueoReport,
   AuditActionType,
+  Supplier,
 } from '../types';
 import {
   evaluateExpenseApprovalRequirement,
@@ -6602,11 +6603,14 @@ test('80. Certificación Integral de Pasarela WhatsApp BRM Multi-Device (Baileys
       id: 'sup-polar-01',
       name: 'Empresas Polar C.A.',
       rif: 'J-00006543-2',
+      category: 'Alimentos y Bebidas',
+      contactName: 'Gerencia Comercial Polar',
       phone: '02432345678',
+      email: 'pedidos@empresaspolar.com',
+      creditDays: 15,
+      paymentTerms: 'Crédito 15 días',
       whatsappE164: '+584147778899',
       balanceUsd: 1500,
-      active: true,
-      category: 'Alimentos y Bebidas',
     },
   ];
 
@@ -6653,7 +6657,7 @@ test('80. Certificación Integral de Pasarela WhatsApp BRM Multi-Device (Baileys
   assert.strictEqual(outboundBrmMsg?.phoneE164, '+584147778899');
   assert.strictEqual(outboundBrmMsg?.direction, 'OUTBOUND_TO_SUPPLIER');
   assert.strictEqual(outboundBrmMsg?.tipoMensaje, 'AUDIO');
-  assert.strictEqual(outboundBrmMsg?.cuerpo || outboundBrmMsg?.bodyText, '🎤 Nota de voz (0:15)');
+  assert.strictEqual(outboundBrmMsg?.bodyText, '🎤 Nota de voz (0:15)');
 
   // Exclusión determinista de mensaje hacia el propio número (Anti-Loop)
   const selfLoopMsg = mapBridgeMessageToBrmMessage({

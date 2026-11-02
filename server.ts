@@ -1346,10 +1346,12 @@ async function startServer() {
   });
 
   const distPath = path.join(process.cwd(), 'dist');
+  const isCompiledServerJs =
+    typeof process.argv[1] === 'string' && process.argv[1].endsWith('server.js');
   const isProductionMode =
-    process.env.NODE_ENV === 'production' || fs.existsSync(distPath);
+    process.env.NODE_ENV === 'production' || isCompiledServerJs;
 
-  if (isProductionMode) {
+  if (isProductionMode && fs.existsSync(distPath)) {
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       const indexFile = path.join(distPath, 'index.html');
@@ -1397,6 +1399,13 @@ const isTestRun =
   process.env.NODE_ENV === 'test';
 
 if (!isTestRun) {
+  process.on('uncaughtException', (err) => {
+    console.warn('[Chrystal ERP] Uncaught exception intercepted (keeping server alive):', err?.message || err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.warn('[Chrystal ERP] Unhandled rejection intercepted (keeping server alive):', reason);
+  });
+
   startServer().catch((err) => {
     console.error('[Chrystal ERP] Critical startup error captured (keeping degraded HTTP listener alive):', err);
     try {

@@ -719,7 +719,13 @@ export async function initializeBaileysSocket(
 
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-      const sock = makeWASocket({
+      const createWASocket: typeof makeWASocket =
+        typeof makeWASocket === 'function'
+          ? makeWASocket
+          : ((makeWASocket as unknown as { default: typeof makeWASocket }).default ||
+            makeWASocket);
+
+      const sock = createWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
         browser: Browsers.macOS('Desktop'),
@@ -727,6 +733,17 @@ export async function initializeBaileysSocket(
         syncFullHistory: false,
         markOnlineOnConnect: true,
       });
+
+      try {
+        const rawWs = (sock as unknown as { ws?: { on?: (ev: string, cb: (err: unknown) => void) => void } }).ws;
+        if (rawWs && typeof rawWs.on === 'function') {
+          rawWs.on('error', (wsErr: unknown) => {
+            console.warn(`[WhatsApp BRM Bridge] Aviso de socket WS (${lineaId}):`, wsErr);
+          });
+        }
+      } catch {
+        // Ignore if ws wrapper does not expose .on
+      }
 
       activeSockets.set(lineaId, sock);
 
