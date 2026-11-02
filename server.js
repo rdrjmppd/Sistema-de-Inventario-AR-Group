@@ -1,10 +1,10 @@
 // server.ts
 import express from "express";
-import fs from "node:fs";
+import fs2 from "node:fs";
 import http from "node:http";
 import https from "node:https";
-import path from "node:path";
-import crypto from "node:crypto";
+import path2 from "node:path";
+import crypto2 from "node:crypto";
 import Decimal2 from "decimal.js";
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -222,14 +222,1215 @@ ${liveDataBlock}
 `;
 }
 
-// server.ts
+// server/whatsappQrBridge.ts
 import makeWASocket, {
-  DisconnectReason,
   useMultiFileAuthState,
-  Browsers
+  DisconnectReason,
+  Browsers,
+  downloadMediaMessage
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import pino from "pino";
+import path from "node:path";
+import fs from "node:fs";
+import crypto from "node:crypto";
+import zlib from "node:zlib";
+var SESSIONS_ROOT = path.resolve(process.cwd(), ".whatsapp_sessions");
+if (!fs.existsSync(SESSIONS_ROOT)) {
+  fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
+}
+var DEFAULT_BRM_LINEA_ID = "linea_brm";
+var activeSockets = /* @__PURE__ */ new Map();
+var lineStatusMemory = /* @__PURE__ */ new Map();
+var initializingPromises = /* @__PURE__ */ new Map();
+var qrRotationCounters = /* @__PURE__ */ new Map();
+var lineContactsCache = /* @__PURE__ */ new Map();
+var MAX_QR_ROTATIONS = 5;
+var ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
+  SESSIONS_ROOT,
+  "session_backup_encrypted.json"
+);
+var PENDING_MESSAGES_QUEUE_FILE = path.join(
+  SESSIONS_ROOT,
+  "pending_messages_queue.json"
+);
+var PENDING_OCR_QUEUE_FILE = path.join(SESSIONS_ROOT, "pending_ocr_queue.json");
+function formatVetTimestamp(date = /* @__PURE__ */ new Date()) {
+  try {
+    const parts = new Intl.DateTimeFormat("es-VE", {
+      timeZone: "America/Caracas",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).formatToParts(date);
+    const map = {};
+    for (const p of parts) {
+      map[p.type] = p.value;
+    }
+    return `${map.day}/${map.month}/${map.year} ${map.hour}:${map.minute}:${map.second}`;
+  } catch {
+    return date.toISOString();
+  }
+}
+function mapCanonicalToBrmLegacyState(estado, hasQrCode) {
+  if (estado === "CONECTADO") return "CONNECTED";
+  if (estado === "QR_EXPIRADO") return "QR_EXPIRADO";
+  if (estado === "ESPERANDO_QR") return hasQrCode ? "QR_READY" : "GENERATING_QR";
+  return "DISCONNECTED";
+}
+function getDefaultLineState(lineaId) {
+  const nowVet = formatVetTimestamp();
+  return {
+    lineaId,
+    estado: "DESCONECTADO",
+    state: "DISCONNECTED",
+    activeMode: "WA_ME_DIRECT_LEDGER",
+    numeroConectado: void 0,
+    corporatePhoneE164: "",
+    qrRotations: 0,
+    lastHeartbeatVet: nowVet,
+    actualizadoEn: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function setLineState(lineaId, partial) {
+  const prev = lineStatusMemory.get(lineaId) || getDefaultLineState(lineaId);
+  const nextEstado = partial.estado ?? prev.estado;
+  const nextQrUri = "qrCodeDataUri" in partial ? partial.qrCodeDataUri : prev.qrCodeDataUri;
+  const nextNumero = "numeroConectado" in partial ? partial.numeroConectado : prev.numeroConectado;
+  const nextState = partial.state ?? mapCanonicalToBrmLegacyState(nextEstado, Boolean(nextQrUri));
+  const cleanNumero = nextEstado === "CONECTADO" ? nextNumero : void 0;
+  const updated = {
+    ...prev,
+    ...partial,
+    lineaId,
+    estado: nextEstado,
+    state: nextState,
+    activeMode: nextEstado === "CONECTADO" || nextEstado === "ESPERANDO_QR" ? "QR_SOCKET_BRIDGE" : partial.activeMode || "WA_ME_DIRECT_LEDGER",
+    qrCodeDataUri: nextQrUri,
+    numeroConectado: cleanNumero,
+    corporatePhoneE164: cleanNumero || partial.corporatePhoneE164 || prev.corporatePhoneE164 || "",
+    lastHeartbeatVet: formatVetTimestamp(),
+    actualizadoEn: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (nextEstado !== "CONECTADO" && !partial.corporatePhoneE164) {
+    updated.corporatePhoneE164 = "";
+  }
+  lineStatusMemory.set(lineaId, updated);
+  return updated;
+}
+function getEncryptionKey() {
+  const secret = process.env.WHATSAPP_SESSION_SECRET || process.env.GEMINI_API_KEY || "ar-group-brm-default-encryption-secret-key-2026";
+  return crypto.scryptSync(secret, "ar-group-brm-wa-salt", 32);
+}
+function encryptSessionData(text) {
+  const iv = crypto.randomBytes(12);
+  const key = getEncryptionKey();
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const compressed = zlib.gzipSync(Buffer.from(text, "utf8"), { level: 9 });
+  let encrypted = cipher.update(compressed, void 0, "base64");
+  encrypted += cipher.final("base64");
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted}`;
+}
+function decryptSessionData(encryptedPayload) {
+  const parts = encryptedPayload.split(":");
+  if (parts.length !== 3) throw new Error("Invalid encrypted session format");
+  const iv = Buffer.from(parts[0], "base64");
+  const authTag = Buffer.from(parts[1], "base64");
+  const encryptedText = parts[2];
+  const key = getEncryptionKey();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(authTag);
+  const decryptedBuf = Buffer.concat([
+    decipher.update(Buffer.from(encryptedText, "base64")),
+    decipher.final()
+  ]);
+  if (decryptedBuf.length >= 2 && decryptedBuf[0] === 31 && decryptedBuf[1] === 139) {
+    return zlib.gunzipSync(decryptedBuf).toString("utf8");
+  }
+  return decryptedBuf.toString("utf8");
+}
+function readEncryptedBackupStore() {
+  try {
+    if (fs.existsSync(ENCRYPTED_SESSIONS_BACKUP_FILE)) {
+      return JSON.parse(fs.readFileSync(ENCRYPTED_SESSIONS_BACKUP_FILE, "utf-8"));
+    }
+  } catch {
+  }
+  return {};
+}
+function writeEncryptedBackupStore(store) {
+  try {
+    fs.writeFileSync(
+      ENCRYPTED_SESSIONS_BACKUP_FILE,
+      JSON.stringify(store, null, 2),
+      "utf-8"
+    );
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Aviso guardando respaldo cifrado:", err);
+  }
+}
+async function backupSessionToStorage(lineaId) {
+  try {
+    const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+    if (!fs.existsSync(sessionDir)) return false;
+    const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith(".json"));
+    if (!files.includes("creds.json")) return false;
+    const fileStats = files.map((file) => {
+      const fullPath = path.join(sessionDir, file);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(fullPath).mtimeMs;
+      } catch {
+      }
+      return { file, fullPath, mtimeMs };
+    });
+    const coreFiles = fileStats.filter(
+      (f) => !f.file.startsWith("pre-key-") && !f.file.startsWith("lid-mapping-")
+    );
+    const preKeyFiles = fileStats.filter((f) => f.file.startsWith("pre-key-")).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 50);
+    const lidFiles = fileStats.filter((f) => f.file.startsWith("lid-mapping-")).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 50);
+    const selectedFiles = [...coreFiles, ...preKeyFiles, ...lidFiles];
+    const sessionFiles = {};
+    for (const { file, fullPath } of selectedFiles) {
+      try {
+        sessionFiles[file] = fs.readFileSync(fullPath, "utf-8");
+      } catch {
+      }
+    }
+    let encryptedPayload = encryptSessionData(JSON.stringify(sessionFiles));
+    if (encryptedPayload.length > 75e4) {
+      const minimalFiles = {};
+      for (const { file } of coreFiles) {
+        if (sessionFiles[file]) minimalFiles[file] = sessionFiles[file];
+      }
+      for (const { file } of preKeyFiles.slice(0, 15)) {
+        if (sessionFiles[file]) minimalFiles[file] = sessionFiles[file];
+      }
+      encryptedPayload = encryptSessionData(JSON.stringify(minimalFiles));
+    }
+    const store = readEncryptedBackupStore();
+    store[lineaId] = {
+      lineaId,
+      encryptedData: encryptedPayload,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    writeEncryptedBackupStore(store);
+    return true;
+  } catch (err) {
+    console.warn(`[WhatsApp BRM Bridge] Error respaldando sesi\xF3n ${lineaId}:`, err);
+    return false;
+  }
+}
+async function restoreSessionFromStorage(lineaId) {
+  try {
+    const store = readEncryptedBackupStore();
+    const record = store[lineaId];
+    if (!record?.encryptedData) return false;
+    const decryptedJson = decryptSessionData(record.encryptedData);
+    const sessionFiles = JSON.parse(decryptedJson);
+    if (!sessionFiles["creds.json"]) return false;
+    const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    }
+    for (const [filename, content] of Object.entries(sessionFiles)) {
+      const safeFilename = path.basename(filename);
+      fs.writeFileSync(path.join(sessionDir, safeFilename), content, "utf-8");
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[WhatsApp BRM Bridge] Error restaurando sesi\xF3n ${lineaId}:`, err);
+    return false;
+  }
+}
+function deleteSessionBackupFromStorage(lineaId) {
+  try {
+    const store = readEncryptedBackupStore();
+    if (store[lineaId]) {
+      delete store[lineaId];
+      writeEncryptedBackupStore(store);
+    }
+  } catch {
+  }
+}
+var backupDebounceTimer = null;
+function scheduleSessionBackup(lineaId) {
+  if (backupDebounceTimer) clearTimeout(backupDebounceTimer);
+  backupDebounceTimer = setTimeout(() => {
+    backupSessionToStorage(lineaId).catch(() => {
+    });
+  }, 3500);
+}
+function resolveLidToPhoneNumber(lineaId, remoteJid, participant) {
+  if (participant && participant.includes("@s.whatsapp.net")) {
+    const partDigits = participant.split("@")[0].split(":")[0].replace(/\D/g, "");
+    if (partDigits.length >= 10 && partDigits.length <= 15) {
+      return `+${partDigits}`;
+    }
+  }
+  if (remoteJid.endsWith("@lid")) {
+    const lidNumber = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
+    if (lidNumber) {
+      try {
+        const reverseFile = path.join(
+          SESSIONS_ROOT,
+          lineaId,
+          `lid-mapping-${lidNumber}_reverse.json`
+        );
+        if (fs.existsSync(reverseFile)) {
+          const raw = JSON.parse(fs.readFileSync(reverseFile, "utf-8"));
+          const phoneDigits = String(raw || "").replace(/\D/g, "");
+          if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
+            return `+${phoneDigits}`;
+          }
+        }
+      } catch {
+      }
+    }
+  }
+  const rawId = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
+  return rawId ? `+${rawId}` : remoteJid;
+}
+function findLidForPhoneDigits(lineaId, cleanDigits) {
+  try {
+    const forwardFile = path.join(
+      SESSIONS_ROOT,
+      lineaId,
+      `lid-mapping-${cleanDigits}.json`
+    );
+    if (fs.existsSync(forwardFile)) {
+      const raw = JSON.parse(fs.readFileSync(forwardFile, "utf-8"));
+      const lidDigits = String(raw || "").replace(/\D/g, "");
+      if (lidDigits) return `${lidDigits}@lid`;
+    }
+  } catch {
+  }
+  return null;
+}
+function cleanContactDisplayName(rawName) {
+  if (!rawName) return "";
+  const trimmed = String(rawName).trim();
+  if (!trimmed || trimmed === "." || trimmed === "-" || trimmed === "~") return "";
+  if (/^\+?\d[\d\s()-]+$/.test(trimmed)) return "";
+  return trimmed;
+}
+function getContactsFilePath(lineaId) {
+  return path.join(SESSIONS_ROOT, `contacts_${lineaId}.json`);
+}
+function loadLineContacts(lineaId) {
+  if (lineContactsCache.has(lineaId)) {
+    return lineContactsCache.get(lineaId);
+  }
+  const map = /* @__PURE__ */ new Map();
+  try {
+    const filePath = getContactsFilePath(lineaId);
+    if (fs.existsSync(filePath)) {
+      const arr = JSON.parse(
+        fs.readFileSync(filePath, "utf-8")
+      );
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          if (item && item.phone && item.name) {
+            map.set(item.phone, item);
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  lineContactsCache.set(lineaId, map);
+  return map;
+}
+function saveLineContacts(lineaId) {
+  try {
+    const map = lineContactsCache.get(lineaId);
+    if (!map) return;
+    const arr = Array.from(map.values());
+    fs.writeFileSync(
+      getContactsFilePath(lineaId),
+      JSON.stringify(arr, null, 2),
+      "utf-8"
+    );
+  } catch {
+  }
+}
+function ingestLineContacts(lineaId, contacts) {
+  if (!Array.isArray(contacts) || contacts.length === 0) return;
+  const map = loadLineContacts(lineaId);
+  let changed = false;
+  for (const c of contacts) {
+    const rawId = c.id || "";
+    if (!rawId || rawId === "status@broadcast" || rawId.endsWith("@g.us") || rawId.endsWith("@newsletter")) {
+      continue;
+    }
+    const bestName = cleanContactDisplayName(c.name) || cleanContactDisplayName(c.verifiedName) || cleanContactDisplayName(c.notify);
+    if (!bestName) continue;
+    const resolvedPhone = resolveLidToPhoneNumber(lineaId, rawId, null);
+    if (!resolvedPhone || !resolvedPhone.startsWith("+") || resolvedPhone.length > 16) {
+      continue;
+    }
+    const existing = map.get(resolvedPhone);
+    const shouldUpdate = !existing || Boolean(cleanContactDisplayName(c.name)) || existing.name !== bestName;
+    if (shouldUpdate) {
+      map.set(resolvedPhone, {
+        phone: resolvedPhone,
+        name: bestName,
+        lid: c.lid || (rawId.endsWith("@lid") ? rawId : existing?.lid),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveLineContacts(lineaId);
+  }
+}
+function getLineContactsHandler(lineaId = DEFAULT_BRM_LINEA_ID) {
+  const map = loadLineContacts(lineaId);
+  return {
+    success: true,
+    lineaId,
+    contacts: Array.from(map.values())
+  };
+}
+function readPendingMessagesQueue(lineaId) {
+  try {
+    if (!fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) return [];
+    const list = JSON.parse(
+      fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8")
+    );
+    if (!Array.isArray(list)) return [];
+    return lineaId ? list.filter((m) => m.lineaId === lineaId) : list;
+  } catch {
+    return [];
+  }
+}
+function appendToLocalMessagesQueue(msg) {
+  try {
+    let queue = [];
+    if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+      queue = JSON.parse(fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8"));
+      if (!Array.isArray(queue)) queue = [];
+    }
+    if (!queue.some((m) => m.messageId === msg.messageId)) {
+      queue.push(msg);
+      fs.writeFileSync(
+        PENDING_MESSAGES_QUEUE_FILE,
+        JSON.stringify(queue.slice(-300), null, 2),
+        "utf-8"
+      );
+    }
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Error encolando mensaje local:", err);
+  }
+}
+function readPendingOcrQueue(lineaId) {
+  try {
+    if (!fs.existsSync(PENDING_OCR_QUEUE_FILE)) return [];
+    const list = JSON.parse(
+      fs.readFileSync(PENDING_OCR_QUEUE_FILE, "utf-8")
+    );
+    if (!Array.isArray(list)) return [];
+    return lineaId ? list.filter((i) => i.lineaId === lineaId) : list;
+  } catch {
+    return [];
+  }
+}
+function appendToLocalOcrQueue(item) {
+  try {
+    let queue = [];
+    if (fs.existsSync(PENDING_OCR_QUEUE_FILE)) {
+      queue = JSON.parse(fs.readFileSync(PENDING_OCR_QUEUE_FILE, "utf-8"));
+      if (!Array.isArray(queue)) queue = [];
+    }
+    if (!queue.some((i) => i.messageId === item.messageId)) {
+      queue.push(item);
+      fs.writeFileSync(
+        PENDING_OCR_QUEUE_FILE,
+        JSON.stringify(queue.slice(-100), null, 2),
+        "utf-8"
+      );
+    }
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Error encolando OCR local:", err);
+  }
+}
+function clearSyncedOfflineQueueItems(params) {
+  const { messageIds = [], ocrIds = [] } = params;
+  if (messageIds.length > 0 && fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+    try {
+      const idSet = new Set(messageIds);
+      const current = JSON.parse(
+        fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8")
+      );
+      const remaining = (Array.isArray(current) ? current : []).filter(
+        (m) => !idSet.has(m.id) && !idSet.has(m.messageId)
+      );
+      fs.writeFileSync(
+        PENDING_MESSAGES_QUEUE_FILE,
+        JSON.stringify(remaining, null, 2),
+        "utf-8"
+      );
+    } catch {
+    }
+  }
+  if (ocrIds.length > 0 && fs.existsSync(PENDING_OCR_QUEUE_FILE)) {
+    try {
+      const idSet = new Set(ocrIds);
+      const current = JSON.parse(
+        fs.readFileSync(PENDING_OCR_QUEUE_FILE, "utf-8")
+      );
+      const remaining = (Array.isArray(current) ? current : []).filter(
+        (i) => !idSet.has(i.id) && !idSet.has(i.messageId)
+      );
+      fs.writeFileSync(
+        PENDING_OCR_QUEUE_FILE,
+        JSON.stringify(remaining, null, 2),
+        "utf-8"
+      );
+    } catch {
+    }
+  }
+}
+async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
+  if (initializingPromises.has(lineaId)) {
+    return initializingPromises.get(lineaId);
+  }
+  const initPromise = (async () => {
+    try {
+      const existing = activeSockets.get(lineaId);
+      if (existing) {
+        try {
+          existing.ev.removeAllListeners("connection.update");
+          existing.ev.removeAllListeners("creds.update");
+          existing.ev.removeAllListeners("messages.upsert");
+          existing.ev.removeAllListeners("messaging-history.set");
+          existing.ev.removeAllListeners("contacts.upsert");
+          existing.ev.removeAllListeners("contacts.update");
+          existing.ev.removeAllListeners("chats.delete");
+          existing.end(void 0);
+        } catch {
+        }
+        activeSockets.delete(lineaId);
+      }
+      const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+      const credsPath = path.join(sessionDir, "creds.json");
+      if (!fs.existsSync(credsPath)) {
+        await restoreSessionFromStorage(lineaId);
+      }
+      if (!fs.existsSync(sessionDir)) {
+        fs.mkdirSync(sessionDir, { recursive: true });
+      }
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: "silent" }),
+        browser: Browsers.macOS("Desktop"),
+        printQRInTerminal: false,
+        syncFullHistory: false,
+        markOnlineOnConnect: true
+      });
+      activeSockets.set(lineaId, sock);
+      sock.ev.on("creds.update", async () => {
+        try {
+          await saveCreds();
+          scheduleSessionBackup(lineaId);
+        } catch (err) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Error guardando credenciales (${lineaId}):`,
+            err
+          );
+        }
+      });
+      sock.ev.on("messaging-history.set", ({ contacts }) => {
+        if (contacts && contacts.length > 0) {
+          ingestLineContacts(lineaId, contacts);
+        }
+      });
+      sock.ev.on("contacts.upsert", (contacts) => {
+        ingestLineContacts(lineaId, contacts);
+      });
+      sock.ev.on("contacts.update", (updates) => {
+        ingestLineContacts(lineaId, updates);
+      });
+      sock.ev.on("chats.delete", async (deletedChatIds) => {
+        try {
+          for (const rawJid of deletedChatIds) {
+            if (!rawJid || rawJid === "status@broadcast" || rawJid.endsWith("@g.us")) {
+              continue;
+            }
+            const resolvedPhone = resolveLidToPhoneNumber(lineaId, rawJid, null);
+            const cleanDigits = resolvedPhone.replace(/\D/g, "");
+            if (cleanDigits.length >= 10) {
+              await deleteWhatsAppChatHandler(lineaId, cleanDigits, false);
+            }
+          }
+        } catch (err) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Error procesando chats.delete (${lineaId}):`,
+            err
+          );
+        }
+      });
+      sock.ev.on("messages.upsert", async (m) => {
+        try {
+          for (const msg of m.messages) {
+            if (!msg.message) continue;
+            const remoteJid = msg.key.remoteJid || "";
+            if (!remoteJid || remoteJid === "status@broadcast" || remoteJid.endsWith("@g.us") || remoteJid.endsWith("@newsletter")) {
+              continue;
+            }
+            const isFromMe = Boolean(msg.key.fromMe);
+            const participant = msg.key.participant || msg.participant || null;
+            const counterpartyPhone = resolveLidToPhoneNumber(
+              lineaId,
+              remoteJid,
+              participant
+            );
+            const rawMsg = msg.message;
+            const innerMessage = rawMsg.ephemeralMessage?.message || rawMsg.viewOnceMessage?.message || rawMsg.viewOnceMessageV2?.message || rawMsg.documentWithCaptionMessage?.message || rawMsg;
+            const pushNameClean = cleanContactDisplayName(msg.pushName);
+            const contactsMap = loadLineContacts(lineaId);
+            if (!isFromMe && pushNameClean && counterpartyPhone.startsWith("+")) {
+              const existingContact = contactsMap.get(counterpartyPhone);
+              if (!existingContact) {
+                contactsMap.set(counterpartyPhone, {
+                  phone: counterpartyPhone,
+                  name: pushNameClean,
+                  lid: remoteJid.endsWith("@lid") ? remoteJid : void 0,
+                  updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+                });
+                saveLineContacts(lineaId);
+              }
+            }
+            const savedContactName = contactsMap.get(counterpartyPhone)?.name;
+            const resolvedContactName = savedContactName || (!isFromMe ? pushNameClean : void 0) || void 0;
+            const textBody = innerMessage.conversation || innerMessage.extendedTextMessage?.text || innerMessage.imageMessage?.caption || innerMessage.videoMessage?.caption || innerMessage.documentMessage?.caption || "";
+            const hasImage = Boolean(innerMessage.imageMessage);
+            const hasDoc = Boolean(innerMessage.documentMessage);
+            const hasAudio = Boolean(innerMessage.audioMessage);
+            let mediaDataUrl;
+            let mediaMimeType;
+            let audioDurationSeconds;
+            let isPtt;
+            let attachmentFileName;
+            if (hasImage || hasDoc) {
+              try {
+                const mimeType = innerMessage.imageMessage?.mimetype || innerMessage.documentMessage?.mimetype || "image/jpeg";
+                mediaMimeType = mimeType;
+                attachmentFileName = innerMessage.documentMessage?.fileName || (hasImage ? `Factura_BRM_${Date.now()}.jpg` : void 0);
+                if (mimeType.startsWith("image/") || mimeType === "application/pdf") {
+                  const buffer = await downloadMediaMessage(
+                    msg,
+                    "buffer",
+                    {},
+                    {
+                      logger: pino({ level: "silent" }),
+                      reuploadRequest: sock.updateMediaMessage
+                    }
+                  );
+                  if (buffer && buffer.length < 5 * 1024 * 1024) {
+                    mediaDataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
+                  }
+                }
+              } catch (dlErr) {
+                console.warn(
+                  "[WhatsApp BRM Bridge] No se pudo descargar adjunto binario:",
+                  dlErr
+                );
+              }
+            }
+            if (hasAudio && innerMessage.audioMessage) {
+              try {
+                const rawMime = innerMessage.audioMessage.mimetype || "audio/ogg; codecs=opus";
+                mediaMimeType = rawMime;
+                audioDurationSeconds = Number(
+                  innerMessage.audioMessage.seconds || 0
+                );
+                isPtt = Boolean(innerMessage.audioMessage.ptt);
+                const buffer = await downloadMediaMessage(
+                  msg,
+                  "buffer",
+                  {},
+                  {
+                    logger: pino({ level: "silent" }),
+                    reuploadRequest: sock.updateMediaMessage
+                  }
+                );
+                if (buffer && buffer.length < 8 * 1024 * 1024) {
+                  mediaDataUrl = `data:${rawMime};base64,${buffer.toString("base64")}`;
+                }
+              } catch (audioErr) {
+                console.warn(
+                  "[WhatsApp BRM Bridge] No se pudo descargar nota de voz:",
+                  audioErr
+                );
+              }
+            }
+            const ownPhone = lineStatusMemory.get(lineaId)?.numeroConectado || "LINEA_BRM";
+            const messageId = msg.key.id || `baileys_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+            const formatAudioDuration = (sec) => {
+              if (!sec || sec <= 0) return "";
+              const mins = Math.floor(sec / 60);
+              const rem = sec % 60;
+              return ` (${mins}:${rem < 10 ? "0" : ""}${rem})`;
+            };
+            const defaultCuerpo = hasImage ? "\u{1F4F7} [Imagen / Factura o Comprobante Adjunto]" : hasDoc ? `\u{1F4C4} [Documento: ${innerMessage.documentMessage?.fileName || "Archivo"}]` : hasAudio ? `${isPtt ? "\u{1F3A4} Nota de voz" : "\u{1F3B5} Mensaje de audio"}${formatAudioDuration(audioDurationSeconds)}` : "";
+            const finalBody = textBody || defaultCuerpo;
+            if (!finalBody && !mediaDataUrl) continue;
+            const queuedMsg = {
+              id: messageId,
+              lineaId,
+              messageId,
+              remitente: isFromMe ? ownPhone : counterpartyPhone,
+              senderName: isFromMe ? "Compras / Tesorer\xEDa BRM" : resolvedContactName,
+              destinatario: isFromMe ? counterpartyPhone : ownPhone,
+              destinatarioNombre: isFromMe ? resolvedContactName : void 0,
+              direccion: isFromMe ? "SALIENTE" : "ENTRANTE",
+              cuerpo: finalBody,
+              bodyText: finalBody,
+              tipoMensaje: hasImage ? "IMAGEN" : hasDoc ? "DOCUMENTO" : hasAudio ? "AUDIO" : "TEXTO",
+              mediaUrl: mediaDataUrl,
+              mediaMimeType,
+              audioDurationSeconds,
+              isPtt,
+              attachmentFileName,
+              timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+              estadoEntrega: isFromMe ? "ENTREGADO" : "RECIBIDO"
+            };
+            appendToLocalMessagesQueue(queuedMsg);
+            if (!isFromMe && hasImage && mediaDataUrl) {
+              appendToLocalOcrQueue({
+                id: `ocr_${messageId}`,
+                lineaId,
+                messageId,
+                remitente: counterpartyPhone,
+                senderName: resolvedContactName,
+                mediaDataUrl,
+                mimeType: mediaMimeType || "image/jpeg",
+                caption: textBody,
+                timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+                estado: "pendiente_verificacion"
+              });
+            }
+          }
+        } catch (err) {
+          console.error(
+            `[WhatsApp BRM Bridge] Error procesando mensaje entrante en ${lineaId}:`,
+            err
+          );
+        }
+      });
+      sock.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        if (qr) {
+          const rotations = (qrRotationCounters.get(lineaId) || 0) + 1;
+          qrRotationCounters.set(lineaId, rotations);
+          if (rotations > MAX_QR_ROTATIONS) {
+            console.log(
+              `[WhatsApp BRM Bridge] Cortacircuitos activado en ${lineaId}: QR rot\xF3 ${MAX_QR_ROTATIONS} veces sin escaneo. Pausando socket.`
+            );
+            qrRotationCounters.set(lineaId, 0);
+            setLineState(lineaId, {
+              estado: "QR_EXPIRADO",
+              state: "QR_EXPIRADO",
+              qrCodeDataUri: void 0,
+              qrPayloadData: void 0,
+              qrRotations: MAX_QR_ROTATIONS,
+              ultimoError: 'El c\xF3digo QR expir\xF3 por inactividad tras 5 rotaciones. Haz clic en "Refrescar C\xF3digo QR" para generar uno nuevo.'
+            });
+            try {
+              sock.ws?.close?.();
+              sock.end(void 0);
+            } catch {
+            }
+            activeSockets.delete(lineaId);
+            return;
+          }
+          try {
+            const qrDataUri = await QRCode.toDataURL(qr, {
+              margin: 2,
+              scale: 8,
+              color: {
+                dark: "#000000",
+                light: "#ffffff"
+              }
+            });
+            setLineState(lineaId, {
+              estado: "ESPERANDO_QR",
+              state: "QR_READY",
+              qrCodeDataUri: qrDataUri,
+              qrPayloadData: qr,
+              qrTargetType: "NOISE_PAIRING",
+              qrRotations: rotations,
+              qrGeneratedAtVet: formatVetTimestamp(),
+              ultimoError: void 0
+            });
+            console.log(
+              `[WhatsApp BRM Bridge] QR aut\xE9ntico generado para ${lineaId} (rotaci\xF3n ${rotations}/${MAX_QR_ROTATIONS})`
+            );
+          } catch (qrErr) {
+            console.error("[WhatsApp BRM Bridge] Error generando imagen QR:", qrErr);
+          }
+        }
+        if (connection === "open") {
+          qrRotationCounters.set(lineaId, 0);
+          const rawUser = sock.user?.id || "";
+          const phoneNumber = rawUser.split(":")[0].split("@")[0].replace(/\D/g, "");
+          const connectedE164 = phoneNumber ? `+${phoneNumber}` : "Vinculado";
+          setLineState(lineaId, {
+            estado: "CONECTADO",
+            state: "CONNECTED",
+            qrCodeDataUri: void 0,
+            qrPayloadData: void 0,
+            pairingCode: void 0,
+            numeroConectado: connectedE164,
+            corporatePhoneE164: connectedE164,
+            qrRotations: 0,
+            ultimoError: void 0
+          });
+          console.log(
+            `[WhatsApp BRM Bridge] \xA1L\xEDnea ${lineaId} CONECTADA exitosamente con el n\xFAmero ${connectedE164}!`
+          );
+          backupSessionToStorage(lineaId).catch(() => {
+          });
+        }
+        if (connection === "close") {
+          const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const isBadSession = statusCode === DisconnectReason.badSession;
+          const isRestartRequired = statusCode === DisconnectReason.restartRequired;
+          console.log(
+            `[WhatsApp BRM Bridge] Conexi\xF3n cerrada para ${lineaId}. C\xF3digo: ${statusCode}. LoggedOut: ${isLoggedOut}`
+          );
+          activeSockets.delete(lineaId);
+          const currentMem = lineStatusMemory.get(lineaId);
+          if (currentMem?.estado === "QR_EXPIRADO") {
+            return;
+          }
+          if (isRestartRequired) {
+            console.log(
+              `[WhatsApp BRM Bridge] Reinicio requerido (515) tras emparejar ${lineaId}. Reconectando de inmediato...`
+            );
+            setTimeout(() => {
+              initializeBaileysSocket(lineaId).catch(
+                (e) => console.error("Error en reconexi\xF3n 515:", e)
+              );
+            }, 500);
+            return;
+          }
+          if (isLoggedOut || isBadSession) {
+            console.log(
+              `[WhatsApp BRM Bridge] Sesi\xF3n ${lineaId} cerrada desde el m\xF3vil o llaves corruptas (${statusCode}). Purgando y regenerando QR...`
+            );
+            forceResetAndUnlinkSession(lineaId, true).catch(
+              (e) => console.error("Error en auto-purga tras logout/badSession:", e)
+            );
+          } else {
+            const isManualUnlink = currentMem?.estado === "DESCONECTADO" && !currentMem?.qrCodeDataUri;
+            if (!isManualUnlink) {
+              setTimeout(() => {
+                initializeBaileysSocket(lineaId).catch(
+                  (e) => console.error("Error reconectando:", e)
+                );
+              }, 3e3);
+            }
+          }
+        }
+      });
+      return sock;
+    } finally {
+      initializingPromises.delete(lineaId);
+    }
+  })();
+  initializingPromises.set(lineaId, initPromise);
+  return initPromise;
+}
+function getWhatsAppLineStatusHandler(lineaId = DEFAULT_BRM_LINEA_ID) {
+  const status = lineStatusMemory.get(lineaId) || getDefaultLineState(lineaId);
+  const sock = activeSockets.get(lineaId);
+  const isSocketReallyOpen = Boolean(sock && sock.user?.id);
+  if ((status.estado === "CONECTADO" || status.state === "CONNECTED") && !isSocketReallyOpen) {
+    return setLineState(lineaId, {
+      estado: "DESCONECTADO",
+      state: "DISCONNECTED",
+      numeroConectado: void 0,
+      corporatePhoneE164: "",
+      qrCodeDataUri: void 0,
+      qrPayloadData: void 0
+    });
+  }
+  if (status.estado !== "CONECTADO" && status.numeroConectado) {
+    return setLineState(lineaId, {
+      numeroConectado: void 0,
+      corporatePhoneE164: ""
+    });
+  }
+  return status;
+}
+async function forceResetAndUnlinkSession(lineaId = DEFAULT_BRM_LINEA_ID, generateNewQr = false) {
+  console.log(
+    `[WhatsApp BRM Bridge] Ejecutando purga at\xF3mica de 7 pasos para ${lineaId} (generateNewQr=${generateNewQr})...`
+  );
+  qrRotationCounters.set(lineaId, 0);
+  const existing = activeSockets.get(lineaId);
+  if (existing) {
+    try {
+      existing.ev.removeAllListeners("connection.update");
+      existing.ev.removeAllListeners("creds.update");
+      existing.ev.removeAllListeners("messages.upsert");
+      existing.ev.removeAllListeners("messaging-history.set");
+      existing.ev.removeAllListeners("contacts.upsert");
+      existing.ev.removeAllListeners("contacts.update");
+      existing.ev.removeAllListeners("chats.delete");
+    } catch {
+    }
+    try {
+      existing.ws?.close?.();
+    } catch {
+    }
+    try {
+      existing.end(void 0);
+    } catch {
+    }
+    activeSockets.delete(lineaId);
+  }
+  initializingPromises.delete(lineaId);
+  const resetState = setLineState(lineaId, {
+    estado: generateNewQr ? "ESPERANDO_QR" : "DESCONECTADO",
+    state: generateNewQr ? "GENERATING_QR" : "DISCONNECTED",
+    qrCodeDataUri: void 0,
+    qrPayloadData: void 0,
+    pairingCode: void 0,
+    numeroConectado: void 0,
+    corporatePhoneE164: "",
+    qrRotations: 0,
+    ultimoError: void 0
+  });
+  const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+  try {
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+  } catch (rmErr) {
+    console.warn(
+      `[WhatsApp BRM Bridge] Aviso al limpiar directorio de sesi\xF3n ${lineaId}:`,
+      rmErr
+    );
+  }
+  try {
+    lineContactsCache.delete(lineaId);
+    const contactsFile = getContactsFilePath(lineaId);
+    if (fs.existsSync(contactsFile)) {
+      fs.rmSync(contactsFile, { force: true });
+    }
+  } catch {
+  }
+  deleteSessionBackupFromStorage(lineaId);
+  if (!generateNewQr) {
+    return {
+      success: true,
+      lineaId,
+      estado: "DESCONECTADO",
+      state: "DISCONNECTED",
+      session: resetState,
+      message: "L\xEDnea desvinculada y sesi\xF3n eliminada con \xE9xito"
+    };
+  }
+  try {
+    initializeBaileysSocket(lineaId).catch(
+      (err) => console.error(`[WhatsApp BRM Bridge] Error iniciando socket limpio (${lineaId}):`, err)
+    );
+    let waited = 0;
+    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 8e3) {
+      await new Promise((r) => setTimeout(r, 200));
+      waited += 200;
+    }
+    const current = getWhatsAppLineStatusHandler(lineaId);
+    return {
+      success: true,
+      lineaId,
+      estado: current.estado,
+      state: current.state,
+      qrCodeDataUri: current.qrCodeDataUri,
+      session: current,
+      message: "Sesi\xF3n purgada y nuevo c\xF3digo QR generado con \xE9xito"
+    };
+  } catch (err) {
+    const failedState = setLineState(lineaId, {
+      estado: "ERROR",
+      state: "DISCONNECTED",
+      ultimoError: err?.message || String(err)
+    });
+    return {
+      success: false,
+      lineaId,
+      estado: "ERROR",
+      state: "DISCONNECTED",
+      session: failedState,
+      message: "Error al forzar reinicio de QR",
+      error: err?.message || String(err)
+    };
+  }
+}
+async function generateQrCodeHandler(lineaId = DEFAULT_BRM_LINEA_ID, forceNew = false) {
+  qrRotationCounters.set(lineaId, 0);
+  if (forceNew) {
+    const res = await forceResetAndUnlinkSession(lineaId, true);
+    return {
+      success: res.success,
+      ...res.session
+    };
+  }
+  const currentStatus = getWhatsAppLineStatusHandler(lineaId);
+  if (currentStatus.estado === "CONECTADO") {
+    return {
+      success: true,
+      ...currentStatus
+    };
+  }
+  if (activeSockets.has(lineaId) && currentStatus.estado === "ESPERANDO_QR" && currentStatus.qrCodeDataUri) {
+    return {
+      success: true,
+      ...currentStatus
+    };
+  }
+  try {
+    setLineState(lineaId, {
+      estado: "ESPERANDO_QR",
+      state: "GENERATING_QR",
+      ultimoError: void 0
+    });
+    if (!activeSockets.has(lineaId)) {
+      initializeBaileysSocket(lineaId).catch((err) => {
+        console.error(
+          `[WhatsApp BRM Bridge] Error inicializando Baileys (${lineaId}):`,
+          err
+        );
+      });
+    }
+    let waited = 0;
+    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 8e3) {
+      await new Promise((r) => setTimeout(r, 200));
+      waited += 200;
+    }
+    const updated = getWhatsAppLineStatusHandler(lineaId);
+    return {
+      success: true,
+      ...updated
+    };
+  } catch (error) {
+    const errState = setLineState(lineaId, {
+      estado: "ERROR",
+      state: "DISCONNECTED",
+      ultimoError: error?.message || String(error)
+    });
+    return {
+      success: false,
+      ...errState
+    };
+  }
+}
+async function requestPairingCodeHandler(lineaId = DEFAULT_BRM_LINEA_ID, phoneRaw = "") {
+  const phoneDigits = String(phoneRaw || "").replace(/\D/g, "");
+  if (!phoneDigits || phoneDigits.length < 10) {
+    const st = getWhatsAppLineStatusHandler(lineaId);
+    return {
+      ...st,
+      success: false,
+      error: "Debe ingresar un n\xFAmero de tel\xE9fono v\xE1lido en formato E.164 (ej. +584121234567)."
+    };
+  }
+  try {
+    setLineState(lineaId, {
+      estado: "ESPERANDO_QR",
+      state: "GENERATING_QR",
+      ultimoError: void 0
+    });
+    const sock = activeSockets.get(lineaId) || await initializeBaileysSocket(lineaId);
+    await new Promise((r) => setTimeout(r, 1500));
+    const rawCode = await sock.requestPairingCode(phoneDigits);
+    const formattedCode = rawCode?.match(/.{1,4}/g)?.join("-") || rawCode;
+    const updated = setLineState(lineaId, {
+      estado: "ESPERANDO_QR",
+      state: "QR_READY",
+      pairingCode: formattedCode,
+      qrTargetType: "PAIRING_CODE"
+    });
+    return {
+      ...updated,
+      success: true,
+      pairingCode: formattedCode
+    };
+  } catch (err) {
+    const current = getWhatsAppLineStatusHandler(lineaId);
+    return {
+      ...current,
+      success: false,
+      error: `No se pudo obtener el c\xF3digo de vinculaci\xF3n: ${err?.message || err}`
+    };
+  }
+}
+async function sendWhatsAppMessageHandler(lineaId = DEFAULT_BRM_LINEA_ID, toPhone, text, mediaDataUrl, mediaType, audioOptions) {
+  const sock = activeSockets.get(lineaId);
+  const status = getWhatsAppLineStatusHandler(lineaId);
+  if (!sock || status.estado !== "CONECTADO") {
+    return {
+      success: false,
+      error: `La l\xEDnea ${lineaId} no est\xE1 vinculada actualmente. Escanee el c\xF3digo QR primero.`
+    };
+  }
+  const cleanDigits = String(toPhone || "").replace(/\D/g, "");
+  if (!cleanDigits) {
+    return {
+      success: false,
+      error: "N\xFAmero de destino inv\xE1lido"
+    };
+  }
+  const jid = `${cleanDigits}@s.whatsapp.net`;
+  const targetLid = findLidForPhoneDigits(lineaId, cleanDigits);
+  try {
+    let sent;
+    if (mediaDataUrl && mediaDataUrl.startsWith("data:audio/")) {
+      const base64Data = mediaDataUrl.split(",")[1] || "";
+      const audioBuffer = Buffer.from(base64Data, "base64");
+      const mimePart = audioOptions?.mimeType || mediaDataUrl.substring(5, mediaDataUrl.indexOf(";")) || "audio/ogg; codecs=opus";
+      const sendJid = targetLid && cleanDigits.length > 13 ? targetLid : jid;
+      sent = await sock.sendMessage(sendJid, {
+        audio: audioBuffer,
+        mimetype: mimePart,
+        ptt: audioOptions?.isPtt !== false,
+        seconds: audioOptions?.durationSeconds || void 0
+      });
+    } else if (mediaDataUrl && mediaDataUrl.startsWith("data:image/")) {
+      const base64Data = mediaDataUrl.split(",")[1] || "";
+      const imgBuffer = Buffer.from(base64Data, "base64");
+      sent = await sock.sendMessage(jid, {
+        image: imgBuffer,
+        caption: text || ""
+      });
+    } else {
+      sent = await sock.sendMessage(jid, { text });
+    }
+    const messageId = sent?.key?.id || `msg_${Date.now()}`;
+    return {
+      success: true,
+      messageId,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(`[WhatsApp BRM Bridge] Error enviando mensaje a ${jid}:`, error);
+    return {
+      success: false,
+      error: error?.message || "Error al despachar mensaje por Baileys"
+    };
+  }
+}
+async function deleteWhatsAppChatHandler(lineaId = DEFAULT_BRM_LINEA_ID, contactPhone, syncToSocket = true) {
+  const cleanDigits = String(contactPhone || "").replace(/\D/g, "");
+  if (!cleanDigits) {
+    return { success: false, error: "N\xFAmero de proveedor inv\xE1lido para eliminar chat" };
+  }
+  let deletedFromLocalQueue = 0;
+  let syncedWithWhatsAppDevice = false;
+  try {
+    if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+      const queue = JSON.parse(
+        fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8")
+      );
+      if (Array.isArray(queue)) {
+        const filtered = queue.filter((m) => {
+          if (m.lineaId && m.lineaId !== lineaId) return true;
+          const remDigits = String(m.remitente || "").replace(/\D/g, "");
+          const destDigits = String(m.destinatario || "").replace(/\D/g, "");
+          const match = remDigits === cleanDigits || destDigits === cleanDigits || remDigits.endsWith(cleanDigits) || destDigits.endsWith(cleanDigits);
+          if (match) deletedFromLocalQueue++;
+          return !match;
+        });
+        fs.writeFileSync(
+          PENDING_MESSAGES_QUEUE_FILE,
+          JSON.stringify(filtered, null, 2),
+          "utf-8"
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Aviso limpiando cola local en delete-chat:", err);
+  }
+  if (syncToSocket) {
+    const sock = activeSockets.get(lineaId);
+    const status = getWhatsAppLineStatusHandler(lineaId);
+    if (sock && status.estado === "CONECTADO") {
+      try {
+        const jid = `${cleanDigits}@s.whatsapp.net`;
+        await sock.chatModify(
+          {
+            delete: true,
+            lastMessages: [
+              {
+                key: { remoteJid: jid, fromMe: true, id: "CLEAR_CHAT" },
+                messageTimestamp: Math.floor(Date.now() / 1e3)
+              }
+            ]
+          },
+          jid
+        );
+        syncedWithWhatsAppDevice = true;
+      } catch (err) {
+        const errMsg = String(err?.message || err || "");
+        if (!errMsg.includes("rate-overlimit") && err?.data !== 429) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Aviso al sincronizar borrado en dispositivo (${cleanDigits}):`,
+            errMsg
+          );
+        }
+      }
+    }
+  }
+  return {
+    success: true,
+    lineaId,
+    contactPhone: `+${cleanDigits}`,
+    deletedFromLocalQueue,
+    syncedWithWhatsAppDevice
+  };
+}
+async function autoRestoreExistingSessions() {
+  try {
+    const store = readEncryptedBackupStore();
+    for (const lineaId of Object.keys(store)) {
+      const localCreds = path.join(SESSIONS_ROOT, lineaId, "creds.json");
+      if (!fs.existsSync(localCreds)) {
+        await restoreSessionFromStorage(lineaId);
+      }
+    }
+    if (!fs.existsSync(SESSIONS_ROOT)) return;
+    const entries = fs.readdirSync(SESSIONS_ROOT, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const lineaId = entry.name;
+        const credsFile = path.join(SESSIONS_ROOT, lineaId, "creds.json");
+        if (fs.existsSync(credsFile) && !activeSockets.has(lineaId)) {
+          console.log(
+            `[WhatsApp BRM Bridge] Auto-restaurando sesi\xF3n previa para ${lineaId}...`
+          );
+          initializeBaileysSocket(lineaId).catch(
+            (err) => console.error(`Error auto-restaurando ${lineaId}:`, err)
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[WhatsApp BRM Bridge] Error en autoRestoreExistingSessions:", err);
+  }
+}
+
+// server.ts
 Decimal2.set({
   precision: 28,
   rounding: Decimal2.ROUND_HALF_UP
@@ -239,23 +1440,17 @@ var CARACAS_TIMEZONE = "America/Caracas";
 var FORENSIC_TOLERANCE = 0.01;
 var cachedBcvQuote = null;
 var CACHE_TTL_MS = 45e3;
-var PENDING_QUEUE_PATH = path.join(process.cwd(), "pending_queue.json");
+var PENDING_QUEUE_PATH = path2.join(process.cwd(), "pending_queue.json");
 var hasAdminCredentials = Boolean(
-  process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+  process.env.GOOGLE_APPLICATION_CREDENTIALS && fs2.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)
 );
 var inMemoryOfflineQueue = [];
 var processedBrmMessageIds = /* @__PURE__ */ new Set();
-var brmServerSession = {
-  state: process.env.WHATSAPP_CLOUD_TOKEN ? "CLOUD_STANDBY" : "DISCONNECTED",
-  activeMode: process.env.WHATSAPP_CLOUD_TOKEN ? "CLOUD_API_WEBHOOK" : "WA_ME_DIRECT_LEDGER",
-  corporatePhoneE164: process.env.BRM_CORPORATE_PHONE_E164 || "+582432345678",
-  lastHeartbeatVet: "08:00:00"
-};
 function readPendingOfflineQueueSafe() {
   let records = [...inMemoryOfflineQueue];
   try {
-    if (fs.existsSync(PENDING_QUEUE_PATH)) {
-      const raw = fs.readFileSync(PENDING_QUEUE_PATH, "utf8");
+    if (fs2.existsSync(PENDING_QUEUE_PATH)) {
+      const raw = fs2.readFileSync(PENDING_QUEUE_PATH, "utf8");
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         records = parsed;
@@ -271,7 +1466,7 @@ function appendPendingOfflineQueueSafe(item) {
   const next = [item, ...current].slice(0, 500);
   inMemoryOfflineQueue = next;
   try {
-    fs.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), "utf8");
+    fs2.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), "utf8");
   } catch {
   }
 }
@@ -282,7 +1477,7 @@ function removePendingOfflineQueueIdsSafe(queueIds) {
   const removedCount = current.length - next.length;
   inMemoryOfflineQueue = next;
   try {
-    fs.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), "utf8");
+    fs2.writeFileSync(PENDING_QUEUE_PATH, JSON.stringify(next, null, 2), "utf8");
   } catch {
   }
   return removedCount;
@@ -413,7 +1608,7 @@ function parseOfficialBcvHtml(html) {
   };
 }
 function computeDeterministicSha256(fileName, fileSize, extraSeed = "") {
-  return crypto.createHash("sha256").update(`${fileName}::${fileSize}::${extraSeed}`).digest("hex");
+  return crypto2.createHash("sha256").update(`${fileName}::${fileSize}::${extraSeed}`).digest("hex");
 }
 function runForensicOcrAudit(input) {
   const auditLog = [];
@@ -861,251 +2056,24 @@ ${query}` : String(query);
       });
     }
   });
-  const BRM_SESSION_DIR = path.resolve(process.cwd(), ".whatsapp_sessions", "linea_brm");
-  let activeBrmSocket = null;
-  let brmSocketInitializingPromise = null;
-  let brmQrEmitterPromiseResolver = null;
-  async function getOrInitBrmSocket(forceNew = false) {
-    if (forceNew) {
-      if (activeBrmSocket) {
-        try {
-          activeBrmSocket.ev.removeAllListeners("connection.update");
-          activeBrmSocket.ev.removeAllListeners("creds.update");
-          activeBrmSocket.ev.removeAllListeners("messages.upsert");
-          activeBrmSocket.ev?.removeAllListeners?.();
-        } catch {
-        }
-        try {
-          activeBrmSocket.ws?.close?.();
-        } catch {
-        }
-        try {
-          activeBrmSocket.end(void 0);
-        } catch {
-        }
-        activeBrmSocket = null;
-      }
-      brmSocketInitializingPromise = null;
-      brmQrEmitterPromiseResolver = null;
-      brmServerSession.qrCodeDataUri = void 0;
-      brmServerSession.qrPayloadData = void 0;
-      brmServerSession.pairingCode = void 0;
-      try {
-        if (fs.existsSync(BRM_SESSION_DIR)) {
-          fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
-        }
-      } catch (rmErr) {
-        console.warn("[BRM WhatsApp] Aviso limpiando sesi\xF3n:", rmErr);
-      }
-    }
-    if (activeBrmSocket) {
-      return activeBrmSocket;
-    }
-    if (brmSocketInitializingPromise && !forceNew) {
-      return brmSocketInitializingPromise;
-    }
-    brmSocketInitializingPromise = (async () => {
-      try {
-        if (!fs.existsSync(BRM_SESSION_DIR)) {
-          fs.mkdirSync(BRM_SESSION_DIR, { recursive: true });
-        }
-        const { state, saveCreds } = await useMultiFileAuthState(BRM_SESSION_DIR);
-        const sock = makeWASocket({
-          auth: state,
-          logger: pino({ level: "silent" }),
-          browser: Browsers.macOS("Desktop"),
-          printQRInTerminal: false,
-          syncFullHistory: false,
-          markOnlineOnConnect: true,
-          connectTimeoutMs: 6e4,
-          defaultQueryTimeoutMs: 6e4,
-          keepAliveIntervalMs: 25e3
-        });
-        activeBrmSocket = sock;
-        sock.ev.on("creds.update", async () => {
-          try {
-            await saveCreds();
-          } catch (saveErr) {
-            console.warn("[BRM WhatsApp] Error guardando credenciales:", saveErr);
-          }
-        });
-        sock.ev.on("connection.update", async (update) => {
-          const { qr, connection, lastDisconnect } = update;
-          const nowCaracas = getCaracasNow();
-          const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
-          if (qr) {
-            try {
-              const qrDataUri = await QRCode.toDataURL(qr, {
-                margin: 2,
-                scale: 8,
-                color: { dark: "#000000", light: "#ffffff" }
-              });
-              brmServerSession.state = "QR_READY";
-              brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
-              brmServerSession.qrPayloadData = qr;
-              brmServerSession.qrCodeDataUri = qrDataUri;
-              brmServerSession.qrTargetType = "NOISE_PAIRING";
-              brmServerSession.qrGeneratedAtVet = nowStamp;
-              brmServerSession.lastHeartbeatVet = nowStamp;
-              if (brmQrEmitterPromiseResolver) {
-                brmQrEmitterPromiseResolver(qrDataUri);
-                brmQrEmitterPromiseResolver = null;
-              }
-              console.log("[BRM WhatsApp] Authentic Baileys QR generado exitosamente (Patr\xF3n Puro Apure ERP).");
-            } catch (qrErr) {
-              console.error("[BRM WhatsApp] Error generando data URI de QR:", qrErr);
-            }
-          }
-          if (connection === "open") {
-            const rawUser = sock.user?.id || "";
-            const phoneDigits = rawUser.split(":")[0].split("@")[0].replace(/[^\d]/g, "");
-            const connectedPhone = phoneDigits ? `+${phoneDigits}` : void 0;
-            brmServerSession.state = "CONNECTED";
-            brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
-            brmServerSession.qrCodeDataUri = void 0;
-            brmServerSession.qrPayloadData = void 0;
-            brmServerSession.pairingCode = void 0;
-            if (connectedPhone) {
-              brmServerSession.corporatePhoneE164 = connectedPhone;
-            }
-            brmServerSession.lastHeartbeatVet = nowStamp;
-            console.log(
-              `[BRM WhatsApp] \xA1L\xEDnea BRM CONECTADA exitosamente con ${connectedPhone || "dispositivo real"}!`
-            );
-          }
-          if (connection === "close") {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const isRestartRequired = statusCode === DisconnectReason.restartRequired;
-            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-            const isBadSession = statusCode === DisconnectReason.badSession;
-            console.log(
-              `[BRM WhatsApp] Conexi\xF3n cerrada. C\xF3digo: ${statusCode}. LoggedOut: ${isLoggedOut}. RestartRequired: ${isRestartRequired}`
-            );
-            activeBrmSocket = null;
-            if (isRestartRequired) {
-              console.log("[BRM WhatsApp] Reinicio 515 post-escaneo. Reconectando de inmediato...");
-              setTimeout(() => {
-                getOrInitBrmSocket(false).catch(
-                  (err) => console.warn("[BRM WhatsApp] Error en reconexi\xF3n 515:", err)
-                );
-              }, 500);
-              return;
-            }
-            if (isLoggedOut || isBadSession) {
-              console.log("[BRM WhatsApp] Sesi\xF3n desvinculada o corrupta. Purgando directorio...");
-              try {
-                if (fs.existsSync(BRM_SESSION_DIR)) {
-                  fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
-                }
-              } catch {
-              }
-              brmServerSession.state = "DISCONNECTED";
-              brmServerSession.activeMode = "WA_ME_DIRECT_LEDGER";
-              brmServerSession.qrCodeDataUri = void 0;
-              brmServerSession.qrPayloadData = void 0;
-              brmServerSession.pairingCode = void 0;
-              brmServerSession.lastHeartbeatVet = nowStamp;
-              return;
-            }
-            if (brmServerSession.state === "CONNECTED") {
-              setTimeout(() => {
-                getOrInitBrmSocket(false).catch(
-                  (err) => console.warn("[BRM WhatsApp] Error en reconexi\xF3n autom\xE1tica:", err)
-                );
-              }, 3e3);
-            }
-          }
-        });
-        return sock;
-      } finally {
-        brmSocketInitializingPromise = null;
-      }
-    })();
-    return brmSocketInitializingPromise;
-  }
-  async function forceResetAndUnlinkSession(generateNewQr = true) {
-    const nowCaracas = getCaracasNow();
-    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
-    if (activeBrmSocket) {
-      try {
-        activeBrmSocket.ev.removeAllListeners("connection.update");
-        activeBrmSocket.ev.removeAllListeners("creds.update");
-        activeBrmSocket.ev.removeAllListeners("messages.upsert");
-        activeBrmSocket.ev?.removeAllListeners?.();
-      } catch {
-      }
-      try {
-        activeBrmSocket.ws?.close?.();
-      } catch {
-      }
-      try {
-        activeBrmSocket.end(void 0);
-      } catch {
-      }
-      activeBrmSocket = null;
-    }
-    brmSocketInitializingPromise = null;
-    brmQrEmitterPromiseResolver = null;
-    brmServerSession.state = generateNewQr ? "GENERATING_QR" : "DISCONNECTED";
-    brmServerSession.activeMode = generateNewQr ? "QR_SOCKET_BRIDGE" : "WA_ME_DIRECT_LEDGER";
-    brmServerSession.qrCodeDataUri = void 0;
-    brmServerSession.qrPayloadData = void 0;
-    brmServerSession.pairingCode = void 0;
-    brmServerSession.qrGeneratedAtVet = void 0;
-    brmServerSession.lastHeartbeatVet = nowStamp;
-    try {
-      if (fs.existsSync(BRM_SESSION_DIR)) {
-        fs.rmSync(BRM_SESSION_DIR, { recursive: true, force: true });
-      }
-    } catch (rmErr) {
-      console.warn("[BRM WhatsApp] Aviso limpiando sesi\xF3n f\xEDsica:", rmErr);
-    }
-    if (!generateNewQr) {
-      return {
-        success: true,
-        state: "DISCONNECTED",
-        session: { ...brmServerSession },
-        message: "L\xEDnea BRM desvinculada y sesi\xF3n eliminada con \xE9xito"
-      };
-    }
-    try {
-      getOrInitBrmSocket(false).catch(
-        (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys tras purga:", err)
-      );
-      let waited = 0;
-      while (!brmServerSession.qrCodeDataUri && brmServerSession.state !== "CONNECTED" && waited < 8e3) {
-        await new Promise((r) => setTimeout(r, 200));
-        waited += 200;
-      }
-      return {
-        success: true,
-        state: brmServerSession.state,
-        qrCodeDataUri: brmServerSession.qrCodeDataUri,
-        session: { ...brmServerSession },
-        message: "Sesi\xF3n purgada y nuevo c\xF3digo QR generado con \xE9xito"
-      };
-    } catch (initErr) {
-      console.error("[BRM WhatsApp] Error en reinicio forzado de socket:", initErr);
-      return {
-        success: false,
-        state: "DISCONNECTED",
-        session: { ...brmServerSession },
-        message: "Error al forzar reinicio de QR",
-        error: initErr?.message || String(initErr)
-      };
-    }
-  }
-  const handleWhatsappStatus = (_req, res) => {
+  autoRestoreExistingSessions().catch(
+    (err) => console.warn("[BRM WhatsApp] Aviso en auto-restauraci\xF3n inicial:", err)
+  );
+  const handleWhatsappStatus = (req, res) => {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    const nowCaracas = getCaracasNow();
+    const lineaId = String(
+      req.query?.lineaId || req.body?.lineaId || DEFAULT_BRM_LINEA_ID
+    );
+    const bridgeStatus = getWhatsAppLineStatusHandler(lineaId);
     const queue = readPendingOfflineQueueSafe();
-    brmServerSession.lastHeartbeatVet = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
+    const pendingMsgs = readPendingMessagesQueue(lineaId);
+    const pendingOcr = readPendingOcrQueue(lineaId);
     res.json({
       success: true,
-      ...brmServerSession,
-      estado: brmServerSession.state,
+      ...bridgeStatus,
+      corporatePhoneE164: bridgeStatus.numeroConectado || bridgeStatus.corporatePhoneE164 || "",
       hasAdminCredentials,
-      pendingOfflineQueueCount: queue.length
+      pendingOfflineQueueCount: queue.length + pendingMsgs.length + pendingOcr.length
     });
   };
   app.get("/api/brm/whatsapp/status", handleWhatsappStatus);
@@ -1116,28 +2084,26 @@ ${query}` : String(query);
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     const body = req.body || {};
     const query = req.query || {};
-    const corporatePhoneE164 = body.corporatePhoneE164 || query.corporatePhoneE164;
-    if (corporatePhoneE164 && typeof corporatePhoneE164 === "string") {
-      const norm = normalizeServerPhoneE164(corporatePhoneE164);
-      if (norm) brmServerSession.corporatePhoneE164 = norm;
-    }
+    const lineaId = String(body.lineaId || query.lineaId || DEFAULT_BRM_LINEA_ID);
     try {
-      const result = await forceResetAndUnlinkSession(true);
+      const result = await forceResetAndUnlinkSession(lineaId, true);
       res.json({
         success: result.success,
         ...result.session,
-        estado: result.state,
+        estado: result.estado,
+        state: result.state,
         qrCodeDataUri: result.qrCodeDataUri,
         hasAdminCredentials,
         pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
       });
     } catch (err) {
       console.error("[BRM WhatsApp] Error en force-qr:", err);
+      const fallback = getWhatsAppLineStatusHandler(lineaId);
       res.status(500).json({
         success: false,
-        ...brmServerSession,
+        ...fallback,
         state: "DISCONNECTED",
-        estado: "DISCONNECTED",
+        estado: "DESCONECTADO",
         error: err?.message || "Error regenerando c\xF3digo QR"
       });
     }
@@ -1148,47 +2114,26 @@ ${query}` : String(query);
   app.get("/api/whatsapp/force-qr", handleWhatsappForceQr);
   const handleWhatsappPairingCode = async (req, res) => {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    const { corporatePhoneE164 } = req.body || {};
-    const nowCaracas = getCaracasNow();
-    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
-    const targetPhone = corporatePhoneE164 || brmServerSession.corporatePhoneE164;
-    const phoneDigits = targetPhone.replace(/\D/g, "");
-    if (!phoneDigits || phoneDigits.length < 10) {
+    const body = req.body || {};
+    const query = req.query || {};
+    const lineaId = String(body.lineaId || query.lineaId || DEFAULT_BRM_LINEA_ID);
+    const corporatePhoneE164 = String(
+      body.corporatePhoneE164 || query.corporatePhoneE164 || ""
+    );
+    const result = await requestPairingCodeHandler(lineaId, corporatePhoneE164);
+    if (!result.success) {
       res.status(400).json({
-        ...brmServerSession,
-        success: false,
-        error: "Debe ingresar un n\xFAmero de tel\xE9fono v\xE1lido (E.164 con c\xF3digo de pa\xEDs, ej. +584121234567)."
-      });
-      return;
-    }
-    try {
-      brmServerSession.state = "GENERATING_QR";
-      brmServerSession.lastHeartbeatVet = nowStamp;
-      const sock = await getOrInitBrmSocket(false);
-      await new Promise((r) => setTimeout(r, 1500));
-      const rawCode = await sock.requestPairingCode(phoneDigits);
-      const formattedCode = rawCode?.match(/.{1,4}/g)?.join("-") || rawCode;
-      brmServerSession.state = "QR_READY";
-      brmServerSession.activeMode = "QR_SOCKET_BRIDGE";
-      brmServerSession.pairingCode = formattedCode;
-      brmServerSession.qrTargetType = "PAIRING_CODE";
-      brmServerSession.lastHeartbeatVet = nowStamp;
-      console.log(`[BRM WhatsApp] Pairing Code oficial emitido por WhatsApp: ${formattedCode}`);
-      res.json({
-        ...brmServerSession,
-        success: true,
-        pairingCode: formattedCode,
+        ...result,
         hasAdminCredentials,
         pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
       });
-    } catch (err) {
-      console.error("[BRM WhatsApp] Error solicitando pairing code:", err);
-      res.status(500).json({
-        ...brmServerSession,
-        success: false,
-        error: `No se pudo obtener el c\xF3digo de WhatsApp: ${err?.message || err}`
-      });
+      return;
     }
+    res.json({
+      ...result,
+      hasAdminCredentials,
+      pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
+    });
   };
   app.post("/api/brm/whatsapp/pairing-code", handleWhatsappPairingCode);
   app.post("/api/whatsapp/pairing-code", handleWhatsappPairingCode);
@@ -1196,147 +2141,40 @@ ${query}` : String(query);
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     const body = req.body || {};
     const query = req.query || {};
+    const lineaId = String(body.lineaId || query.lineaId || DEFAULT_BRM_LINEA_ID);
     const action = body.action || query.action || "GENERATE_QR";
-    const corporatePhoneE164 = body.corporatePhoneE164 || query.corporatePhoneE164;
-    const qrType = body.qrType || query.qrType || "NOISE_PAIRING";
-    const force = body.force === true || body.force === "true" || query.force === "true";
-    const nowCaracas = getCaracasNow();
-    const nowStamp = `${nowCaracas.dateFormatted} ${nowCaracas.timeFormatted}`;
-    if (corporatePhoneE164 && typeof corporatePhoneE164 === "string") {
-      const norm = normalizeServerPhoneE164(corporatePhoneE164);
-      if (norm) brmServerSession.corporatePhoneE164 = norm;
-    }
-    if (action === "CONFIRM_PAIRING") {
-      brmServerSession = {
-        ...brmServerSession,
-        state: "CONNECTED",
-        activeMode: "QR_SOCKET_BRIDGE",
-        qrPayloadData: void 0,
-        qrCodeDataUri: void 0,
-        pairingCode: void 0,
-        qrTargetType: void 0,
-        lastHeartbeatVet: nowStamp
-      };
-      res.json({
-        success: true,
-        ...brmServerSession,
-        estado: "CONNECTED",
-        hasAdminCredentials,
-        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-      });
-      return;
-    }
-    if (action === "USE_CLOUD_WEBHOOK") {
-      brmServerSession = {
-        ...brmServerSession,
-        state: "CLOUD_STANDBY",
-        activeMode: "CLOUD_API_WEBHOOK",
-        qrPayloadData: void 0,
-        qrCodeDataUri: void 0,
-        pairingCode: void 0,
-        qrTargetType: void 0,
-        lastHeartbeatVet: nowStamp
-      };
-      res.json({
-        success: true,
-        ...brmServerSession,
-        estado: "CLOUD_STANDBY",
-        hasAdminCredentials,
-        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-      });
-      return;
-    }
+    const force = action === "REGENERATE_QR" || body.force === true || body.force === "true" || query.force === "true";
     if (action === "REQUEST_PAIRING_CODE" || action === "PAIRING_CODE") {
       return handleWhatsappPairingCode(req, res);
     }
-    if (action === "REGENERATE_QR" || force) {
-      const result = await forceResetAndUnlinkSession(true);
-      res.json({
-        success: result.success,
-        ...result.session,
-        estado: result.state,
-        qrCodeDataUri: result.qrCodeDataUri,
-        hasAdminCredentials,
-        pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-      });
-      return;
-    }
-    if (qrType === "WA_ME_LINK") {
-      const digits = brmServerSession.corporatePhoneE164.replace(/\D/g, "") || "582432345678";
-      const qrPayload = `https://wa.me/${digits}?text=${encodeURIComponent(
-        "Conexi\xF3n BRM AR Group 2026"
-      )}`;
-      const qrDataUri = await QRCode.toDataURL(qrPayload, {
-        margin: 4,
-        scale: 8,
-        color: { dark: "#000000", light: "#ffffff" }
-      });
-      brmServerSession = {
-        ...brmServerSession,
-        state: "QR_READY",
-        activeMode: "QR_SOCKET_BRIDGE",
-        qrPayloadData: qrPayload,
-        qrCodeDataUri: qrDataUri,
-        pairingCode: void 0,
-        qrTargetType: qrType,
-        qrGeneratedAtVet: nowStamp,
-        lastHeartbeatVet: nowStamp
-      };
+    if (action === "USE_CLOUD_WEBHOOK") {
+      const current = getWhatsAppLineStatusHandler(lineaId);
       res.json({
         success: true,
-        ...brmServerSession,
-        estado: "QR_READY",
-        qrCodeDataUri: qrDataUri,
+        ...current,
+        state: "CLOUD_STANDBY",
+        estado: "DESCONECTADO",
+        activeMode: "CLOUD_API_WEBHOOK",
         hasAdminCredentials,
         pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
       });
       return;
     }
     try {
-      if (brmServerSession.state === "CONNECTED") {
-        res.json({
-          success: true,
-          ...brmServerSession,
-          estado: "CONNECTED",
-          hasAdminCredentials,
-          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-        });
-        return;
-      }
-      if (activeBrmSocket && brmServerSession.state === "QR_READY" && brmServerSession.qrCodeDataUri) {
-        res.json({
-          success: true,
-          ...brmServerSession,
-          estado: "QR_READY",
-          hasAdminCredentials,
-          pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
-        });
-        return;
-      }
-      if (!activeBrmSocket) {
-        getOrInitBrmSocket(false).catch(
-          (err) => console.warn("[BRM WhatsApp] Error iniciando Baileys:", err)
-        );
-      }
-      let waited = 0;
-      while (!brmServerSession.qrCodeDataUri && brmServerSession.state !== "CONNECTED" && waited < 8e3) {
-        await new Promise((r) => setTimeout(r, 200));
-        waited += 200;
-      }
+      const result = await generateQrCodeHandler(lineaId, force);
       res.json({
-        success: true,
-        ...brmServerSession,
-        estado: brmServerSession.state,
+        ...result,
         hasAdminCredentials,
         pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
       });
     } catch (err) {
       console.warn("[BRM WhatsApp] Error gestionando conexi\xF3n Baileys:", err);
+      const fallback = getWhatsAppLineStatusHandler(lineaId);
       res.json({
         success: false,
-        ...brmServerSession,
+        ...fallback,
         state: "DISCONNECTED",
-        estado: "DISCONNECTED",
+        estado: "DESCONECTADO",
         qrCodeDataUri: void 0,
         hasAdminCredentials,
         pendingOfflineQueueCount: readPendingOfflineQueueSafe().length
@@ -1347,12 +2185,20 @@ ${query}` : String(query);
   app.get("/api/brm/whatsapp/qr", handleWhatsappQr);
   app.post("/api/whatsapp/qr", handleWhatsappQr);
   app.get("/api/whatsapp/qr", handleWhatsappQr);
-  const handleWhatsappDisconnect = async (_req, res) => {
+  const handleWhatsappDisconnect = async (req, res) => {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
-    const result = await forceResetAndUnlinkSession(false);
+    const lineaId = String(
+      req.body?.lineaId || req.query?.lineaId || DEFAULT_BRM_LINEA_ID
+    );
+    const generateNewQr = req.body?.generateNewQr === true || req.query?.generateNewQr === "true";
+    const result = await forceResetAndUnlinkSession(lineaId, generateNewQr);
     res.json({
       ok: true,
-      success: true,
+      success: result.success,
+      ...result.session,
+      estado: result.estado,
+      state: result.state,
+      qrCodeDataUri: result.qrCodeDataUri,
       session: {
         ...result.session,
         hasAdminCredentials,
@@ -1362,6 +2208,52 @@ ${query}` : String(query);
   };
   app.post("/api/brm/whatsapp/disconnect", handleWhatsappDisconnect);
   app.post("/api/whatsapp/disconnect", handleWhatsappDisconnect);
+  const handleWhatsappContacts = (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    const lineaId = String(
+      req.query?.lineaId || req.body?.lineaId || DEFAULT_BRM_LINEA_ID
+    );
+    res.json(getLineContactsHandler(lineaId));
+  };
+  app.get("/api/brm/whatsapp/contacts", handleWhatsappContacts);
+  app.get("/api/whatsapp/contacts", handleWhatsappContacts);
+  const handleWhatsappDeleteChat = async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    const body = req.body || {};
+    const lineaId = String(body.lineaId || DEFAULT_BRM_LINEA_ID);
+    const contactPhone = String(body.contactPhone || body.phone || "");
+    const syncToSocket = body.syncToSocket !== false;
+    const result = await deleteWhatsAppChatHandler(lineaId, contactPhone, syncToSocket);
+    res.json(result);
+  };
+  app.post("/api/brm/whatsapp/delete-chat", handleWhatsappDeleteChat);
+  app.post("/api/whatsapp/delete-chat", handleWhatsappDeleteChat);
+  const handleWhatsappOfflineQueue = (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    const lineaId = req.query?.lineaId ? String(req.query.lineaId) : void 0;
+    if (req.method === "GET") {
+      const messages = readPendingMessagesQueue(lineaId);
+      const ocrItems = readPendingOcrQueue(lineaId);
+      res.json({
+        success: true,
+        hasAdminCredentials,
+        messages,
+        ocrItems
+      });
+      return;
+    }
+    if (req.method === "POST") {
+      const { messageIds = [], ocrIds = [] } = req.body || {};
+      clearSyncedOfflineQueueItems({ messageIds, ocrIds });
+      res.json({ success: true });
+      return;
+    }
+    res.status(405).json({ error: "Method not allowed" });
+  };
+  app.get("/api/brm/whatsapp/offline-queue", handleWhatsappOfflineQueue);
+  app.post("/api/brm/whatsapp/offline-queue", handleWhatsappOfflineQueue);
+  app.get("/api/whatsapp/offline-queue", handleWhatsappOfflineQueue);
+  app.post("/api/whatsapp/offline-queue", handleWhatsappOfflineQueue);
   const handleWhatsappSend = async (req, res) => {
     let messageId = "";
     let normalizedDest = "";
@@ -1369,30 +2261,43 @@ ${query}` : String(query);
     let deliveryStatus = "ENVIADO";
     try {
       const {
+        lineaId = DEFAULT_BRM_LINEA_ID,
         supplierId = "",
         supplierName = "Proveedor BRM",
         supplierRif = "",
         phone = "",
+        to = "",
         category = "MENSAJE_OPERATIVO_BRM",
         bodyText = "",
+        text = "",
         attachmentFileName,
+        mediaDataUrl,
+        mediaType,
+        audioOptions,
         clientMessageId
       } = req.body || {};
-      normalizedDest = normalizeServerPhoneE164(phone);
+      const targetPhoneRaw = phone || to;
+      const finalBodyText = bodyText || text || "";
+      normalizedDest = normalizeServerPhoneE164(targetPhoneRaw);
       if (!normalizedDest) {
         res.status(400).json({ error: "N\xFAmero telef\xF3nico inv\xE1lido para est\xE1ndar E.164." });
         return;
       }
-      if (normalizedDest === normalizeServerPhoneE164(brmServerSession.corporatePhoneE164)) {
+      const bridgeStatus = getWhatsAppLineStatusHandler(lineaId);
+      const connectedOwnNorm = normalizeServerPhoneE164(
+        bridgeStatus.numeroConectado || ""
+      );
+      if (connectedOwnNorm && normalizedDest === connectedOwnNorm) {
         res.status(409).json({
-          error: "Exclusi\xF3n determinista activa: no se permite enviar mensajes al propio n\xFAmero corporativo."
+          error: "Exclusi\xF3n determinista activa: no se permite enviar mensajes al propio n\xFAmero corporativo vinculado."
         });
         return;
       }
-      messageId = String(clientMessageId || "").trim() || `wamid.SRV.${Date.now()}.${crypto.randomBytes(3).toString("hex")}`;
+      messageId = String(clientMessageId || "").trim() || `wamid.SRV.${Date.now()}.${crypto2.randomBytes(3).toString("hex")}`;
       if (processedBrmMessageIds.has(messageId)) {
         res.json({
           ok: true,
+          success: true,
           duplicateIgnored: true,
           messageId,
           phoneE164: normalizedDest
@@ -1400,20 +2305,25 @@ ${query}` : String(query);
         return;
       }
       processedBrmMessageIds.add(messageId);
-      if (brmServerSession.state === "CONNECTED") {
+      if (bridgeStatus.estado === "CONECTADO") {
         transportUsed = "QR_SOCKET_BRIDGE";
-        deliveryStatus = "ENTREGADO";
-        if (activeBrmSocket) {
-          try {
-            const cleanDigits = normalizedDest.replace(/[^\d]/g, "");
-            const jid = `${cleanDigits}@s.whatsapp.net`;
-            await activeBrmSocket.sendMessage(jid, { text: bodyText });
-          } catch (socketSendErr) {
-            console.warn("[BRM WhatsApp] Aviso enviando por socket activo:", socketSendErr);
-            deliveryStatus = "EN_COLA_OFFLINE";
+        const sendResult = await sendWhatsAppMessageHandler(
+          lineaId,
+          normalizedDest,
+          finalBodyText,
+          mediaDataUrl,
+          mediaType,
+          audioOptions
+        );
+        if (sendResult.success) {
+          deliveryStatus = "ENTREGADO";
+          if (sendResult.messageId) {
+            messageId = sendResult.messageId;
           }
+        } else {
+          deliveryStatus = "EN_COLA_OFFLINE";
         }
-      } else if (brmServerSession.state === "CLOUD_STANDBY") {
+      } else if (bridgeStatus.state === "CLOUD_STANDBY") {
         transportUsed = "CLOUD_API_WEBHOOK";
         deliveryStatus = "ENVIADO";
       } else {
@@ -1435,7 +2345,7 @@ ${query}` : String(query);
               supplierRif,
               phoneE164: normalizedDest,
               category,
-              bodyText,
+              bodyText: finalBodyText,
               attachmentFileName,
               transportUsed,
               deliveryStatus
@@ -1446,6 +2356,7 @@ ${query}` : String(query);
       }
       res.json({
         ok: true,
+        success: true,
         duplicateIgnored: false,
         messageId,
         phoneE164: normalizedDest,
@@ -1468,14 +2379,14 @@ ${query}` : String(query);
       const signatureHeader = String(req.headers["x-hub-signature-256"] || "");
       const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET || "";
       if (webhookSecret && signatureHeader) {
-        const expected = "sha256=" + crypto.createHmac("sha256", webhookSecret).update(JSON.stringify(req.body || {})).digest("hex");
+        const expected = "sha256=" + crypto2.createHmac("sha256", webhookSecret).update(JSON.stringify(req.body || {})).digest("hex");
         if (signatureHeader !== expected) {
           res.status(401).json({ error: "Firma de webhook inv\xE1lida." });
           return;
         }
       }
       const payload = req.body || {};
-      incomingMessageId = String(payload.messageId || "").trim() || `wamid.WHK.${Date.now()}.${crypto.randomBytes(3).toString("hex")}`;
+      incomingMessageId = String(payload.messageId || "").trim() || `wamid.WHK.${Date.now()}.${crypto2.randomBytes(3).toString("hex")}`;
       if (processedBrmMessageIds.has(incomingMessageId)) {
         res.status(200).json({ ok: true, duplicateIgnored: true, messageId: incomingMessageId });
         return;
@@ -1561,13 +2472,13 @@ ${query}` : String(query);
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
   });
-  const distPath = path.join(process.cwd(), "dist");
-  const isProductionMode = process.env.NODE_ENV === "production" || fs.existsSync(distPath);
+  const distPath = path2.join(process.cwd(), "dist");
+  const isProductionMode = process.env.NODE_ENV === "production" || fs2.existsSync(distPath);
   if (isProductionMode) {
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
-      const indexFile = path.join(distPath, "index.html");
-      if (fs.existsSync(indexFile)) {
+      const indexFile = path2.join(distPath, "index.html");
+      if (fs2.existsSync(indexFile)) {
         res.sendFile(indexFile);
       } else {
         res.status(200).json({ status: "ok", mode: "degraded_static", port: PORT });

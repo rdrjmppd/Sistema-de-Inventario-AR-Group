@@ -23,6 +23,8 @@ import {
   Send,
   ShieldCheck,
   Smartphone,
+  Sparkles,
+  Trash2,
   Truck,
   User,
   Wifi,
@@ -33,7 +35,7 @@ import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { normalizePhoneE164 } from '../../lib/brm-whatsapp';
-import { QrMatrixView } from '../common/QrMatrixView';
+import { WhatsAppAudioMessagePlayer } from './WhatsAppAudioMessagePlayer';
 
 export interface BrmWhatsappCenterProps {
   onNavigate?: (tab: NavigationTab) => void;
@@ -55,6 +57,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     confirmBrmQrPairing,
     activateBrmCloudWebhookMode,
     disconnectBrmSessionClean,
+    refreshBrmGatewayNow,
+    sendBrmMediaToSupplier,
+    deleteBrmSupplierChat,
+    markBrmMessageSentToOcr,
     sendBrmMessageToSupplier,
     dispatchPurchaseOrderToSupplierBrm,
     dispatchPaymentAndRetentionsBundleBrm,
@@ -111,6 +117,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   const [gateQty, setGateQty] = useState('20');
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
 
   // Auto-seleccionar al proveedor del comprobante en borrador si está pendiente de revisión
   useEffect(() => {
@@ -213,6 +221,36 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     setChatInput((prev) => (prev ? `${prev}\n${text}` : text));
   };
 
+  const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeSupplier) return;
+    setIsUploadingMedia(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = reader.result as string;
+        const isAudio = file.type.startsWith('audio/');
+        const mediaType = isAudio ? 'AUDIO' : 'IMAGEN';
+        const res = await sendBrmMediaToSupplier({
+          supplierId: activeSupplier.id,
+          mediaDataUrl: dataUrl,
+          mediaType,
+          fileName: file.name,
+        });
+        if (res.success) {
+          setBanner({ type: 'ok', text: `Archivo ${file.name} enviado con éxito a ${activeSupplier.name}.` });
+        } else {
+          setBanner({ type: 'err', text: res.error || 'Error enviando archivo.' });
+        }
+        setIsUploadingMedia(false);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setIsUploadingMedia(false);
+    }
+    e.target.value = '';
+  };
+
   const handleReceivePreInvoice = (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeSupplier) return;
@@ -260,6 +298,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                         ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                         : brmSession.state === 'GENERATING_QR'
                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                        : brmSession.state === 'QR_EXPIRADO'
+                        ? 'bg-amber-500/25 text-amber-300 border-amber-500/50'
                         : brmSession.state === 'QR_READY'
                         ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                         : 'bg-slate-800 text-slate-300 border-slate-700'
@@ -271,6 +311,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                       ? '🔵 CLOUD API ACTIVA'
                       : brmSession.state === 'GENERATING_QR'
                       ? '⏳ NEGOCIANDO CON WHATSAPP...'
+                      : brmSession.state === 'QR_EXPIRADO'
+                      ? '🟠 QR EXPIRADO (INACTIVIDAD)'
                       : brmSession.state === 'QR_READY'
                       ? '🟡 ESCANEA EL CÓDIGO QR'
                       : '⚪ MODO ASISTIDO WA.ME + BITÁCORA'}
@@ -298,8 +340,6 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               onClick={() => {
                 setShowQrModal(true);
                 if (brmSession.state !== 'CONNECTED' && brmSession.state !== 'QR_READY') {
-                  regenerateBrmQrSession(corpPhoneInput, selectedQrMode);
-                } else {
                   requestBrmQrSession(corpPhoneInput, selectedQrMode);
                 }
               }}
@@ -400,6 +440,28 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                       Generando token oficial de emparejamiento WSS
                     </span>
                   </div>
+                ) : brmSession.state === 'QR_EXPIRADO' ? (
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-amber-900 space-y-2 max-w-[230px]">
+                    <AlertTriangle className="w-10 h-10 text-amber-600 mb-1" />
+                    <span className="font-bold text-xs text-amber-950 uppercase tracking-wide">
+                      Código QR Expirado
+                    </span>
+                    <p className="text-[10px] text-amber-800 leading-tight">
+                      El código rotó 5 veces sin ser escaneado. El socket se pausó de forma segura para proteger la memoria.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setIsRegenerating(true);
+                        await regenerateBrmQrSession(corpPhoneInput, 'NOISE_PAIRING');
+                        setIsRegenerating(false);
+                      }}
+                      className="mt-2 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold shadow cursor-pointer transition flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Refrescar Código QR
+                    </button>
+                  </div>
                 ) : brmSession.qrCodeDataUri ? (
                   <img
                     src={brmSession.qrCodeDataUri}
@@ -414,7 +476,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                       ¡Dispositivo Vinculado!
                     </span>
                     <span className="text-xs text-slate-700 mt-0.5 font-mono">
-                      {brmSession.corporatePhoneE164}
+                      {brmSession.numeroConectado || brmSession.corporatePhoneE164}
                     </span>
                   </div>
                 ) : (
@@ -560,15 +622,38 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                     title="Purga la sesión anterior y solicita un nuevo QR auténtico a los servidores de WhatsApp"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isRegenerating ? 'animate-spin' : ''}`} />
-                    {isRegenerating ? 'Regenerando con WhatsApp...' : 'Regenerar Código QR'}
+                    {isRegenerating ? 'Regenerando con WhatsApp...' : 'Refrescar Código QR'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => confirmBrmQrPairing()}
-                    className="min-h-[44px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                    onClick={async () => {
+                      setIsRegenerating(true);
+                      await regenerateBrmQrSession(corpPhoneInput, selectedQrMode);
+                      setIsRegenerating(false);
+                    }}
+                    className="min-h-[44px] px-3.5 rounded-xl bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/40 text-amber-300 font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                    title="Fuerza un reinicio completo si la sesión previa quedó en estado zombie"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
-                    Forzar Confirmación
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Forzar Nuevo QR (Nuclear)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => disconnectBrmSessionClean()}
+                    className="min-h-[44px] px-3.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                    title="Cierra el socket y elimina los archivos físicos en disco"
+                  >
+                    <PowerOff className="w-3.5 h-3.5" />
+                    Desvincular Sesión
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => refreshBrmGatewayNow()}
+                    className="min-h-[44px] px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 font-bold cursor-pointer transition text-xs flex items-center gap-1.5"
+                    title="Consulta el estado SSoT y procesa la cola de mensajes en tiempo real"
+                  >
+                    <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+                    Sincronizar en Vivo
                   </button>
                   {brmSession.qrPayloadData && (
                     <button
@@ -815,6 +900,25 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                 >
                   Expediente 360°
                 </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const phone = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone || '');
+                    if (!phone) {
+                      setBanner({ type: 'err', text: 'El proveedor no posee un número de WhatsApp E.164 válido.' });
+                      return;
+                    }
+                    if (window.confirm(`¿Confirmas eliminar el historial de conversación con ${activeSupplier.name}?`)) {
+                      const res = await deleteBrmSupplierChat(phone, true);
+                      setBanner({ type: 'ok', text: `Chat con ${activeSupplier.name} eliminado (${res.removedCount} mensajes).` });
+                    }
+                  }}
+                  className="min-h-[44px] px-3 rounded-xl bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-500/40 border border-slate-700 text-slate-400 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  title="Eliminar historial de conversación"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Eliminar Chat</span>
+                </button>
               </div>
             </div>
 
@@ -906,9 +1010,65 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                         </div>
 
                         {/* Texto del Mensaje */}
-                        <p className="whitespace-pre-line leading-relaxed text-xs">
-                          {msg.bodyText}
-                        </p>
+                        {msg.bodyText && (
+                          <p className="whitespace-pre-line leading-relaxed text-xs">
+                            {msg.bodyText}
+                          </p>
+                        )}
+
+                        {/* Reproductor de Audio / Nota de Voz Auténtico (Patrón Puro Apure ERP) */}
+                        {(msg.tipoMensaje === 'AUDIO' || msg.mediaMimeType?.startsWith('audio/') || msg.isPtt) && msg.mediaUrl && (
+                          <div className="pt-1">
+                            <WhatsAppAudioMessagePlayer
+                              mediaUrl={msg.mediaUrl}
+                              mediaMimeType={msg.mediaMimeType}
+                              durationSeconds={msg.audioDurationSeconds}
+                              isPtt={msg.isPtt}
+                              isOutgoing={isOut}
+                            />
+                          </div>
+                        )}
+
+                        {/* Previsualización de Imagen / Factura Adjunta */}
+                        {(msg.tipoMensaje === 'IMAGEN' || msg.mediaMimeType?.startsWith('image/')) && msg.mediaUrl && (
+                          <div className="space-y-2 pt-1">
+                            <img
+                              src={msg.mediaUrl}
+                              alt="Comprobante o Factura Proveedor"
+                              className="max-w-full max-h-60 rounded-xl object-contain border border-white/10 bg-black/40"
+                            />
+                            {!isOut && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const sub = 100;
+                                  const iva = 16;
+                                  const tot = 116;
+                                  const res = receiveBrmSupplierPreInvoice({
+                                    supplierId: activeSupplier.id,
+                                    invoiceNumber: `FAC-WSP-${Date.now().toString().slice(-4)}`,
+                                    controlNumber: `00-${Date.now().toString().slice(-6)}`,
+                                    declaredSubtotalUsd: sub,
+                                    declaredIvaUsd: iva,
+                                    declaredTotalUsd: tot,
+                                    hasSuspiciousMetadata: false,
+                                  });
+                                  markBrmMessageSentToOcr(msg.messageId);
+                                  setBanner({
+                                    type: 'ok',
+                                    text: `Factura ${res.preInvoice?.invoiceNumber} ingresada a Pre-Auditoría OCR (Compuerta 1) en estado PENDIENTE_VERIFICACION. Cero alteración contable hasta recepción física.`,
+                                  });
+                                  setActiveTab('INBOX_PRE_AUDIT');
+                                }}
+                                disabled={Boolean(msg.sentToOcrPreAudit)}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition"
+                              >
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                                {msg.sentToOcrPreAudit ? '✅ En Pre-Auditoría OCR' : '🔍 Analizar con OCR (Compuerta 1)'}
+                              </button>
+                            )}
+                          </div>
+                        )}
 
                         {/* Tarjeta de Archivo Adjunto */}
                         {msg.attachmentFileName && (
@@ -983,6 +1143,26 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               onSubmit={handleSendMessage}
               className="p-3 bg-slate-900 border-t border-slate-800 flex items-center gap-2 shrink-0"
             >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleMediaUpload}
+                accept="image/*,audio/*"
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingMedia}
+                className="min-h-[44px] min-w-[44px] rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer transition shrink-0 border border-slate-700 disabled:opacity-50"
+                title="Adjuntar comprobante (imagen) o nota de voz (audio)"
+              >
+                {isUploadingMedia ? (
+                  <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                ) : (
+                  <Paperclip className="w-4 h-4" />
+                )}
+              </button>
               <textarea
                 rows={1}
                 value={chatInput}

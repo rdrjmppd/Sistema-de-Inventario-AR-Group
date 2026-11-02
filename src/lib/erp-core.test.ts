@@ -238,7 +238,21 @@ import {
   generateBrmNoisePairingPayload,
   generateBrmWaMeDeepLinkPayload,
   DEFAULT_CORPORATE_BRM_PHONE_E164,
+  mergeBrmGatewayStatus,
+  isCorruptedOrRawLid,
+  mapBridgeMessageToBrmMessage,
 } from './brm-whatsapp';
+import {
+  encryptSessionData,
+  decryptSessionData,
+  resolveLidToPhoneNumber,
+  cleanContactDisplayName,
+  getWhatsAppLineStatusHandler,
+  forceResetAndUnlinkSession,
+  simulateCorruptedSplitBrainStateForTest,
+  simulateQrRotationStepForTest,
+  extractNestedBaileysMessageDescriptor,
+} from '../../server/whatsappQrBridge';
 import {
   computeDaysUntilExpiration,
   classifyFefoLotStatus,
@@ -6471,6 +6485,190 @@ test('79. Certificación Forense QR ISO/IEC 18004: Decodificación de Ida y Vuel
     /Inconsistencia en información de formato QR|Síndrome de formato BCH corrupto/,
     'Cualquier discrepancia o daño en bits de formato debe ser detectado inmediatamente por la verificación BCH'
   );
+});
+
+test('80. Certificación Integral de Pasarela WhatsApp BRM Multi-Device (Baileys WSS): SSoT Anti-Split-Brain, Purga Atómica <1s, Cifrado AES-256-GCM + Gzip, Cortacircuitos 5 Rotaciones y Notas de Voz', async () => {
+  // 1. SSoT Anti-Split-Brain y Auto-Sanación de Estado
+  const testLineId = 'test_linea_brm_ssot';
+  simulateCorruptedSplitBrainStateForTest(testLineId, '+584141112233');
+  // Al consultar el estado mediante getWhatsAppLineStatusHandler, debe auto-sanar inmediatamente si no hay socket abierto
+  const healedStatus = getWhatsAppLineStatusHandler(testLineId);
+  assert.strictEqual(healedStatus.estado, 'DESCONECTADO', 'Una línea sin socket activo debe auto-sanar a DESCONECTADO');
+  assert.strictEqual(healedStatus.state, 'DISCONNECTED', 'El state heredado debe ser DISCONNECTED');
+  assert.strictEqual(healedStatus.numeroConectado, undefined, 'No debe retener número conectado en estado DESCONECTADO');
+  assert.strictEqual(healedStatus.corporatePhoneE164, '', 'El número corporativo debe limpiarse en DESCONECTADO');
+
+  // mergeBrmGatewayStatus en cliente debe respetar SSoT
+  const clientMerged = mergeBrmGatewayStatus(
+    {
+      state: 'CONNECTED',
+      activeMode: 'QR_SOCKET_BRIDGE',
+      corporatePhoneE164: '+584141112233',
+      hasAdminCredentials: false,
+      pendingOfflineQueueCount: 0,
+      lastHeartbeatVet: '10:00:00',
+    },
+    healedStatus
+  );
+  assert.strictEqual(clientMerged.state, 'DISCONNECTED', 'Cliente debe transicionar a DISCONNECTED respetando SSoT');
+  assert.strictEqual(clientMerged.corporatePhoneE164, '', 'Cliente debe purgar el número residual');
+
+  // 2. Purga Atómica en 7 Pasos (< 1000 ms)
+  const purgeLineId = 'test_linea_brm_purge';
+  const startPurge = Date.now();
+  const purgeResult = await forceResetAndUnlinkSession(purgeLineId, false);
+  const purgeLatency = Date.now() - startPurge;
+  assert.strictEqual(purgeResult.success, true, 'Purga atómica debe retornar success: true');
+  assert.strictEqual(purgeResult.estado, 'DESCONECTADO');
+  assert.strictEqual(purgeResult.session.numeroConectado, undefined);
+  assert.ok(purgeLatency < 1000, `La purga atómica debe tardar < 1000ms (tardó ${purgeLatency}ms)`);
+
+  // 3. Cifrado y Descifrado Criptográfico AES-256-GCM + Gzip de Sesión
+  const sampleCreds = JSON.stringify({
+    noiseKey: { private: 'dGVzdF9wcml2YXRlX2tleQ==', public: 'dGVzdF9wdWJsaWNfa2V5' },
+    pairingEphemeralKeyPair: { private: 'ZXBoZW1lcmFsX3ByaXY=', public: 'ZXBoZW1lcmFsX3B1Yg==' },
+    signedIdentityKey: { private: 'c2lnbmVkX2lkX3ByaXY=', public: 'c2lnbmVkX2lkX3B1Yg==' },
+    accountSettings: { unarchiveChats: false },
+    myAppStateKeyId: 'test_state_key_id_1234567890',
+  });
+  const encryptedPayload = encryptSessionData(sampleCreds);
+  assert.ok(encryptedPayload.includes(':'), 'El payload cifrado debe tener estructura iv:authTag:cipherText');
+  const decryptedText = decryptSessionData(encryptedPayload);
+  assert.strictEqual(decryptedText, sampleCreds, 'El texto descifrado debe coincidir byte a byte con el original');
+
+  // 4. Resolución Inversa de Identidades Virtuales (@lid <-> E.164)
+  const directParticipant = resolveLidToPhoneNumber('linea_brm', '123456789@lid', '584129876543:12@s.whatsapp.net');
+  assert.strictEqual(directParticipant, '+584129876543', 'Debe resolver el E.164 desde el JID del participante');
+
+  const standardJid = resolveLidToPhoneNumber('linea_brm', '584145556677@s.whatsapp.net', null);
+  assert.strictEqual(standardJid, '+584145556677', 'Debe resolver número estándar con formato +');
+
+  assert.strictEqual(isCorruptedOrRawLid('12345678901234567@lid'), true, 'Debe detectar @lid crudo como no apto para teléfono');
+  assert.strictEqual(isCorruptedOrRawLid('+584141234567'), false, 'Debe reconocer número E.164 válido');
+
+  // 5. Cortacircuitos de Rotación de QR (5 Rotaciones Máximo)
+  const cbLineId = 'test_linea_brm_cb';
+  for (let rotation = 1; rotation <= 5; rotation++) {
+    const step = await simulateQrRotationStepForTest(cbLineId, `2@mock_qr_token_rot_${rotation}`);
+    assert.strictEqual(step.estado, 'ESPERANDO_QR', `En rotación ${rotation} debe permanecer en ESPERANDO_QR`);
+    assert.strictEqual(step.state, 'QR_READY');
+    assert.ok(step.qrCodeDataUri?.startsWith('data:image/png;base64,'), 'Debe contener la data URI del QR');
+    assert.strictEqual(step.qrRotations, rotation);
+  }
+  // En la 6ta rotación, el cortacircuitos DEBE dispararse
+  const trippedStep = await simulateQrRotationStepForTest(cbLineId, '2@mock_qr_token_rot_6');
+  assert.strictEqual(trippedStep.estado, 'QR_EXPIRADO', 'La 6ta rotación debe activar el estado QR_EXPIRADO');
+  assert.strictEqual(trippedStep.state, 'QR_EXPIRADO');
+  assert.strictEqual(trippedStep.qrCodeDataUri, undefined, 'Debe limpiar la data URI del QR expirado');
+  assert.ok(trippedStep.ultimoError?.includes('expiró'), 'Debe documentar la causa del cortacircuitos');
+
+  // 6. Desempaquetado de Mensajes Anidados y Formateo de Notas de Voz
+  const rawPttMessage = {
+    ephemeralMessage: {
+      message: {
+        audioMessage: {
+          seconds: 24,
+          ptt: true,
+          mimetype: 'audio/ogg; codecs=opus',
+        },
+      },
+    },
+  };
+  const audioDescriptor = extractNestedBaileysMessageDescriptor(rawPttMessage);
+  assert.strictEqual(audioDescriptor.tipoMensaje, 'AUDIO');
+  assert.strictEqual(audioDescriptor.isPtt, true);
+  assert.strictEqual(audioDescriptor.audioDurationSeconds, 24);
+  assert.strictEqual(audioDescriptor.cuerpo, '🎤 Nota de voz (0:24)');
+
+  const rawRegularAudio = {
+    viewOnceMessage: {
+      message: {
+        audioMessage: {
+          seconds: 75,
+          ptt: false,
+          mimetype: 'audio/mp4',
+        },
+      },
+    },
+  };
+  const regularAudioDescriptor = extractNestedBaileysMessageDescriptor(rawRegularAudio);
+  assert.strictEqual(regularAudioDescriptor.tipoMensaje, 'AUDIO');
+  assert.strictEqual(regularAudioDescriptor.isPtt, false);
+  assert.strictEqual(regularAudioDescriptor.cuerpo, '🎵 Mensaje de audio (1:15)');
+
+  // 7. Mapeo Canónico de Contraparte BRM (Sin Formato CRM)
+  const mockSuppliers: Supplier[] = [
+    {
+      id: 'sup-polar-01',
+      name: 'Empresas Polar C.A.',
+      rif: 'J-00006543-2',
+      phone: '02432345678',
+      whatsappE164: '+584147778899',
+      balanceUsd: 1500,
+      active: true,
+      category: 'Alimentos y Bebidas',
+    },
+  ];
+
+  // Inbound desde proveedor
+  const inboundBrmMsg = mapBridgeMessageToBrmMessage({
+    queued: {
+      id: 'msg-in-1',
+      messageId: 'wamid.IN.123',
+      remitente: '+584147778899',
+      destinatario: '+582410001122',
+      direccion: 'ENTRANTE',
+      bodyText: 'Estimados, remitimos factura proforma para reposición de harina.',
+      timestamp: '2026-11-02T10:30:00Z',
+    },
+    suppliers: mockSuppliers,
+    connectedOwnPhoneE164: '+582410001122',
+  });
+  assert.ok(inboundBrmMsg !== null);
+  assert.strictEqual(inboundBrmMsg?.supplierId, 'sup-polar-01');
+  assert.strictEqual(inboundBrmMsg?.supplierName, 'Empresas Polar C.A.');
+  assert.strictEqual(inboundBrmMsg?.phoneE164, '+584147778899');
+  assert.strictEqual(inboundBrmMsg?.direction, 'INBOUND_FROM_SUPPLIER');
+
+  // Outbound hacia proveedor
+  const outboundBrmMsg = mapBridgeMessageToBrmMessage({
+    queued: {
+      id: 'msg-out-1',
+      messageId: 'wamid.OUT.456',
+      remitente: '+582410001122',
+      destinatario: '+584147778899',
+      destinatarioNombre: 'Empresas Polar C.A.',
+      direccion: 'SALIENTE',
+      tipoMensaje: 'AUDIO',
+      audioDurationSeconds: 15,
+      isPtt: true,
+      mediaUrl: 'data:audio/ogg;base64,T2dnUw==',
+      timestamp: '2026-11-02T10:35:00Z',
+    },
+    suppliers: mockSuppliers,
+    connectedOwnPhoneE164: '+582410001122',
+  });
+  assert.ok(outboundBrmMsg !== null);
+  assert.strictEqual(outboundBrmMsg?.supplierId, 'sup-polar-01');
+  assert.strictEqual(outboundBrmMsg?.phoneE164, '+584147778899');
+  assert.strictEqual(outboundBrmMsg?.direction, 'OUTBOUND_TO_SUPPLIER');
+  assert.strictEqual(outboundBrmMsg?.tipoMensaje, 'AUDIO');
+  assert.strictEqual(outboundBrmMsg?.cuerpo || outboundBrmMsg?.bodyText, '🎤 Nota de voz (0:15)');
+
+  // Exclusión determinista de mensaje hacia el propio número (Anti-Loop)
+  const selfLoopMsg = mapBridgeMessageToBrmMessage({
+    queued: {
+      id: 'msg-self',
+      messageId: 'wamid.SELF',
+      remitente: '+582410001122',
+      destinatario: '+582410001122',
+      direccion: 'SALIENTE',
+      bodyText: 'Loop',
+    },
+    suppliers: mockSuppliers,
+    connectedOwnPhoneE164: '+582410001122',
+  });
+  assert.strictEqual(selfLoopMsg, null, 'Mensajes dirigidos al propio número deben ser excluidos deterministamente');
 });
 
 

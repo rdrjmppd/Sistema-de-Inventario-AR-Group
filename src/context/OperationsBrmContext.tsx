@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   AccountsPayablePayment,
   BankStatementLine,
@@ -42,11 +42,13 @@ import {
 import { executeInternalProductionOrder } from '../lib/recipe-bom';
 import {
   appendIdempotentBrmMessage,
-  DEFAULT_CORPORATE_BRM_PHONE_E164,
+  BRM_WHATSAPP_LINEA_ID,
+  BrmBridgeQueuedMessage,
   formatBrmPaymentAndRetentionsBundleTemplate,
   formatBrmPurchaseOrderTemplate,
-  generateBrmNoisePairingPayload,
-  generateBrmWaMeDeepLinkPayload,
+  mapBridgeMessageToBrmMessage,
+  mergeBrmGatewayStatus,
+  normalizePhoneE164,
   registerIncomingBrmPreInvoice,
   resetBrmWhatsappSessionCleanly,
 } from '../lib/brm-whatsapp';
@@ -180,6 +182,24 @@ interface OperationsBrmContextType {
   confirmBrmQrPairing: () => Promise<void>;
   activateBrmCloudWebhookMode: () => Promise<void>;
   disconnectBrmSessionClean: () => Promise<void>;
+  /** Sincroniza de inmediato el estado SSoT y la cola de mensajes reales de la pasarela */
+  refreshBrmGatewayNow: () => Promise<void>;
+  /** Envía nota de voz / audio o imagen real por la pasarela Baileys */
+  sendBrmMediaToSupplier: (params: {
+    supplierId: string;
+    mediaDataUrl: string;
+    mediaType: 'IMAGEN' | 'AUDIO';
+    caption?: string;
+    fileName?: string;
+    audioDurationSeconds?: number;
+  }) => Promise<{ success: boolean; message?: BrmWhatsappMessage; error?: string }>;
+  /** Eliminación asimétrica de la conversación con un proveedor (app → móvil opcional) */
+  deleteBrmSupplierChat: (
+    phoneE164: string,
+    syncToDevice?: boolean
+  ) => Promise<{ success: boolean; removedCount: number; error?: string }>;
+  /** Marca una imagen recibida como enviada a Pre-Auditoría OCR (Compuerta 1). No toca el libro mayor. */
+  markBrmMessageSentToOcr: (messageId: string) => void;
   sendBrmMessageToSupplier: (params: {
     supplierId: string;
     category: BrmDocumentCategory;
@@ -326,16 +346,19 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     loadJsonSafe<InternalProductionOrder[]>(STORAGE_KEYS.PROD_ORDERS, [])
   );
 
-  const [brmSession, setBrmSession] = useState<BrmWhatsappSessionStatus>(() =>
-    loadJsonSafe<BrmWhatsappSessionStatus>(STORAGE_KEYS.BRM_SESSION, {
-      state: 'DISCONNECTED',
-      activeMode: 'WA_ME_DIRECT_LEDGER',
-      corporatePhoneE164: DEFAULT_CORPORATE_BRM_PHONE_E164,
-      hasAdminCredentials: false,
-      pendingOfflineQueueCount: 0,
-      lastHeartbeatVet: '2026-10-29 08:00',
-    })
-  );
+  // SSoT Anti-Split-Brain: el estado de vinculación NUNCA se restaura desde localStorage.
+  // Siempre arranca DESCONECTADO y el servidor (pasarela Baileys) es la única fuente de verdad.
+  const [brmSession, setBrmSession] = useState<BrmWhatsappSessionStatus>(() => ({
+    state: 'DISCONNECTED',
+    estado: 'DESCONECTADO',
+    activeMode: 'WA_ME_DIRECT_LEDGER',
+    lineaId: BRM_WHATSAPP_LINEA_ID,
+    corporatePhoneE164: '',
+    numeroConectado: undefined,
+    hasAdminCredentials: false,
+    pendingOfflineQueueCount: 0,
+    lastHeartbeatVet: '',
+  }));
 
   const [brmMessages, setBrmMessages] = useState<BrmWhatsappMessage[]>(() =>
     loadJsonSafe<BrmWhatsappMessage[]>(STORAGE_KEYS.BRM_MESSAGES, [])
@@ -504,7 +527,6 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => saveJsonSafe(STORAGE_KEYS.COLD_LOGS, coldChainLogs), [coldChainLogs]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.RECIPES, productionRecipes), [productionRecipes]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.PROD_ORDERS, productionOrders), [productionOrders]);
-  useEffect(() => saveJsonSafe(STORAGE_KEYS.BRM_SESSION, brmSession), [brmSession]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.BRM_MESSAGES, brmMessages), [brmMessages]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.BRM_PREINVOICES, brmPreInvoices), [brmPreInvoices]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.BANK_LINES, bankStatementLines), [bankStatementLines]);
@@ -514,71 +536,119 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   );
   useEffect(() => saveJsonSafe(STORAGE_KEYS.FISCAL_Z, fiscalZReports), [fiscalZReports]);
 
-  // Sincronización defensiva con el estado del servidor BRM y vaciado delegado de cola offline (Cláusulas B y C)
+  // =========================================================================
+  // PASARELA BAILEYS BLINDADA — SINCRONIZACIÓN SSoT + COLA DE MENSAJES REALES
+  // =========================================================================
+  const suppliersRef = useRef(suppliers);
+  suppliersRef.current = suppliers;
+  const brmSessionRef = useRef(brmSession);
+  brmSessionRef.current = brmSession;
+
+  // Purga del estado de sesión obsoleto persistido por versiones previas (evita QR/números fantasma)
   useEffect(() => {
-    let cancelled = false;
-    fetch('/api/brm/whatsapp/status')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled && data && data.state) {
-          setBrmSession((prev) => ({
-            ...prev,
-            ...data,
-          }));
-        }
-      })
-      .catch(() => {
-        // Modo offline / local puro sin servidor activo: continúa sin lanzar excepción
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      if (typeof window !== 'undefined') localStorage.removeItem(STORAGE_KEYS.BRM_SESSION);
+    } catch {
+      // Ignorar restricciones de almacenamiento
+    }
   }, []);
 
-  // Polling automático al servidor (SSoT en tiempo real - Patrón Puro Apure ERP)
+  const fetchBrmGatewayStatus = useCallback(async () => {
+    try {
+      const resp = await fetch(
+        `/api/whatsapp/status?lineaId=${encodeURIComponent(BRM_WHATSAPP_LINEA_ID)}`,
+        { cache: 'no-store' }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data || (!data.state && !data.estado)) return;
+      setBrmSession((prev) => {
+        const next = mergeBrmGatewayStatus(prev, data);
+        const changed =
+          prev.state !== next.state ||
+          prev.estado !== next.estado ||
+          prev.numeroConectado !== next.numeroConectado ||
+          prev.qrCodeDataUri !== next.qrCodeDataUri ||
+          prev.pairingCode !== next.pairingCode ||
+          prev.ultimoError !== next.ultimoError ||
+          prev.qrRotations !== next.qrRotations ||
+          prev.pendingOfflineQueueCount !== next.pendingOfflineQueueCount;
+        return changed ? next : prev;
+      });
+    } catch {
+      // Servidor no disponible: modo local resiliente sin lanzar excepción
+    }
+  }, []);
+
+  const syncBrmBridgeOfflineQueue = useCallback(async () => {
+    try {
+      const resp = await fetch(
+        `/api/whatsapp/offline-queue?lineaId=${encodeURIComponent(BRM_WHATSAPP_LINEA_ID)}`,
+        { cache: 'no-store' }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const queued: BrmBridgeQueuedMessage[] = Array.isArray(data?.messages) ? data.messages : [];
+      if (queued.length === 0) return;
+
+      const ownPhone = brmSessionRef.current.numeroConectado;
+      const mapped: BrmWhatsappMessage[] = [];
+      for (const q of queued) {
+        const rec = mapBridgeMessageToBrmMessage({
+          queued: q,
+          suppliers: suppliersRef.current,
+          connectedOwnPhoneE164: ownPhone,
+        });
+        if (rec) mapped.push(rec);
+      }
+
+      if (mapped.length > 0) {
+        setBrmMessages((prev) => {
+          const known = new Set(prev.map((m) => m.messageId));
+          const fresh = mapped.filter((m) => !known.has(m.messageId));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
+      }
+
+      // ACK idempotente: solo se retiran de la cola del servidor tras ingresar al estado local
+      const ackIds = queued.map((q) => q.messageId || q.id).filter(Boolean);
+      fetch('/api/whatsapp/offline-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageIds: ackIds }),
+      }).catch(() => {
+        // Si el ACK falla, el próximo ciclo re-entrega y la idempotencia por messageId evita duplicados
+      });
+    } catch {
+      // Cola no disponible: continuar sin interrumpir la UI
+    }
+  }, []);
+
+  const refreshBrmGatewayNow = useCallback(async () => {
+    await fetchBrmGatewayStatus();
+    await syncBrmBridgeOfflineQueue();
+  }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue]);
+
+  // Polling adaptativo (Patrón Puro Apure ERP): 2s mientras se espera escaneo, 8s en reposo
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
     let cancelled = false;
-
-    const checkStatus = () => {
-      fetch('/api/brm/whatsapp/status')
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (!cancelled && data && (data.state || data.estado)) {
-            const serverState = data.state || data.estado;
-            const liveQrUri = data.qrCodeDataUri || data.qrDataUri;
-            setBrmSession((prev) => {
-              if (
-                prev.state !== serverState ||
-                prev.corporatePhoneE164 !== data.corporatePhoneE164 ||
-                prev.qrPayloadData !== data.qrPayloadData ||
-                prev.qrCodeDataUri !== liveQrUri
-              ) {
-                return {
-                  ...prev,
-                  ...data,
-                  state: serverState,
-                  qrCodeDataUri: liveQrUri,
-                };
-              }
-              return prev;
-            });
-          }
-        })
-        .catch(() => {});
+    const tick = () => {
+      if (cancelled) return;
+      fetchBrmGatewayStatus().catch(() => {});
+      if (brmSessionRef.current.state === 'CONNECTED') {
+        syncBrmBridgeOfflineQueue().catch(() => {});
+      }
     };
-
-    checkStatus();
-    const intervalTime =
-      brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR'
-        ? 2000
-        : 8000;
-    timer = setInterval(checkStatus, intervalTime);
+    tick();
+    const isPairing =
+      brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR';
+    const intervalMs = isPairing ? 2000 : brmSession.state === 'CONNECTED' ? 4000 : 8000;
+    const timer = setInterval(tick, intervalMs);
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      clearInterval(timer);
     };
-  }, [brmSession.state]);
+  }, [brmSession.state, fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue]);
 
   const setDefaultScaleMode = useCallback((mode: ScaleBarcodeMode) => {
     setDefaultScaleModeState(mode);
@@ -882,7 +952,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   // =========================================================================
-  // MÓDULO BRM WHATSAPP PROVEEDORES (MODO HÍBRIDO TRIPLE — PURO APURE ERP)
+  // MÓDULO BRM WHATSAPP PROVEEDORES (PASARELA BAILEYS MULTI-DEVICE — PURO APURE ERP)
   // =========================================================================
 
   const requestBrmQrSession = useCallback(
@@ -890,117 +960,72 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       corporatePhoneE164?: string,
       qrType: 'NOISE_PAIRING' | 'WA_ME_LINK' = 'NOISE_PAIRING'
     ) => {
-      const now = getCaracasNow();
-      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
-      const targetPhone =
-        corporatePhoneE164 ||
-        brmSession.corporatePhoneE164 ||
-        DEFAULT_CORPORATE_BRM_PHONE_E164;
+      // SSoT Anti-Split-Brain: Solicitud directa al servidor Baileys real
+      setBrmSession((prev) => ({
+        ...prev,
+        state: prev.state === 'CONNECTED' ? 'CONNECTED' : 'GENERATING_QR',
+        ultimoError: undefined,
+      }));
+
       try {
-        const resp = await fetch('/api/brm/whatsapp/qr', {
+        const resp = await fetch('/api/whatsapp/qr', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             action: 'GENERATE_QR',
-            corporatePhoneE164: targetPhone,
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            corporatePhoneE164,
             qrType,
           }),
         });
         if (resp.ok) {
           const data = await resp.json();
-          const targetState = data.state || data.estado || 'QR_READY';
-          const freshQr = data.qrCodeDataUri || data.qrDataUri;
-          setBrmSession((prev) => ({
-            ...prev,
-            ...data,
-            state: targetState,
-            qrCodeDataUri: freshQr,
-          }));
+          setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
           return;
         }
       } catch {
-        // Fallback local resiliente: sin emitir tokens falsos
-      }
-
-      if (qrType === 'WA_ME_LINK') {
-        const payload = generateBrmWaMeDeepLinkPayload(targetPhone);
-        setBrmSession((prev) => ({
-          ...prev,
-          state: 'QR_READY',
-          activeMode: 'QR_SOCKET_BRIDGE',
-          corporatePhoneE164: targetPhone,
-          qrPayloadData: payload,
-          qrTargetType: qrType,
-          qrGeneratedAtVet: nowStamp,
-          lastHeartbeatVet: nowStamp,
-        }));
-      } else {
-        setBrmSession((prev) => ({
-          ...prev,
-          state: 'GENERATING_QR',
-          activeMode: 'QR_SOCKET_BRIDGE',
-          corporatePhoneE164: targetPhone,
-          qrPayloadData: undefined,
-          qrCodeDataUri: undefined,
-          qrTargetType: qrType,
-          qrGeneratedAtVet: nowStamp,
-          lastHeartbeatVet: nowStamp,
-        }));
+        // Fallback local resiliente sin emitir tokens falsos
       }
     },
-    [brmSession.corporatePhoneE164]
+    []
   );
 
   const regenerateBrmQrSession = useCallback(
     async (
       corporatePhoneE164?: string,
-      qrType: 'NOISE_PAIRING' | 'WA_ME_LINK' = 'NOISE_PAIRING'
+      _qrType: 'NOISE_PAIRING' | 'WA_ME_LINK' = 'NOISE_PAIRING'
     ) => {
-      const now = getCaracasNow();
-      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
-      const targetPhone =
-        corporatePhoneE164 ||
-        brmSession.corporatePhoneE164 ||
-        DEFAULT_CORPORATE_BRM_PHONE_E164;
-
-      // Poner inmediatamente el estado en GENERATING_QR y limpiar el QR previo en memoria
+      // Purgar inmediatamente en memoria y solicitar nuevo QR real a Baileys
       setBrmSession((prev) => ({
         ...prev,
         state: 'GENERATING_QR',
+        estado: 'ESPERANDO_QR',
         qrCodeDataUri: undefined,
         qrPayloadData: undefined,
         pairingCode: undefined,
-        corporatePhoneE164: targetPhone,
-        qrTargetType: qrType,
-        lastHeartbeatVet: nowStamp,
+        corporatePhoneE164: corporatePhoneE164 || prev.corporatePhoneE164 || '',
+        ultimoError: undefined,
       }));
 
       try {
-        const resp = await fetch('/api/brm/whatsapp/force-qr', {
+        const resp = await fetch('/api/whatsapp/force-qr', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            corporatePhoneE164: targetPhone,
-            qrType,
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            corporatePhoneE164,
           }),
         });
         if (resp.ok) {
           const data = await resp.json();
-          const targetState = data.state || data.estado || 'QR_READY';
-          const freshQr = data.qrCodeDataUri || data.qrDataUri;
-          setBrmSession((prev) => ({
-            ...prev,
-            ...data,
-            state: targetState,
-            qrCodeDataUri: freshQr,
-          }));
+          setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
           return;
         }
       } catch {
         // Fallback resiliente
       }
     },
-    [brmSession.corporatePhoneE164]
+    []
   );
 
   const requestBrmPairingCode = useCallback(
@@ -1010,28 +1035,39 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       const targetPhone =
         phoneE164 ||
         brmSession.corporatePhoneE164 ||
-        DEFAULT_CORPORATE_BRM_PHONE_E164;
+        '';
+
+      if (!targetPhone) {
+        return {
+          success: false,
+          error: 'Debe ingresar un número de teléfono válido en formato E.164 (ej. +584121234567).',
+        };
+      }
+
+      setBrmSession((prev) => ({
+        ...prev,
+        state: 'GENERATING_QR',
+        estado: 'ESPERANDO_QR',
+        pairingCode: undefined,
+      }));
 
       try {
-        const resp = await fetch('/api/brm/whatsapp/pairing-code', {
+        const resp = await fetch('/api/whatsapp/pairing-code', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ corporatePhoneE164: targetPhone }),
+          body: JSON.stringify({
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            corporatePhoneE164: targetPhone,
+          }),
         });
         const data = await resp.json();
         if (resp.ok && data.success && data.pairingCode) {
-          setBrmSession((prev) => ({
-            ...prev,
-            ...data,
-            pairingCode: data.pairingCode,
-            state: 'QR_READY',
-            qrTargetType: 'PAIRING_CODE',
-          }));
+          setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
           return { success: true, pairingCode: data.pairingCode };
         }
         return {
           success: false,
-          error: data.error || 'Error al solicitar código de vinculación.',
+          error: data.error || 'Error al solicitar código de vinculación a WhatsApp.',
         };
       } catch (err: any) {
         return {
@@ -1044,43 +1080,25 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const confirmBrmQrPairing = useCallback(async () => {
-    const now = getCaracasNow();
-    const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
-    try {
-      const resp = await fetch('/api/brm/whatsapp/qr', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'CONFIRM_PAIRING' }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        setBrmSession((prev) => ({ ...prev, ...data }));
-        return;
-      }
-    } catch {
-      // Fallback local
-    }
-    setBrmSession((prev) => ({
-      ...prev,
-      state: 'CONNECTED',
-      activeMode: 'QR_SOCKET_BRIDGE',
-      qrPayloadData: undefined,
-      lastHeartbeatVet: nowStamp,
-    }));
-  }, []);
+    // Sincronizar de inmediato con el servidor para comprobar si ya conectó
+    await refreshBrmGatewayNow();
+  }, [refreshBrmGatewayNow]);
 
   const activateBrmCloudWebhookMode = useCallback(async () => {
     const now = getCaracasNow();
     const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
     try {
-      const resp = await fetch('/api/brm/whatsapp/qr', {
+      const resp = await fetch('/api/whatsapp/qr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'USE_CLOUD_WEBHOOK' }),
+        body: JSON.stringify({
+          action: 'USE_CLOUD_WEBHOOK',
+          lineaId: BRM_WHATSAPP_LINEA_ID,
+        }),
       });
       if (resp.ok) {
         const data = await resp.json();
-        setBrmSession((prev) => ({ ...prev, ...data }));
+        setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
         return;
       }
     } catch {
@@ -1099,7 +1117,11 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     const now = getCaracasNow();
     const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
     try {
-      await fetch('/api/brm/whatsapp/disconnect', { method: 'POST' });
+      await fetch('/api/whatsapp/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineaId: BRM_WHATSAPP_LINEA_ID }),
+      });
     } catch {
       // Ignore network failure during local clean disconnect
     }
@@ -1107,7 +1129,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     logAuditEvent(
       'BRM_WHATSAPP_SESSION_RESET',
       'WhatsApp BRM',
-      'Desvinculación limpia de sesión QR WhatsApp BRM (Anti-Split Brain).'
+      'Desvinculación limpia de sesión QR WhatsApp BRM (Anti-Split Brain y purga física en disco).'
     );
   }, [logAuditEvent]);
 
@@ -1131,7 +1153,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         const localRes = appendIdempotentBrmMessage({
           existingMessages: brmMessages,
           supplier,
-          corporatePhoneE164: brmSession.corporatePhoneE164,
+          corporatePhoneE164: brmSession.numeroConectado || brmSession.corporatePhoneE164,
           direction: 'OUTBOUND_TO_SUPPLIER',
           category: params.category,
           bodyText: params.bodyText,
@@ -1144,11 +1166,12 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
 
         setBrmMessages(localRes.updatedMessages);
 
-        // Despachar en segundo plano al puente /api/brm/whatsapp/send sin bloquear ni romper si offline
-        fetch('/api/brm/whatsapp/send', {
+        // Despachar en segundo plano al puente /api/whatsapp/send
+        fetch('/api/whatsapp/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            lineaId: BRM_WHATSAPP_LINEA_ID,
             clientMessageId: localRes.record.messageId,
             supplierId: supplier.id,
             supplierName: supplier.name,
@@ -1192,6 +1215,137 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [suppliers, brmMessages, brmSession, currentUser?.displayName, logAuditEvent]
   );
+
+  const sendBrmMediaToSupplier = useCallback(
+    async (params: {
+      supplierId: string;
+      mediaDataUrl: string;
+      mediaType: 'IMAGEN' | 'AUDIO';
+      caption?: string;
+      fileName?: string;
+      audioDurationSeconds?: number;
+    }) => {
+      const supplier = suppliers.find((s) => s.id === params.supplierId);
+      if (!supplier) {
+        return { success: false, error: 'Proveedor no encontrado en el directorio BRM.' };
+      }
+
+      try {
+        const now = getCaracasNow();
+        const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
+        const phoneE164 = normalizePhoneE164(supplier.whatsappE164 || supplier.phone || '');
+        if (!phoneE164) {
+          return { success: false, error: 'El proveedor no posee un número de WhatsApp E.164 válido.' };
+        }
+
+        const messageId = `media_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const bodyText =
+          params.caption ||
+          (params.mediaType === 'AUDIO'
+            ? `🎤 Nota de voz (${Math.floor((params.audioDurationSeconds || 0) / 60)}:${((params.audioDurationSeconds || 0) % 60).toString().padStart(2, '0')})`
+            : '📷 [Imagen Adjunta]');
+
+        const newMsg: BrmWhatsappMessage = {
+          id: `brm-wa-${messageId}`,
+          messageId,
+          supplierId: supplier.id,
+          supplierName: supplier.name,
+          supplierRif: supplier.rif,
+          phoneE164,
+          direction: 'OUTBOUND_TO_SUPPLIER',
+          category: 'MENSAJE_OPERATIVO_BRM',
+          bodyText,
+          attachmentFileName: params.fileName,
+          deliveryStatus: brmSession.state === 'CONNECTED' ? 'ENTREGADO' : 'EN_COLA_OFFLINE',
+          transportUsed: brmSession.state === 'CONNECTED' ? 'QR_SOCKET_BRIDGE' : 'WA_ME_DIRECT_LEDGER',
+          createdBy: currentUser?.displayName || 'Compras / Tesorería BRM',
+          timestampVet: nowStamp,
+          tipoMensaje: params.mediaType,
+          mediaUrl: params.mediaDataUrl,
+          audioDurationSeconds: params.audioDurationSeconds,
+          isPtt: params.mediaType === 'AUDIO',
+        };
+
+        setBrmMessages((prev) => [...prev, newMsg]);
+
+        // Despachar al puente
+        fetch('/api/whatsapp/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            clientMessageId: messageId,
+            phone: phoneE164,
+            mediaDataUrl: params.mediaDataUrl,
+            mediaType: params.mediaType,
+            text: params.caption || '',
+            audioOptions:
+              params.mediaType === 'AUDIO'
+                ? {
+                    durationSeconds: params.audioDurationSeconds,
+                    isPtt: true,
+                  }
+                : undefined,
+          }),
+        }).catch(() => {});
+
+        return { success: true, message: newMsg };
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Error enviando archivo multimedia.' };
+      }
+    },
+    [suppliers, brmSession, currentUser?.displayName]
+  );
+
+  const deleteBrmSupplierChat = useCallback(
+    async (
+      phoneE164: string,
+      syncToDevice: boolean = true
+    ): Promise<{ success: boolean; removedCount: number; error?: string }> => {
+      const cleanDigits = phoneE164.replace(/\D/g, '');
+      if (!cleanDigits) return { success: false, removedCount: 0, error: 'Número inválido' };
+
+      let removed = 0;
+      setBrmMessages((prev) => {
+        const filtered = prev.filter((m) => {
+          const mDigits = m.phoneE164.replace(/\D/g, '');
+          const match = mDigits === cleanDigits || mDigits.endsWith(cleanDigits) || cleanDigits.endsWith(mDigits);
+          if (match) removed++;
+          return !match;
+        });
+        return filtered;
+      });
+
+      try {
+        await fetch('/api/whatsapp/delete-chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            contactPhone: phoneE164,
+            syncToSocket: syncToDevice,
+          }),
+        });
+      } catch {
+        // Continuar si la red falla
+      }
+
+      logAuditEvent(
+        'BRM_WHATSAPP_DELETE_CHAT',
+        'WhatsApp BRM Proveedores',
+        `Conversación con ${phoneE164} eliminada (${removed} mensajes removidos). Sincronizado a móvil: ${syncToDevice}.`
+      );
+
+      return { success: true, removedCount: removed };
+    },
+    [logAuditEvent]
+  );
+
+  const markBrmMessageSentToOcr = useCallback((messageId: string) => {
+    setBrmMessages((prev) =>
+      prev.map((m) => (m.messageId === messageId || m.id === messageId ? { ...m, sentToOcrPreAudit: true } : m))
+    );
+  }, []);
 
   const dispatchPurchaseOrderToSupplierBrm = useCallback(
     async (order: SupplierPurchaseOrder, openWaMeWindow = false) => {
@@ -1320,7 +1474,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         supplierId: supplier.id,
         supplierName: supplier.name,
         supplierRif: supplier.rif,
-        phoneE164: supplier.phone ? `+${supplier.phone.replace(/\D/g, '')}` : DEFAULT_CORPORATE_BRM_PHONE_E164,
+        phoneE164: normalizePhoneE164(supplier.whatsappE164 || supplier.phone || '') || '+580000000000',
         retainedVes: voucher.retainedTotalVes,
         retainedUsd: voucher.retainedTotalUsd,
         periodYearMonth: voucher.periodYearMonth,
@@ -1911,6 +2065,10 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         confirmBrmQrPairing,
         activateBrmCloudWebhookMode,
         disconnectBrmSessionClean,
+        refreshBrmGatewayNow,
+        sendBrmMediaToSupplier,
+        deleteBrmSupplierChat,
+        markBrmMessageSentToOcr,
         sendBrmMessageToSupplier,
         dispatchPurchaseOrderToSupplierBrm,
         dispatchPaymentAndRetentionsBundleBrm,

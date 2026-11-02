@@ -93,8 +93,11 @@ function getRandomBase64Bytes(byteLength: number): string {
 }
 
 /**
- * Genera el payload de enlace Noise Protocol auténtico de WhatsApp Web Multi-Device (2@...).
- * Este formato es el esperado por el escáner interno de WhatsApp en móviles (Dispositivos vinculados).
+ * @deprecated SOLO FIXTURE DE PRUEBAS DEL CÓDEC QR ISO/IEC 18004.
+ * Genera una cadena con forma `2@...` usando bytes ALEATORIOS: WhatsApp móvil la RECHAZA porque
+ * no corresponde a ningún handshake Noise real abierto contra los servidores de WhatsApp.
+ * Esta era la causa raíz de los QR que "no conectaban". La vinculación real usa exclusivamente
+ * la cadena `qr` emitida por Baileys en server/whatsappQrBridge.ts. NUNCA usar en la UI.
  */
 export function generateBrmNoisePairingPayload(_corporatePhoneE164?: string): string {
   const refId = getRandomBase64Bytes(18);
@@ -422,9 +425,251 @@ export function resetBrmWhatsappSessionCleanly(
   return {
     ...current,
     state: 'DISCONNECTED',
+    estado: 'DESCONECTADO',
     activeMode: 'WA_ME_DIRECT_LEDGER',
     qrPayloadData: undefined,
+    qrCodeDataUri: undefined,
+    pairingCode: undefined,
+    numeroConectado: undefined,
+    qrRotations: 0,
+    ultimoError: undefined,
     qrGeneratedAtVet: undefined,
     lastHeartbeatVet: nowVet,
+  };
+}
+
+// ============================================================================
+// PASARELA BAILEYS BLINDADA (PATRÓN PURO APURE ERP) — HELPERS PUROS DE CLIENTE
+// Exclusivo BRM Proveedores (sin formato CRM de clientes/leads/embudos).
+// ============================================================================
+
+export const BRM_WHATSAPP_LINEA_ID = 'linea_brm';
+
+/** Datos crudos devueltos por /api/whatsapp/status, /qr, /force-qr */
+export interface BrmGatewayServerPayload {
+  state?: string;
+  estado?: string;
+  activeMode?: string;
+  numeroConectado?: string;
+  corporatePhoneE164?: string;
+  qrCodeDataUri?: string;
+  qrDataUri?: string;
+  qrPayloadData?: string;
+  pairingCode?: string;
+  qrTargetType?: 'NOISE_PAIRING' | 'WA_ME_LINK' | 'PAIRING_CODE';
+  qrGeneratedAtVet?: string;
+  qrRotations?: number;
+  ultimoError?: string;
+  lineaId?: string;
+  hasAdminCredentials?: boolean;
+  pendingOfflineQueueCount?: number;
+  lastHeartbeatVet?: string;
+}
+
+const CANONICAL_TO_LEGACY: Record<string, BrmWhatsappSessionStatus['state']> = {
+  CONECTADO: 'CONNECTED',
+  QR_EXPIRADO: 'QR_EXPIRADO',
+  DESCONECTADO: 'DISCONNECTED',
+  ERROR: 'DISCONNECTED',
+};
+
+/**
+ * Fusiona el estado del servidor con el estado local aplicando la regla SSoT Anti-Split-Brain:
+ * - El servidor es la ÚNICA fuente de verdad del estado de vinculación.
+ * - Si no está CONECTADO, se purga cualquier número "conectado" residual o por defecto.
+ * - Si está CONECTADO, el número mostrado es exclusivamente el que reporta el socket real.
+ * - Nunca se inventa ni se conserva un QR que el servidor no haya emitido.
+ */
+export function mergeBrmGatewayStatus(
+  prev: BrmWhatsappSessionStatus,
+  server: BrmGatewayServerPayload
+): BrmWhatsappSessionStatus {
+  const estado = (server.estado || '') as BrmWhatsappSessionStatus['estado'] | '';
+  const liveQr = server.qrCodeDataUri || server.qrDataUri || undefined;
+
+  let state: BrmWhatsappSessionStatus['state'];
+  if (server.state === 'CLOUD_STANDBY') {
+    state = 'CLOUD_STANDBY';
+  } else if (estado && CANONICAL_TO_LEGACY[estado]) {
+    state = CANONICAL_TO_LEGACY[estado];
+  } else if (estado === 'ESPERANDO_QR') {
+    state = liveQr || server.pairingCode ? 'QR_READY' : 'GENERATING_QR';
+  } else if (
+    server.state === 'CONNECTED' ||
+    server.state === 'QR_READY' ||
+    server.state === 'GENERATING_QR' ||
+    server.state === 'DISCONNECTED' ||
+    server.state === 'QR_EXPIRADO'
+  ) {
+    state = server.state;
+  } else {
+    state = prev.state;
+  }
+
+  const isConnected = state === 'CONNECTED';
+  const realConnectedPhone = isConnected
+    ? normalizePhoneE164(server.numeroConectado || server.corporatePhoneE164 || '') || undefined
+    : undefined;
+
+  return {
+    ...prev,
+    state,
+    estado: (estado || undefined) as BrmWhatsappSessionStatus['estado'],
+    lineaId: server.lineaId || prev.lineaId || BRM_WHATSAPP_LINEA_ID,
+    activeMode:
+      state === 'CLOUD_STANDBY'
+        ? 'CLOUD_API_WEBHOOK'
+        : isConnected || state === 'QR_READY' || state === 'GENERATING_QR'
+        ? 'QR_SOCKET_BRIDGE'
+        : 'WA_ME_DIRECT_LEDGER',
+    numeroConectado: realConnectedPhone,
+    corporatePhoneE164: realConnectedPhone || '',
+    qrCodeDataUri: isConnected ? undefined : liveQr,
+    qrPayloadData: isConnected ? undefined : server.qrPayloadData,
+    pairingCode: isConnected ? undefined : server.pairingCode,
+    qrTargetType: server.qrTargetType || prev.qrTargetType,
+    qrGeneratedAtVet: server.qrGeneratedAtVet,
+    qrRotations: typeof server.qrRotations === 'number' ? server.qrRotations : 0,
+    ultimoError: server.ultimoError,
+    hasAdminCredentials:
+      typeof server.hasAdminCredentials === 'boolean'
+        ? server.hasAdminCredentials
+        : prev.hasAdminCredentials,
+    pendingOfflineQueueCount:
+      typeof server.pendingOfflineQueueCount === 'number'
+        ? server.pendingOfflineQueueCount
+        : prev.pendingOfflineQueueCount,
+    lastHeartbeatVet: server.lastHeartbeatVet || prev.lastHeartbeatVet,
+  };
+}
+
+/**
+ * Detecta identificadores @lid crudos o corruptos que NO deben mostrarse como teléfono
+ * (más de 15 dígitos o sin prefijo +). Protege la UI de contactos fantasma.
+ */
+export function isCorruptedOrRawLid(phoneOrJid: string): boolean {
+  const raw = String(phoneOrJid || '').trim();
+  if (!raw) return true;
+  if (raw.includes('@lid')) return true;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 10 || digits.length > 15) return true;
+  return false;
+}
+
+export function formatBrmAudioDurationLabel(seconds?: number, isPtt?: boolean): string {
+  const base = isPtt === false ? '🎵 Mensaje de audio' : '🎤 Nota de voz';
+  const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (!sec) return base;
+  const mins = Math.floor(sec / 60);
+  const rem = sec % 60;
+  return `${base} (${mins}:${rem < 10 ? '0' : ''}${rem})`;
+}
+
+/** Mensaje crudo encolado por la pasarela (pending_messages_queue.json) */
+export interface BrmBridgeQueuedMessage {
+  id: string;
+  messageId: string;
+  lineaId?: string;
+  remitente: string;
+  senderName?: string;
+  destinatario: string;
+  destinatarioNombre?: string;
+  direccion: 'ENTRANTE' | 'SALIENTE' | 'INBOUND_FROM_SUPPLIER' | 'OUTBOUND_TO_SUPPLIER';
+  cuerpo?: string;
+  bodyText?: string;
+  tipoMensaje?: 'TEXTO' | 'IMAGEN' | 'DOCUMENTO' | 'AUDIO';
+  mediaUrl?: string;
+  mediaMimeType?: string;
+  audioDurationSeconds?: number;
+  isPtt?: boolean;
+  attachmentFileName?: string;
+  timestamp?: string;
+}
+
+function formatIsoToVet(iso?: string): string {
+  const date = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(date.getTime())) return String(iso || '');
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Caracas',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+    const m: Record<string, string> = {};
+    for (const p of parts) if (p.type !== 'literal') m[p.type] = p.value;
+    return `${m.day}/${m.month}/${m.year} ${m.hour === '24' ? '00' : m.hour}:${m.minute}:${m.second}`;
+  } catch {
+    return date.toISOString();
+  }
+}
+
+/**
+ * Convierte un mensaje real de la pasarela Baileys en un registro BRM auditable, resolviendo
+ * la contraparte canónica (direccion SALIENTE → destinatario; ENTRANTE → remitente) y vinculándolo
+ * al proveedor homologado por E.164. Devuelve null si la contraparte es un @lid corrupto.
+ */
+export function mapBridgeMessageToBrmMessage(params: {
+  queued: BrmBridgeQueuedMessage;
+  suppliers: Supplier[];
+  connectedOwnPhoneE164?: string;
+}): BrmWhatsappMessage | null {
+  const { queued, suppliers, connectedOwnPhoneE164 } = params;
+  const isOutbound =
+    queued.direccion === 'SALIENTE' || queued.direccion === 'OUTBOUND_TO_SUPPLIER';
+  const counterpartyRaw = isOutbound ? queued.destinatario : queued.remitente;
+  if (isCorruptedOrRawLid(counterpartyRaw)) return null;
+
+  const counterpartyE164 = normalizePhoneE164(counterpartyRaw);
+  if (!counterpartyE164) return null;
+  if (connectedOwnPhoneE164 && isCorporateSelfPhone(counterpartyE164, connectedOwnPhoneE164)) {
+    return null; // Exclusión determinista del número propio
+  }
+
+  const supplier = suppliers.find(
+    (s) => normalizePhoneE164(s.whatsappE164 || s.phone || '') === counterpartyE164
+  );
+  const contactName = isOutbound ? queued.destinatarioNombre : queued.senderName;
+
+  const tipo = queued.tipoMensaje || 'TEXTO';
+  const rawBody = String(queued.bodyText || queued.cuerpo || '').trim();
+  const bodyText =
+    rawBody ||
+    (tipo === 'AUDIO'
+      ? formatBrmAudioDurationLabel(queued.audioDurationSeconds, queued.isPtt)
+      : tipo === 'IMAGEN'
+      ? '📷 [Imagen / Factura o Comprobante Adjunto]'
+      : tipo === 'DOCUMENTO'
+      ? `📄 [Documento: ${queued.attachmentFileName || 'Archivo'}]`
+      : '');
+  if (!bodyText && !queued.mediaUrl) return null;
+
+  const messageId = queued.messageId || queued.id;
+  return {
+    id: `brm-wa-${messageId}`,
+    messageId,
+    supplierId: supplier?.id || '',
+    supplierName: supplier?.name || contactName || counterpartyE164,
+    supplierRif: supplier?.rif || '',
+    phoneE164: counterpartyE164,
+    direction: isOutbound ? 'OUTBOUND_TO_SUPPLIER' : 'INBOUND_FROM_SUPPLIER',
+    category: tipo === 'IMAGEN' && !isOutbound ? 'FACTURA_ENTRANTE_PROVEEDOR' : 'MENSAJE_OPERATIVO_BRM',
+    bodyText,
+    attachmentFileName: queued.attachmentFileName,
+    deliveryStatus: isOutbound ? 'ENTREGADO' : 'LEIDO',
+    transportUsed: 'QR_SOCKET_BRIDGE',
+    createdBy: isOutbound ? 'Dispositivo vinculado (WhatsApp móvil)' : contactName || 'Proveedor (WhatsApp)',
+    timestampVet: formatIsoToVet(queued.timestamp),
+    tipoMensaje: tipo,
+    mediaUrl: queued.mediaUrl,
+    mediaMimeType: queued.mediaMimeType,
+    audioDurationSeconds: queued.audioDurationSeconds,
+    isPtt: queued.isPtt,
+    senderName: contactName,
+    isUnregisteredContact: !supplier,
   };
 }

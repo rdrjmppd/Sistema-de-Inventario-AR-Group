@@ -513,6 +513,7 @@ export type AuditActionType =
   | 'BRM_WHATSAPP_SEND'
   | 'BRM_WHATSAPP_INVOICE_PRELOAD'
   | 'BRM_WHATSAPP_SESSION_RESET'
+  | 'BRM_WHATSAPP_DELETE_CHAT'
   | 'BRM_RETENTION_DRAFT_STAGED'
   | 'BRM_RETENTION_DRAFT_DISCARDED'
   | 'DATABASE_INTEGRITY_VERIFIED'
@@ -1144,7 +1145,18 @@ export type BrmSessionState =
   | 'QR_READY'
   | 'DISCONNECTED'
   | 'CLOUD_STANDBY'
-  | 'GENERATING_QR';
+  | 'GENERATING_QR'
+  | 'QR_EXPIRADO'; // Cortacircuitos: QR rotó 5 veces sin escaneo (~100s)
+
+/** Estado canónico emitido por la pasarela Baileys (server/whatsappQrBridge.ts) */
+export type BrmGatewayCanonicalState =
+  | 'DESCONECTADO'
+  | 'ESPERANDO_QR'
+  | 'QR_EXPIRADO'
+  | 'CONECTADO'
+  | 'ERROR';
+
+export type BrmMessageMediaType = 'TEXTO' | 'IMAGEN' | 'DOCUMENTO' | 'AUDIO';
 
 export type BrmDeliveryStatus =
   | 'EN_COLA_OFFLINE'
@@ -1166,6 +1178,13 @@ export interface BrmWhatsappSessionStatus {
   state: BrmSessionState;
   activeMode: BrmConnectionMode;
   corporatePhoneE164: string;
+  /** Estado canónico de la pasarela Baileys (SSoT servidor) */
+  estado?: BrmGatewayCanonicalState;
+  /** Número realmente vinculado (solo presente si estado === 'CONECTADO') */
+  numeroConectado?: string;
+  lineaId?: string;
+  qrRotations?: number;
+  ultimoError?: string;
   qrPayloadData?: string;
   qrCodeDataUri?: string;
   pairingCode?: string;
@@ -1194,6 +1213,18 @@ export interface BrmWhatsappMessage {
   waMeDeepLink?: string;
   createdBy: string;
   timestampVet: string;
+  /** Multimedia real recibida/enviada por la pasarela Baileys */
+  tipoMensaje?: BrmMessageMediaType;
+  mediaUrl?: string;
+  mediaMimeType?: string;
+  audioDurationSeconds?: number;
+  isPtt?: boolean;
+  /** Nombre del contacto según agenda del teléfono vinculado (si no es proveedor registrado) */
+  senderName?: string;
+  /** Proveedor sin registrar en el directorio BRM (contacto entrante desconocido) */
+  isUnregisteredContact?: boolean;
+  /** Marca de envío a Pre-Auditoría OCR (Compuerta 1) */
+  sentToOcrPreAudit?: boolean;
 }
 
 export interface BrmSupplierPreInvoice {
