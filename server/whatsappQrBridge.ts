@@ -85,6 +85,9 @@ export interface QueuedBridgeMessage {
   attachmentFileName?: string;
   timestamp: string;
   estadoEntrega: 'ENVIADO' | 'ENTREGADO' | 'LEIDO' | 'RECIBIDO';
+  isEdited?: boolean;
+  editedAt?: string;
+  action?: 'NUEVO' | 'MODIFICAR' | 'ESTADO';
 }
 
 export interface QueuedBridgeOcrItem {
@@ -105,6 +108,8 @@ const lineStatusMemory = new Map<string, ActiveLineState>();
 const initializingPromises = new Map<string, Promise<WASocket>>();
 const qrRotationCounters = new Map<string, number>();
 const lineContactsCache = new Map<string, Map<string, SyncedWhatsAppContact>>();
+const lidToPhoneCache = new Map<string, string>();
+const phoneToLidCache = new Map<string, string>();
 const MAX_QR_ROTATIONS = 5;
 
 const ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
@@ -114,6 +119,10 @@ const ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
 const PENDING_MESSAGES_QUEUE_FILE = path.join(
   SESSIONS_ROOT,
   'pending_messages_queue.json'
+);
+const DURABLE_MESSAGES_STORE_FILE = path.join(
+  SESSIONS_ROOT,
+  'chat_messages_history.json'
 );
 const PENDING_OCR_QUEUE_FILE = path.join(SESSIONS_ROOT, 'pending_ocr_queue.json');
 
@@ -387,6 +396,39 @@ function scheduleSessionBackup(lineaId: string): void {
 // 2. RESOLUCIÓN DE IDENTIDADES VIRTUALES (@lid <-> E.164) Y CONTACTOS
 // ============================================================================
 
+export function storeLidPhoneMapping(
+  lineaId: string,
+  lid: string,
+  phone: string,
+  persistToDisk: boolean = true
+): void {
+  const cleanLid = String(lid || '').replace('@lid', '').replace(/\D/g, '');
+  const cleanPhoneDigits = String(phone || '').replace(/\D/g, '');
+  if (!cleanLid || cleanPhoneDigits.length < 10 || cleanPhoneDigits.length > 15) return;
+  const e164 = `+${cleanPhoneDigits}`;
+  lidToPhoneCache.set(cleanLid, e164);
+  phoneToLidCache.set(cleanPhoneDigits, `${cleanLid}@lid`);
+
+  if (!persistToDisk) return;
+
+  try {
+    const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFile(
+      path.join(sessionDir, `lid-mapping-${cleanLid}_reverse.json`),
+      JSON.stringify(e164),
+      'utf-8',
+      () => {}
+    );
+    fs.writeFile(
+      path.join(sessionDir, `lid-mapping-${cleanPhoneDigits}.json`),
+      JSON.stringify(`${cleanLid}@lid`),
+      'utf-8',
+      () => {}
+    );
+  } catch {}
+}
+
 export function resolveLidToPhoneNumber(
   lineaId: string,
   remoteJid: string,
@@ -395,6 +437,9 @@ export function resolveLidToPhoneNumber(
   if (participant && participant.includes('@s.whatsapp.net')) {
     const partDigits = participant.split('@')[0].split(':')[0].replace(/\D/g, '');
     if (partDigits.length >= 10 && partDigits.length <= 15) {
+      if (remoteJid.endsWith('@lid')) {
+        storeLidPhoneMapping(lineaId, remoteJid, partDigits);
+      }
       return `+${partDigits}`;
     }
   }
@@ -402,6 +447,9 @@ export function resolveLidToPhoneNumber(
   if (remoteJid.endsWith('@lid')) {
     const lidNumber = remoteJid.split('@')[0].split(':')[0].replace(/\D/g, '');
     if (lidNumber) {
+      if (lidToPhoneCache.has(lidNumber)) {
+        return lidToPhoneCache.get(lidNumber)!;
+      }
       try {
         const reverseFile = path.join(
           SESSIONS_ROOT,
@@ -412,12 +460,25 @@ export function resolveLidToPhoneNumber(
           const raw = JSON.parse(fs.readFileSync(reverseFile, 'utf-8'));
           const phoneDigits = String(raw || '').replace(/\D/g, '');
           if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
-            return `+${phoneDigits}`;
+            const resolved = `+${phoneDigits}`;
+            lidToPhoneCache.set(lidNumber, resolved);
+            phoneToLidCache.set(phoneDigits, `${lidNumber}@lid`);
+            return resolved;
           }
         }
       } catch {
         // Fallback silencioso
       }
+
+      try {
+        const contactsMap = loadLineContacts(lineaId);
+        for (const c of contactsMap.values()) {
+          if (c.lid && (c.lid === remoteJid || c.lid.includes(lidNumber))) {
+            storeLidPhoneMapping(lineaId, remoteJid, c.phone);
+            return c.phone;
+          }
+        }
+      } catch {}
     }
   }
 
@@ -425,22 +486,80 @@ export function resolveLidToPhoneNumber(
   return rawId ? `+${rawId}` : remoteJid;
 }
 
+export async function resolveLidToPhoneNumberAsync(
+  lineaId: string,
+  remoteJid: string,
+  participant?: string | null
+): Promise<string> {
+  const syncResolved = resolveLidToPhoneNumber(lineaId, remoteJid, participant);
+  if (
+    syncResolved.startsWith('+') &&
+    syncResolved.length >= 10 &&
+    syncResolved.length <= 16 &&
+    !syncResolved.includes('@lid')
+  ) {
+    return syncResolved;
+  }
+
+  if (remoteJid.endsWith('@lid')) {
+    try {
+      const sock = activeSockets.get(lineaId);
+      if (sock && (sock as any).signalRepository?.lidMapping?.getPNForLID) {
+        const pn = await (sock as any).signalRepository.lidMapping.getPNForLID(remoteJid);
+        if (pn) {
+          const cleanPn = String(pn).split('@')[0].replace(/\D/g, '');
+          if (cleanPn.length >= 10 && cleanPn.length <= 15) {
+            storeLidPhoneMapping(lineaId, remoteJid, cleanPn);
+            return `+${cleanPn}`;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return syncResolved;
+}
+
 function findLidForPhoneDigits(
   lineaId: string,
   cleanDigits: string
 ): string | null {
+  const normDigits = cleanDigits.replace(/\D/g, '');
+  if (!normDigits) return null;
+
+  if (phoneToLidCache.has(normDigits)) {
+    return phoneToLidCache.get(normDigits)!;
+  }
+
   try {
     const forwardFile = path.join(
       SESSIONS_ROOT,
       lineaId,
-      `lid-mapping-${cleanDigits}.json`
+      `lid-mapping-${normDigits}.json`
     );
     if (fs.existsSync(forwardFile)) {
       const raw = JSON.parse(fs.readFileSync(forwardFile, 'utf-8'));
       const lidDigits = String(raw || '').replace(/\D/g, '');
-      if (lidDigits) return `${lidDigits}@lid`;
+      if (lidDigits) {
+        const lidJid = `${lidDigits}@lid`;
+        phoneToLidCache.set(normDigits, lidJid);
+        lidToPhoneCache.set(lidDigits, `+${normDigits}`);
+        return lidJid;
+      }
     }
   } catch {}
+
+  try {
+    const contactsMap = loadLineContacts(lineaId);
+    for (const c of contactsMap.values()) {
+      const cDigits = c.phone.replace(/\D/g, '');
+      if ((cDigits === normDigits || cDigits.endsWith(normDigits)) && c.lid) {
+        phoneToLidCache.set(normDigits, c.lid);
+        return c.lid;
+      }
+    }
+  } catch {}
+
   return null;
 }
 
@@ -539,6 +658,11 @@ export function ingestLineContacts(
     }
 
     const existing = map.get(resolvedPhone);
+    const effectiveLid = c.lid || (rawId.endsWith('@lid') ? rawId : existing?.lid);
+    if (effectiveLid && resolvedPhone.startsWith('+')) {
+      storeLidPhoneMapping(lineaId, effectiveLid, resolvedPhone);
+    }
+
     const shouldUpdate =
       !existing ||
       Boolean(cleanContactDisplayName(c.name)) ||
@@ -548,7 +672,7 @@ export function ingestLineContacts(
       map.set(resolvedPhone, {
         phone: resolvedPhone,
         name: bestName,
-        lid: c.lid || (rawId.endsWith('@lid') ? rawId : existing?.lid),
+        lid: effectiveLid,
         updatedAt: new Date().toISOString(),
       });
       changed = true;
@@ -679,6 +803,197 @@ export function clearSyncedOfflineQueueItems(params: {
   }
 }
 
+export function readDurableMessagesStore(lineaId?: string): QueuedBridgeMessage[] {
+  try {
+    if (!fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) return [];
+    const list: QueuedBridgeMessage[] = JSON.parse(
+      fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8')
+    );
+    if (!Array.isArray(list)) return [];
+    return lineaId ? list.filter((m) => m.lineaId === lineaId) : list;
+  } catch {
+    return [];
+  }
+}
+
+export function saveMessageToDurableStore(msg: QueuedBridgeMessage): void {
+  try {
+    let store: QueuedBridgeMessage[] = [];
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      store = JSON.parse(fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8'));
+      if (!Array.isArray(store)) store = [];
+    }
+    const idx = store.findIndex(
+      (m) => m.messageId === msg.messageId || (m.id && m.id === msg.id)
+    );
+    if (idx >= 0) {
+      store[idx] = { ...store[idx], ...msg };
+    } else {
+      store.push(msg);
+      if (store.length > 1000) {
+        store = store.slice(-1000);
+      }
+    }
+    fs.writeFileSync(
+      DURABLE_MESSAGES_STORE_FILE,
+      JSON.stringify(store, null, 2),
+      'utf-8'
+    );
+  } catch (err) {
+    console.warn('[WhatsApp BRM Bridge] Error guardando en almacén duradero:', err);
+  }
+}
+
+export function updateMessageTextInStoreAndQueue(
+  lineaId: string,
+  targetMessageId: string,
+  newText: string
+): boolean {
+  let updatedAny = false;
+  const nowIso = new Date().toISOString();
+
+  // 1. Actualizar almacén duradero
+  try {
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store: QueuedBridgeMessage[] = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8')
+      );
+      if (Array.isArray(store)) {
+        const item = store.find(
+          (m) => m.messageId === targetMessageId || m.id === targetMessageId
+        );
+        if (item) {
+          item.cuerpo = newText;
+          item.bodyText = newText;
+          item.isEdited = true;
+          item.editedAt = nowIso;
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(store, null, 2),
+            'utf-8'
+          );
+          updatedAny = true;
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Actualizar cola pendiente o re-encolar notificación de modificación
+  try {
+    let queue: QueuedBridgeMessage[] = [];
+    if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+      queue = JSON.parse(fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, 'utf-8'));
+      if (!Array.isArray(queue)) queue = [];
+    }
+    const inQueue = queue.find(
+      (m) => m.messageId === targetMessageId || m.id === targetMessageId
+    );
+    if (inQueue) {
+      inQueue.cuerpo = newText;
+      inQueue.bodyText = newText;
+      inQueue.isEdited = true;
+      inQueue.editedAt = nowIso;
+      inQueue.action = 'MODIFICAR';
+      updatedAny = true;
+    } else {
+      const durable = readDurableMessagesStore(lineaId);
+      const original = durable.find(
+        (m) => m.messageId === targetMessageId || m.id === targetMessageId
+      );
+      if (original) {
+        queue.push({
+          ...original,
+          cuerpo: newText,
+          bodyText: newText,
+          isEdited: true,
+          editedAt: nowIso,
+          action: 'MODIFICAR',
+        });
+        updatedAny = true;
+      }
+    }
+    fs.writeFileSync(
+      PENDING_MESSAGES_QUEUE_FILE,
+      JSON.stringify(queue.slice(-300), null, 2),
+      'utf-8'
+    );
+  } catch {}
+
+  return updatedAny;
+}
+
+export function updateMessageStatusInStore(
+  messageId: string,
+  rawStatus: number | string
+): void {
+  try {
+    let mappedStatus: QueuedBridgeMessage['estadoEntrega'] = 'ENVIADO';
+    if (rawStatus === 2 || rawStatus === 'SERVER_ACK' || rawStatus === 'SENT') {
+      mappedStatus = 'ENVIADO';
+    } else if (
+      rawStatus === 3 ||
+      rawStatus === 'DELIVERY_ACK' ||
+      rawStatus === 'DELIVERED'
+    ) {
+      mappedStatus = 'ENTREGADO';
+    } else if (rawStatus === 4 || rawStatus === 'READ' || rawStatus === 'PLAYED') {
+      mappedStatus = 'LEIDO';
+    } else {
+      return;
+    }
+
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store: QueuedBridgeMessage[] = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8')
+      );
+      if (Array.isArray(store)) {
+        const item = store.find(
+          (m) => m.messageId === messageId || m.id === messageId
+        );
+        if (item && item.estadoEntrega !== mappedStatus) {
+          item.estadoEntrega = mappedStatus;
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(store, null, 2),
+            'utf-8'
+          );
+        }
+      }
+    }
+  } catch {}
+}
+
+export function getChatMessagesHistoryHandler(
+  lineaId: string = DEFAULT_BRM_LINEA_ID,
+  contactPhone?: string,
+  limit: number = 200
+) {
+  const all = readDurableMessagesStore(lineaId);
+  let filtered = all;
+  if (contactPhone) {
+    const clean = contactPhone.replace(/\D/g, '');
+    if (clean) {
+      filtered = all.filter((m) => {
+        const r = String(m.remitente || '').replace(/\D/g, '');
+        const d = String(m.destinatario || '').replace(/\D/g, '');
+        return (
+          r === clean ||
+          d === clean ||
+          r.endsWith(clean) ||
+          d.endsWith(clean)
+        );
+      });
+    }
+  }
+  return {
+    success: true,
+    lineaId,
+    contactPhone,
+    total: filtered.length,
+    messages: filtered.slice(-Math.min(limit, 500)),
+  };
+}
+
 // ============================================================================
 // 4. INICIALIZACIÓN DE SOCKET BAILEYS CON CORTACIRCUITOS (5 ROTACIONES QR)
 // ============================================================================
@@ -795,6 +1110,25 @@ export async function initializeBaileysSocket(
         }
       });
 
+      // Actualizaciones de estado y ediciones en tiempo real
+      sock.ev.on('messages.update', async (updates) => {
+        try {
+          for (const u of updates) {
+            const msgId = u.key?.id;
+            if (!msgId) continue;
+            const updateObj = (u as any).update;
+            if (updateObj?.status) {
+              updateMessageStatusInStore(msgId, updateObj.status);
+            }
+          }
+        } catch (err) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Error procesando messages.update (${lineaId}):`,
+            err
+          );
+        }
+      });
+
       // Escucha bidireccional de mensajes entrantes y salientes desde el teléfono (Notas de Voz, Imágenes OCR, Texto)
       sock.ev.on('messages.upsert', async (m) => {
         try {
@@ -810,16 +1144,44 @@ export async function initializeBaileysSocket(
               continue;
             }
 
+            const rawMsg = msg.message;
+
+            // 1. Detección de Mensaje de Edición en Tiempo Real (ProtocolMessage / MESSAGE_EDIT)
+            if (rawMsg.protocolMessage) {
+              const proto = rawMsg.protocolMessage;
+              const targetKey = proto.key;
+              const targetId = targetKey?.id;
+              const editedMsg = proto.editedMessage;
+              if (targetId && editedMsg) {
+                const unwrapEdited =
+                  editedMsg.ephemeralMessage?.message ||
+                  editedMsg.viewOnceMessage?.message ||
+                  editedMsg.viewOnceMessageV2?.message ||
+                  editedMsg.documentWithCaptionMessage?.message ||
+                  editedMsg;
+                const editedText =
+                  unwrapEdited.conversation ||
+                  unwrapEdited.extendedTextMessage?.text ||
+                  unwrapEdited.imageMessage?.caption ||
+                  unwrapEdited.documentMessage?.caption ||
+                  '';
+                if (editedText) {
+                  updateMessageTextInStoreAndQueue(lineaId, targetId, editedText);
+                  console.log(
+                    `[WhatsApp BRM Bridge] Mensaje ${targetId} modificado en tiempo real: "${editedText}"`
+                  );
+                }
+              }
+              continue;
+            }
+
             const isFromMe = Boolean(msg.key.fromMe);
             const participant = msg.key.participant || (msg as any).participant || null;
-            const counterpartyPhone = resolveLidToPhoneNumber(
+            const counterpartyPhone = await resolveLidToPhoneNumberAsync(
               lineaId,
               remoteJid,
               participant
             );
-
-            // Desempaquetar contenedores efímeros o viewOnce
-            const rawMsg = msg.message;
             const innerMessage =
               rawMsg.ephemeralMessage?.message ||
               rawMsg.viewOnceMessage?.message ||
@@ -984,6 +1346,7 @@ export async function initializeBaileysSocket(
               estadoEntrega: isFromMe ? 'ENTREGADO' : 'RECIBIDO',
             };
 
+            saveMessageToDurableStore(queuedMsg);
             appendToLocalMessagesQueue(queuedMsg);
 
             // Si es imagen entrante de proveedor, encolar en Pre-Auditoría OCR (Compuerta 1)
@@ -1532,6 +1895,34 @@ export async function sendWhatsAppMessageHandler(
     }
 
     const messageId = sent?.key?.id || `msg_${Date.now()}`;
+    const outboundQueued: QueuedBridgeMessage = {
+      id: messageId,
+      lineaId,
+      messageId,
+      remitente: status.numeroConectado || 'LINEA_BRM',
+      senderName: 'Compras / Tesorería BRM',
+      destinatario: `+${cleanDigits}`,
+      destinatarioNombre: undefined,
+      direccion: 'SALIENTE',
+      cuerpo:
+        text ||
+        (mediaType === 'AUDIO'
+          ? '🎤 Nota de voz'
+          : mediaType === 'IMAGEN'
+          ? '📷 [Imagen Adjunta]'
+          : '📄 [Documento]'),
+      bodyText: text || '',
+      tipoMensaje: mediaType || 'TEXTO',
+      mediaUrl: mediaDataUrl,
+      mediaMimeType: audioOptions?.mimeType,
+      audioDurationSeconds: audioOptions?.durationSeconds,
+      isPtt: audioOptions?.isPtt,
+      timestamp: new Date().toISOString(),
+      estadoEntrega: 'ENTREGADO',
+    };
+    saveMessageToDurableStore(outboundQueued);
+    appendToLocalMessagesQueue(outboundQueued);
+
     return {
       success: true,
       messageId,
@@ -1542,6 +1933,64 @@ export async function sendWhatsAppMessageHandler(
     return {
       success: false,
       error: error?.message || 'Error al despachar mensaje por Baileys',
+    };
+  }
+}
+
+/**
+ * Edición de Mensajes en Caliente (ProtocolMessage / MESSAGE_EDIT vía Baileys)
+ * Refleja la modificación en el teléfono móvil Android y en la base duradera web.
+ */
+export async function editWhatsAppMessageHandler(
+  lineaId: string = DEFAULT_BRM_LINEA_ID,
+  targetMessageId: string,
+  toPhone: string,
+  newText: string
+) {
+  const sock = activeSockets.get(lineaId);
+  const status = getWhatsAppLineStatusHandler(lineaId);
+
+  if (!sock || status.estado !== 'CONECTADO') {
+    return {
+      success: false,
+      error: `La línea ${lineaId} no está vinculada actualmente.`,
+    };
+  }
+
+  const cleanDigits = String(toPhone || '').replace(/\D/g, '');
+  if (!cleanDigits) {
+    return { success: false, error: 'Número de destinatario inválido' };
+  }
+
+  const jid = `${cleanDigits}@s.whatsapp.net`;
+  const targetLid = findLidForPhoneDigits(lineaId, cleanDigits);
+  const sendJid = targetLid && cleanDigits.length > 13 ? targetLid : jid;
+
+  try {
+    const editKey = {
+      remoteJid: sendJid,
+      fromMe: true,
+      id: targetMessageId,
+    };
+
+    await sock.sendMessage(sendJid, {
+      text: newText,
+      edit: editKey,
+    });
+
+    updateMessageTextInStoreAndQueue(lineaId, targetMessageId, newText);
+
+    return {
+      success: true,
+      messageId: targetMessageId,
+      newText,
+      editedAt: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    console.error(`[WhatsApp BRM Bridge] Error editando mensaje ${targetMessageId}:`, error);
+    return {
+      success: false,
+      error: error?.message || 'Error al editar mensaje en Baileys',
     };
   }
 }

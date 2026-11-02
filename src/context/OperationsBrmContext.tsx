@@ -51,6 +51,7 @@ import {
   normalizePhoneE164,
   registerIncomingBrmPreInvoice,
   resetBrmWhatsappSessionCleanly,
+  updateOrAppendBrmMessages,
 } from '../lib/brm-whatsapp';
 import {
   autoReconcileBankStatement,
@@ -208,6 +209,12 @@ interface OperationsBrmContextType {
     attachmentFileName?: string;
     openWaMeWindow?: boolean;
   }) => Promise<{ success: boolean; message?: BrmWhatsappMessage; error?: string }>;
+  editBrmMessage: (params: {
+    messageId: string;
+    supplierId: string;
+    newText: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  fetchBrmMessagesHistory: () => Promise<void>;
   dispatchPurchaseOrderToSupplierBrm: (
     order: SupplierPurchaseOrder,
     openWaMeWindow?: boolean
@@ -603,11 +610,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       if (mapped.length > 0) {
-        setBrmMessages((prev) => {
-          const known = new Set(prev.map((m) => m.messageId));
-          const fresh = mapped.filter((m) => !known.has(m.messageId));
-          return fresh.length > 0 ? [...prev, ...fresh] : prev;
-        });
+        setBrmMessages((prev) => updateOrAppendBrmMessages(prev, mapped));
       }
 
       // ACK idempotente: solo se retiran de la cola del servidor tras ingresar al estado local
@@ -624,10 +627,41 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
+  const fetchBrmMessagesHistory = useCallback(async () => {
+    try {
+      const resp = await fetch(
+        `/api/whatsapp/messages?lineaId=${encodeURIComponent(BRM_WHATSAPP_LINEA_ID)}&limit=300`,
+        { cache: 'no-store' }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const history: BrmBridgeQueuedMessage[] = Array.isArray(data?.messages) ? data.messages : [];
+      if (history.length === 0) return;
+
+      const ownPhone = brmSessionRef.current.numeroConectado;
+      const mapped: BrmWhatsappMessage[] = [];
+      for (const h of history) {
+        const rec = mapBridgeMessageToBrmMessage({
+          queued: h,
+          suppliers: suppliersRef.current,
+          connectedOwnPhoneE164: ownPhone,
+        });
+        if (rec) mapped.push(rec);
+      }
+
+      if (mapped.length > 0) {
+        setBrmMessages((prev) => updateOrAppendBrmMessages(prev, mapped));
+      }
+    } catch {
+      // Modo resiliente sin excepciones
+    }
+  }, []);
+
   const refreshBrmGatewayNow = useCallback(async () => {
     await fetchBrmGatewayStatus();
     await syncBrmBridgeOfflineQueue();
-  }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue]);
+    await fetchBrmMessagesHistory();
+  }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory]);
 
   // Polling adaptativo (Patrón Puro Apure ERP): 2s mientras se espera escaneo, 8s en reposo
   useEffect(() => {
@@ -1214,6 +1248,62 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     },
     [suppliers, brmMessages, brmSession, currentUser?.displayName, logAuditEvent]
+  );
+
+  const editBrmMessage = useCallback(
+    async (params: { messageId: string; supplierId: string; newText: string }) => {
+      const supplier = suppliers.find((s) => s.id === params.supplierId);
+      if (!supplier) {
+        return { success: false, error: 'Proveedor no encontrado en el directorio BRM.' };
+      }
+      const phoneE164 = normalizePhoneE164(supplier.whatsappE164 || supplier.phone || '');
+      if (!phoneE164) {
+        return { success: false, error: 'Proveedor sin teléfono E.164 válido.' };
+      }
+
+      const now = getCaracasNow();
+      const nowStamp = `${now.dateFormatted} ${now.timeFormatted}`;
+
+      // 1. Optimistic update local
+      setBrmMessages((prev) =>
+        prev.map((m) =>
+          m.messageId === params.messageId
+            ? { ...m, bodyText: params.newText, isEdited: true, editedAtVet: nowStamp }
+            : m
+        )
+      );
+
+      // 2. Despachar al puente HTTP
+      try {
+        const resp = await fetch('/api/whatsapp/edit-message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lineaId: BRM_WHATSAPP_LINEA_ID,
+            messageId: params.messageId,
+            toPhone: phoneE164,
+            newText: params.newText,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          return { success: false, error: data.error || 'Error modificando mensaje en WhatsApp.' };
+        }
+
+        logAuditEvent(
+          'BRM_WHATSAPP_EDIT',
+          'WhatsApp BRM Proveedores',
+          `Mensaje ${params.messageId} modificado a ${supplier.name} (${phoneE164}).`,
+          { messageId: params.messageId, newText: params.newText },
+          params.messageId
+        );
+
+        return { success: true };
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Error de conexión al editar mensaje.' };
+      }
+    },
+    [suppliers, logAuditEvent]
   );
 
   const sendBrmMediaToSupplier = useCallback(
@@ -2070,6 +2160,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         deleteBrmSupplierChat,
         markBrmMessageSentToOcr,
         sendBrmMessageToSupplier,
+        editBrmMessage,
+        fetchBrmMessagesHistory,
         dispatchPurchaseOrderToSupplierBrm,
         dispatchPaymentAndRetentionsBundleBrm,
         receiveBrmSupplierPreInvoice,

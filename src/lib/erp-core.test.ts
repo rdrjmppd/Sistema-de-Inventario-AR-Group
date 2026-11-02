@@ -242,17 +242,24 @@ import {
   mergeBrmGatewayStatus,
   isCorruptedOrRawLid,
   mapBridgeMessageToBrmMessage,
+  updateOrAppendBrmMessages,
 } from './brm-whatsapp';
 import {
   encryptSessionData,
   decryptSessionData,
   resolveLidToPhoneNumber,
+  resolveLidToPhoneNumberAsync,
+  storeLidPhoneMapping,
   cleanContactDisplayName,
   getWhatsAppLineStatusHandler,
   forceResetAndUnlinkSession,
   simulateCorruptedSplitBrainStateForTest,
   simulateQrRotationStepForTest,
   extractNestedBaileysMessageDescriptor,
+  saveMessageToDurableStore,
+  readDurableMessagesStore,
+  updateMessageTextInStoreAndQueue,
+  getChatMessagesHistoryHandler,
 } from '../../server/whatsappQrBridge';
 import {
   computeDaysUntilExpiration,
@@ -6674,5 +6681,113 @@ test('80. Certificación Integral de Pasarela WhatsApp BRM Multi-Device (Baileys
   });
   assert.strictEqual(selfLoopMsg, null, 'Mensajes dirigidos al propio número deben ser excluidos deterministamente');
 });
+
+test('81. Certificación de Consistencia Bidireccional Android <-> Web en Tiempo Real: Ingesta LID Multi-Device, Edición en Caliente de Mensajes, Almacén Persistente y Modificación Reflejada en Pantalla', async () => {
+  const testLineId = 'test_linea_brm_sync';
+
+  // 1. Mapeo Bidireccional de Identidades Virtuales LID <-> E.164
+  const testLid = '109988776655@lid';
+  const testPhoneDigits = '584149998877';
+  const testPhoneE164 = '+584149998877';
+
+  storeLidPhoneMapping(testLineId, testLid, testPhoneDigits);
+
+  const resolvedSync = resolveLidToPhoneNumber(testLineId, testLid);
+  assert.strictEqual(resolvedSync, testPhoneE164, 'resolveLidToPhoneNumber debe resolver inmediatamente el LID a su número E.164');
+
+  const resolvedAsync = await resolveLidToPhoneNumberAsync(testLineId, testLid);
+  assert.strictEqual(resolvedAsync, testPhoneE164, 'resolveLidToPhoneNumberAsync debe devolver el número E.164 normalizado');
+
+  // 2. Mapeo de Mensaje Saliente Enviado Directamente desde Android
+  const mockSupplier: Supplier = {
+    id: 'sup-lacteos-01',
+    name: 'Lácteos Los Andes C.A.',
+    rif: 'J-30495812-4',
+    category: 'Lácteos y Refrigerados',
+    contactName: 'Despacho Los Andes',
+    phone: '02432998877',
+    email: 'ventas@lacteoslosandes.gob.ve',
+    creditDays: 7,
+    paymentTerms: 'Crédito 7 días',
+    whatsappE164: testPhoneE164,
+    balanceUsd: 850,
+  };
+
+  const androidOutboundQueued = {
+    id: 'msg-android-101',
+    lineaId: testLineId,
+    messageId: 'wamid.ANDROID.101',
+    remitente: '+582410001122',
+    destinatario: resolvedSync, // LID resuelto a su teléfono E.164
+    direccion: 'SALIENTE' as const,
+    cuerpo: 'Buenos días, confirmamos recepción de pedido de leche pasteurizada.',
+    bodyText: 'Buenos días, confirmamos recepción de pedido de leche pasteurizada.',
+    tipoMensaje: 'TEXTO' as const,
+    timestamp: '2026-11-02T11:00:00Z',
+    estadoEntrega: 'ENTREGADO' as const,
+  };
+
+  const mappedAndroidMsg = mapBridgeMessageToBrmMessage({
+    queued: androidOutboundQueued,
+    suppliers: [mockSupplier],
+    connectedOwnPhoneE164: '+582410001122',
+  });
+
+  assert.ok(mappedAndroidMsg !== null, 'El mensaje originado en Android debe mapearse con éxito');
+  assert.strictEqual(mappedAndroidMsg?.supplierId, 'sup-lacteos-01');
+  assert.strictEqual(mappedAndroidMsg?.supplierName, 'Lácteos Los Andes C.A.');
+  assert.strictEqual(mappedAndroidMsg?.phoneE164, testPhoneE164);
+  assert.strictEqual(mappedAndroidMsg?.direction, 'OUTBOUND_TO_SUPPLIER');
+  assert.strictEqual(mappedAndroidMsg?.bodyText, 'Buenos días, confirmamos recepción de pedido de leche pasteurizada.');
+
+  // 3. Persistencia en Almacén Duradero del Servidor (chat_messages_history.json)
+  saveMessageToDurableStore(androidOutboundQueued);
+  const storedMessages = readDurableMessagesStore(testLineId);
+  const foundInStore = storedMessages.find((m) => m.messageId === 'wamid.ANDROID.101');
+  assert.ok(foundInStore !== undefined, 'El mensaje debe persistir en el almacén duradero del servidor');
+
+  const historyResult = getChatMessagesHistoryHandler(testLineId, testPhoneE164);
+  assert.strictEqual(historyResult.success, true);
+  assert.ok(historyResult.messages.some((m) => m.messageId === 'wamid.ANDROID.101'));
+
+  // 4. Edición de Mensajes en Caliente (ProtocolMessage / MESSAGE_EDIT)
+  const newEditText = 'Buenos días, rectificamos: confirmamos recepción de 120 cajas de leche.';
+  const wasUpdated = updateMessageTextInStoreAndQueue(testLineId, 'wamid.ANDROID.101', newEditText);
+  assert.strictEqual(wasUpdated, true, 'updateMessageTextInStoreAndQueue debe retornar true tras actualizar');
+
+  const reloadedStore = readDurableMessagesStore(testLineId);
+  const editedItem = reloadedStore.find((m) => m.messageId === 'wamid.ANDROID.101');
+  assert.strictEqual(editedItem?.bodyText, newEditText, 'El texto debe estar actualizado en el almacén duradero');
+  assert.strictEqual(editedItem?.isEdited, true, 'isEdited debe marcarse en true');
+  assert.ok(typeof editedItem?.editedAt === 'string', 'Debe registrar timestamp de edición ISO');
+
+  // 5. Fusión en Vivo en el Frontend (updateOrAppendBrmMessages)
+  const existingList = [mappedAndroidMsg!];
+  const incomingEditedMsg = {
+    ...mappedAndroidMsg!,
+    bodyText: newEditText,
+    isEdited: true,
+    editedAtVet: '02/11/2026 11:05:00',
+  };
+
+  const mergedList = updateOrAppendBrmMessages(existingList, [incomingEditedMsg]);
+  assert.strictEqual(mergedList.length, 1, 'No debe duplicar mensajes existentes tras una edición');
+  assert.strictEqual(mergedList[0].bodyText, newEditText, 'El mensaje en la lista de chat debe mostrar el nuevo texto');
+  assert.strictEqual(mergedList[0].isEdited, true, 'El mensaje en la lista debe reflejar isEdited: true');
+  assert.strictEqual(mergedList[0].editedAtVet, '02/11/2026 11:05:00');
+
+  // 6. Prueba de Estrés: 200 operaciones concurrentes de resolución LID en memoria en < 50ms
+  const startStress = Date.now();
+  for (let i = 0; i < 200; i++) {
+    const iterLid = `10998877${i}@lid`;
+    const iterPhone = `58414000${String(i).padStart(4, '0')}`;
+    storeLidPhoneMapping(testLineId, iterLid, iterPhone, false);
+    const check = resolveLidToPhoneNumber(testLineId, iterLid);
+    assert.strictEqual(check, `+${iterPhone}`);
+  }
+  const stressLatency = Date.now() - startStress;
+  assert.ok(stressLatency < 50, `200 resoluciones LID concurrentes en memoria deben tardar < 50ms (tardó ${stressLatency}ms)`);
+});
+
 
 

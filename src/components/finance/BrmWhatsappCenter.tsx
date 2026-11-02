@@ -15,6 +15,7 @@ import {
   KeyRound,
   MessageSquare,
   Paperclip,
+  Pencil,
   Phone,
   PowerOff,
   QrCode,
@@ -62,6 +63,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     deleteBrmSupplierChat,
     markBrmMessageSentToOcr,
     sendBrmMessageToSupplier,
+    editBrmMessage,
     dispatchPurchaseOrderToSupplierBrm,
     dispatchPaymentAndRetentionsBundleBrm,
     receiveBrmSupplierPreInvoice,
@@ -119,6 +121,42 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+
+  // Edición de mensajes en caliente (ProtocolMessage / Baileys)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  const handleStartEdit = (msg: { messageId: string; bodyText?: string }) => {
+    setEditingMessageId(msg.messageId);
+    setEditingText(msg.bodyText || '');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleSaveEdit = async (msg: { messageId: string }) => {
+    if (!editingText.trim() || !activeSupplier) return;
+    setIsSavingEdit(true);
+    try {
+      const res = await editBrmMessage({
+        messageId: msg.messageId,
+        supplierId: activeSupplier.id,
+        newText: editingText.trim(),
+      });
+      if (!res.success) {
+        setBanner({ type: 'err', text: res.error || 'Error al modificar mensaje.' });
+      } else {
+        setEditingMessageId(null);
+        setEditingText('');
+        setBanner({ type: 'ok', text: 'Mensaje modificado exitosamente en tiempo real.' });
+      }
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   // Auto-seleccionar al proveedor del comprobante en borrador si está pendiente de revisión
   useEffect(() => {
@@ -1009,11 +1047,47 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                           </span>
                         </div>
 
-                        {/* Texto del Mensaje */}
-                        {msg.bodyText && (
-                          <p className="whitespace-pre-line leading-relaxed text-xs">
-                            {msg.bodyText}
-                          </p>
+                        {/* Texto del Mensaje o Formulario de Edición */}
+                        {editingMessageId === msg.messageId ? (
+                          <div className="space-y-1.5 pt-1">
+                            <textarea
+                              value={editingText}
+                              onChange={(e) => setEditingText(e.target.value)}
+                              rows={2}
+                              className="w-full bg-slate-950 border border-emerald-500/60 rounded-lg p-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                              placeholder="Editar mensaje..."
+                              autoFocus
+                            />
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={handleCancelEdit}
+                                disabled={isSavingEdit}
+                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSaveEdit(msg)}
+                                disabled={isSavingEdit || !editingText.trim()}
+                                className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] cursor-pointer disabled:opacity-50"
+                              >
+                                {isSavingEdit ? 'Guardando...' : 'Guardar'}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          msg.bodyText && (
+                            <p className="whitespace-pre-line leading-relaxed text-xs">
+                              {msg.bodyText}
+                              {msg.isEdited && (
+                                <span className="text-[10px] text-amber-400/90 font-mono italic ml-1.5">
+                                  (editado)
+                                </span>
+                              )}
+                            </p>
+                          )
                         )}
 
                         {/* Reproductor de Audio / Nota de Voz Auténtico (Patrón Puro Apure ERP) */}
@@ -1078,8 +1152,18 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                           </div>
                         )}
 
-                        {/* Pie de Mensaje: Hora y Ticks de Entrega */}
+                        {/* Pie de Mensaje: Hora, Ticks de Entrega y Botón Editar */}
                         <div className="flex items-center justify-end gap-1.5 pt-0.5 text-[10px] text-slate-400 font-mono">
+                          {isOut && brmSession.state === 'CONNECTED' && editingMessageId !== msg.messageId && msg.tipoMensaje !== 'AUDIO' && msg.tipoMensaje !== 'IMAGEN' && (
+                            <button
+                              type="button"
+                              onClick={() => handleStartEdit(msg)}
+                              title="Modificar mensaje en tiempo real"
+                              className="opacity-70 hover:opacity-100 hover:text-white mr-1 p-0.5 transition cursor-pointer"
+                            >
+                              <Pencil className="w-2.5 h-2.5" />
+                            </button>
+                          )}
                           <span>{msg.timestampVet || 'Hoy'}</span>
                           {isOut && (
                             <span className="text-emerald-400 inline-flex items-center">

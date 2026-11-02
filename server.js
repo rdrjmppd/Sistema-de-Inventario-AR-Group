@@ -245,6 +245,8 @@ var lineStatusMemory = /* @__PURE__ */ new Map();
 var initializingPromises = /* @__PURE__ */ new Map();
 var qrRotationCounters = /* @__PURE__ */ new Map();
 var lineContactsCache = /* @__PURE__ */ new Map();
+var lidToPhoneCache = /* @__PURE__ */ new Map();
+var phoneToLidCache = /* @__PURE__ */ new Map();
 var MAX_QR_ROTATIONS = 5;
 var ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
   SESSIONS_ROOT,
@@ -253,6 +255,10 @@ var ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
 var PENDING_MESSAGES_QUEUE_FILE = path.join(
   SESSIONS_ROOT,
   "pending_messages_queue.json"
+);
+var DURABLE_MESSAGES_STORE_FILE = path.join(
+  SESSIONS_ROOT,
+  "chat_messages_history.json"
 );
 var PENDING_OCR_QUEUE_FILE = path.join(SESSIONS_ROOT, "pending_ocr_queue.json");
 function formatVetTimestamp(date = /* @__PURE__ */ new Date()) {
@@ -466,16 +472,50 @@ function scheduleSessionBackup(lineaId) {
     });
   }, 3500);
 }
+function storeLidPhoneMapping(lineaId, lid, phone, persistToDisk = true) {
+  const cleanLid = String(lid || "").replace("@lid", "").replace(/\D/g, "");
+  const cleanPhoneDigits = String(phone || "").replace(/\D/g, "");
+  if (!cleanLid || cleanPhoneDigits.length < 10 || cleanPhoneDigits.length > 15) return;
+  const e164 = `+${cleanPhoneDigits}`;
+  lidToPhoneCache.set(cleanLid, e164);
+  phoneToLidCache.set(cleanPhoneDigits, `${cleanLid}@lid`);
+  if (!persistToDisk) return;
+  try {
+    const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFile(
+      path.join(sessionDir, `lid-mapping-${cleanLid}_reverse.json`),
+      JSON.stringify(e164),
+      "utf-8",
+      () => {
+      }
+    );
+    fs.writeFile(
+      path.join(sessionDir, `lid-mapping-${cleanPhoneDigits}.json`),
+      JSON.stringify(`${cleanLid}@lid`),
+      "utf-8",
+      () => {
+      }
+    );
+  } catch {
+  }
+}
 function resolveLidToPhoneNumber(lineaId, remoteJid, participant) {
   if (participant && participant.includes("@s.whatsapp.net")) {
     const partDigits = participant.split("@")[0].split(":")[0].replace(/\D/g, "");
     if (partDigits.length >= 10 && partDigits.length <= 15) {
+      if (remoteJid.endsWith("@lid")) {
+        storeLidPhoneMapping(lineaId, remoteJid, partDigits);
+      }
       return `+${partDigits}`;
     }
   }
   if (remoteJid.endsWith("@lid")) {
     const lidNumber = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
     if (lidNumber) {
+      if (lidToPhoneCache.has(lidNumber)) {
+        return lidToPhoneCache.get(lidNumber);
+      }
       try {
         const reverseFile = path.join(
           SESSIONS_ROOT,
@@ -486,7 +526,20 @@ function resolveLidToPhoneNumber(lineaId, remoteJid, participant) {
           const raw = JSON.parse(fs.readFileSync(reverseFile, "utf-8"));
           const phoneDigits = String(raw || "").replace(/\D/g, "");
           if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
-            return `+${phoneDigits}`;
+            const resolved = `+${phoneDigits}`;
+            lidToPhoneCache.set(lidNumber, resolved);
+            phoneToLidCache.set(phoneDigits, `${lidNumber}@lid`);
+            return resolved;
+          }
+        }
+      } catch {
+      }
+      try {
+        const contactsMap = loadLineContacts(lineaId);
+        for (const c of contactsMap.values()) {
+          if (c.lid && (c.lid === remoteJid || c.lid.includes(lidNumber))) {
+            storeLidPhoneMapping(lineaId, remoteJid, c.phone);
+            return c.phone;
           }
         }
       } catch {
@@ -496,17 +549,61 @@ function resolveLidToPhoneNumber(lineaId, remoteJid, participant) {
   const rawId = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
   return rawId ? `+${rawId}` : remoteJid;
 }
+async function resolveLidToPhoneNumberAsync(lineaId, remoteJid, participant) {
+  const syncResolved = resolveLidToPhoneNumber(lineaId, remoteJid, participant);
+  if (syncResolved.startsWith("+") && syncResolved.length >= 10 && syncResolved.length <= 16 && !syncResolved.includes("@lid")) {
+    return syncResolved;
+  }
+  if (remoteJid.endsWith("@lid")) {
+    try {
+      const sock = activeSockets.get(lineaId);
+      if (sock && sock.signalRepository?.lidMapping?.getPNForLID) {
+        const pn = await sock.signalRepository.lidMapping.getPNForLID(remoteJid);
+        if (pn) {
+          const cleanPn = String(pn).split("@")[0].replace(/\D/g, "");
+          if (cleanPn.length >= 10 && cleanPn.length <= 15) {
+            storeLidPhoneMapping(lineaId, remoteJid, cleanPn);
+            return `+${cleanPn}`;
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  return syncResolved;
+}
 function findLidForPhoneDigits(lineaId, cleanDigits) {
+  const normDigits = cleanDigits.replace(/\D/g, "");
+  if (!normDigits) return null;
+  if (phoneToLidCache.has(normDigits)) {
+    return phoneToLidCache.get(normDigits);
+  }
   try {
     const forwardFile = path.join(
       SESSIONS_ROOT,
       lineaId,
-      `lid-mapping-${cleanDigits}.json`
+      `lid-mapping-${normDigits}.json`
     );
     if (fs.existsSync(forwardFile)) {
       const raw = JSON.parse(fs.readFileSync(forwardFile, "utf-8"));
       const lidDigits = String(raw || "").replace(/\D/g, "");
-      if (lidDigits) return `${lidDigits}@lid`;
+      if (lidDigits) {
+        const lidJid = `${lidDigits}@lid`;
+        phoneToLidCache.set(normDigits, lidJid);
+        lidToPhoneCache.set(lidDigits, `+${normDigits}`);
+        return lidJid;
+      }
+    }
+  } catch {
+  }
+  try {
+    const contactsMap = loadLineContacts(lineaId);
+    for (const c of contactsMap.values()) {
+      const cDigits = c.phone.replace(/\D/g, "");
+      if ((cDigits === normDigits || cDigits.endsWith(normDigits)) && c.lid) {
+        phoneToLidCache.set(normDigits, c.lid);
+        return c.lid;
+      }
     }
   } catch {
   }
@@ -575,12 +672,16 @@ function ingestLineContacts(lineaId, contacts) {
       continue;
     }
     const existing = map.get(resolvedPhone);
+    const effectiveLid = c.lid || (rawId.endsWith("@lid") ? rawId : existing?.lid);
+    if (effectiveLid && resolvedPhone.startsWith("+")) {
+      storeLidPhoneMapping(lineaId, effectiveLid, resolvedPhone);
+    }
     const shouldUpdate = !existing || Boolean(cleanContactDisplayName(c.name)) || existing.name !== bestName;
     if (shouldUpdate) {
       map.set(resolvedPhone, {
         phone: resolvedPhone,
         name: bestName,
-        lid: c.lid || (rawId.endsWith("@lid") ? rawId : existing?.lid),
+        lid: effectiveLid,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
       changed = true;
@@ -697,6 +798,169 @@ function clearSyncedOfflineQueueItems(params) {
     }
   }
 }
+function readDurableMessagesStore(lineaId) {
+  try {
+    if (!fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) return [];
+    const list = JSON.parse(
+      fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8")
+    );
+    if (!Array.isArray(list)) return [];
+    return lineaId ? list.filter((m) => m.lineaId === lineaId) : list;
+  } catch {
+    return [];
+  }
+}
+function saveMessageToDurableStore(msg) {
+  try {
+    let store = [];
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      store = JSON.parse(fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8"));
+      if (!Array.isArray(store)) store = [];
+    }
+    const idx = store.findIndex(
+      (m) => m.messageId === msg.messageId || m.id && m.id === msg.id
+    );
+    if (idx >= 0) {
+      store[idx] = { ...store[idx], ...msg };
+    } else {
+      store.push(msg);
+      if (store.length > 1e3) {
+        store = store.slice(-1e3);
+      }
+    }
+    fs.writeFileSync(
+      DURABLE_MESSAGES_STORE_FILE,
+      JSON.stringify(store, null, 2),
+      "utf-8"
+    );
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Error guardando en almac\xE9n duradero:", err);
+  }
+}
+function updateMessageTextInStoreAndQueue(lineaId, targetMessageId, newText) {
+  let updatedAny = false;
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  try {
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8")
+      );
+      if (Array.isArray(store)) {
+        const item = store.find(
+          (m) => m.messageId === targetMessageId || m.id === targetMessageId
+        );
+        if (item) {
+          item.cuerpo = newText;
+          item.bodyText = newText;
+          item.isEdited = true;
+          item.editedAt = nowIso;
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(store, null, 2),
+            "utf-8"
+          );
+          updatedAny = true;
+        }
+      }
+    }
+  } catch {
+  }
+  try {
+    let queue = [];
+    if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+      queue = JSON.parse(fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8"));
+      if (!Array.isArray(queue)) queue = [];
+    }
+    const inQueue = queue.find(
+      (m) => m.messageId === targetMessageId || m.id === targetMessageId
+    );
+    if (inQueue) {
+      inQueue.cuerpo = newText;
+      inQueue.bodyText = newText;
+      inQueue.isEdited = true;
+      inQueue.editedAt = nowIso;
+      inQueue.action = "MODIFICAR";
+      updatedAny = true;
+    } else {
+      const durable = readDurableMessagesStore(lineaId);
+      const original = durable.find(
+        (m) => m.messageId === targetMessageId || m.id === targetMessageId
+      );
+      if (original) {
+        queue.push({
+          ...original,
+          cuerpo: newText,
+          bodyText: newText,
+          isEdited: true,
+          editedAt: nowIso,
+          action: "MODIFICAR"
+        });
+        updatedAny = true;
+      }
+    }
+    fs.writeFileSync(
+      PENDING_MESSAGES_QUEUE_FILE,
+      JSON.stringify(queue.slice(-300), null, 2),
+      "utf-8"
+    );
+  } catch {
+  }
+  return updatedAny;
+}
+function updateMessageStatusInStore(messageId, rawStatus) {
+  try {
+    let mappedStatus = "ENVIADO";
+    if (rawStatus === 2 || rawStatus === "SERVER_ACK" || rawStatus === "SENT") {
+      mappedStatus = "ENVIADO";
+    } else if (rawStatus === 3 || rawStatus === "DELIVERY_ACK" || rawStatus === "DELIVERED") {
+      mappedStatus = "ENTREGADO";
+    } else if (rawStatus === 4 || rawStatus === "READ" || rawStatus === "PLAYED") {
+      mappedStatus = "LEIDO";
+    } else {
+      return;
+    }
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8")
+      );
+      if (Array.isArray(store)) {
+        const item = store.find(
+          (m) => m.messageId === messageId || m.id === messageId
+        );
+        if (item && item.estadoEntrega !== mappedStatus) {
+          item.estadoEntrega = mappedStatus;
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(store, null, 2),
+            "utf-8"
+          );
+        }
+      }
+    }
+  } catch {
+  }
+}
+function getChatMessagesHistoryHandler(lineaId = DEFAULT_BRM_LINEA_ID, contactPhone, limit = 200) {
+  const all = readDurableMessagesStore(lineaId);
+  let filtered = all;
+  if (contactPhone) {
+    const clean = contactPhone.replace(/\D/g, "");
+    if (clean) {
+      filtered = all.filter((m) => {
+        const r = String(m.remitente || "").replace(/\D/g, "");
+        const d = String(m.destinatario || "").replace(/\D/g, "");
+        return r === clean || d === clean || r.endsWith(clean) || d.endsWith(clean);
+      });
+    }
+  }
+  return {
+    success: true,
+    lineaId,
+    contactPhone,
+    total: filtered.length,
+    messages: filtered.slice(-Math.min(limit, 500))
+  };
+}
 async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
   if (initializingPromises.has(lineaId)) {
     return initializingPromises.get(lineaId);
@@ -727,7 +991,8 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
         fs.mkdirSync(sessionDir, { recursive: true });
       }
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-      const sock = makeWASocket({
+      const createWASocket = typeof makeWASocket === "function" ? makeWASocket : makeWASocket.default || makeWASocket;
+      const sock = createWASocket({
         auth: state,
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Desktop"),
@@ -735,6 +1000,15 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
         syncFullHistory: false,
         markOnlineOnConnect: true
       });
+      try {
+        const rawWs = sock.ws;
+        if (rawWs && typeof rawWs.on === "function") {
+          rawWs.on("error", (wsErr) => {
+            console.warn(`[WhatsApp BRM Bridge] Aviso de socket WS (${lineaId}):`, wsErr);
+          });
+        }
+      } catch {
+      }
       activeSockets.set(lineaId, sock);
       sock.ev.on("creds.update", async () => {
         try {
@@ -777,6 +1051,23 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           );
         }
       });
+      sock.ev.on("messages.update", async (updates) => {
+        try {
+          for (const u of updates) {
+            const msgId = u.key?.id;
+            if (!msgId) continue;
+            const updateObj = u.update;
+            if (updateObj?.status) {
+              updateMessageStatusInStore(msgId, updateObj.status);
+            }
+          }
+        } catch (err) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Error procesando messages.update (${lineaId}):`,
+            err
+          );
+        }
+      });
       sock.ev.on("messages.upsert", async (m) => {
         try {
           for (const msg of m.messages) {
@@ -785,14 +1076,31 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
             if (!remoteJid || remoteJid === "status@broadcast" || remoteJid.endsWith("@g.us") || remoteJid.endsWith("@newsletter")) {
               continue;
             }
+            const rawMsg = msg.message;
+            if (rawMsg.protocolMessage) {
+              const proto = rawMsg.protocolMessage;
+              const targetKey = proto.key;
+              const targetId = targetKey?.id;
+              const editedMsg = proto.editedMessage;
+              if (targetId && editedMsg) {
+                const unwrapEdited = editedMsg.ephemeralMessage?.message || editedMsg.viewOnceMessage?.message || editedMsg.viewOnceMessageV2?.message || editedMsg.documentWithCaptionMessage?.message || editedMsg;
+                const editedText = unwrapEdited.conversation || unwrapEdited.extendedTextMessage?.text || unwrapEdited.imageMessage?.caption || unwrapEdited.documentMessage?.caption || "";
+                if (editedText) {
+                  updateMessageTextInStoreAndQueue(lineaId, targetId, editedText);
+                  console.log(
+                    `[WhatsApp BRM Bridge] Mensaje ${targetId} modificado en tiempo real: "${editedText}"`
+                  );
+                }
+              }
+              continue;
+            }
             const isFromMe = Boolean(msg.key.fromMe);
             const participant = msg.key.participant || msg.participant || null;
-            const counterpartyPhone = resolveLidToPhoneNumber(
+            const counterpartyPhone = await resolveLidToPhoneNumberAsync(
               lineaId,
               remoteJid,
               participant
             );
-            const rawMsg = msg.message;
             const innerMessage = rawMsg.ephemeralMessage?.message || rawMsg.viewOnceMessage?.message || rawMsg.viewOnceMessageV2?.message || rawMsg.documentWithCaptionMessage?.message || rawMsg;
             const pushNameClean = cleanContactDisplayName(msg.pushName);
             const contactsMap = loadLineContacts(lineaId);
@@ -903,6 +1211,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
               timestamp: (/* @__PURE__ */ new Date()).toISOString(),
               estadoEntrega: isFromMe ? "ENTREGADO" : "RECIBIDO"
             };
+            saveMessageToDurableStore(queuedMsg);
             appendToLocalMessagesQueue(queuedMsg);
             if (!isFromMe && hasImage && mediaDataUrl) {
               appendToLocalOcrQueue({
@@ -1318,6 +1627,27 @@ async function sendWhatsAppMessageHandler(lineaId = DEFAULT_BRM_LINEA_ID, toPhon
       sent = await sock.sendMessage(jid, { text });
     }
     const messageId = sent?.key?.id || `msg_${Date.now()}`;
+    const outboundQueued = {
+      id: messageId,
+      lineaId,
+      messageId,
+      remitente: status.numeroConectado || "LINEA_BRM",
+      senderName: "Compras / Tesorer\xEDa BRM",
+      destinatario: `+${cleanDigits}`,
+      destinatarioNombre: void 0,
+      direccion: "SALIENTE",
+      cuerpo: text || (mediaType === "AUDIO" ? "\u{1F3A4} Nota de voz" : mediaType === "IMAGEN" ? "\u{1F4F7} [Imagen Adjunta]" : "\u{1F4C4} [Documento]"),
+      bodyText: text || "",
+      tipoMensaje: mediaType || "TEXTO",
+      mediaUrl: mediaDataUrl,
+      mediaMimeType: audioOptions?.mimeType,
+      audioDurationSeconds: audioOptions?.durationSeconds,
+      isPtt: audioOptions?.isPtt,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      estadoEntrega: "ENTREGADO"
+    };
+    saveMessageToDurableStore(outboundQueued);
+    appendToLocalMessagesQueue(outboundQueued);
     return {
       success: true,
       messageId,
@@ -1328,6 +1658,47 @@ async function sendWhatsAppMessageHandler(lineaId = DEFAULT_BRM_LINEA_ID, toPhon
     return {
       success: false,
       error: error?.message || "Error al despachar mensaje por Baileys"
+    };
+  }
+}
+async function editWhatsAppMessageHandler(lineaId = DEFAULT_BRM_LINEA_ID, targetMessageId, toPhone, newText) {
+  const sock = activeSockets.get(lineaId);
+  const status = getWhatsAppLineStatusHandler(lineaId);
+  if (!sock || status.estado !== "CONECTADO") {
+    return {
+      success: false,
+      error: `La l\xEDnea ${lineaId} no est\xE1 vinculada actualmente.`
+    };
+  }
+  const cleanDigits = String(toPhone || "").replace(/\D/g, "");
+  if (!cleanDigits) {
+    return { success: false, error: "N\xFAmero de destinatario inv\xE1lido" };
+  }
+  const jid = `${cleanDigits}@s.whatsapp.net`;
+  const targetLid = findLidForPhoneDigits(lineaId, cleanDigits);
+  const sendJid = targetLid && cleanDigits.length > 13 ? targetLid : jid;
+  try {
+    const editKey = {
+      remoteJid: sendJid,
+      fromMe: true,
+      id: targetMessageId
+    };
+    await sock.sendMessage(sendJid, {
+      text: newText,
+      edit: editKey
+    });
+    updateMessageTextInStoreAndQueue(lineaId, targetMessageId, newText);
+    return {
+      success: true,
+      messageId: targetMessageId,
+      newText,
+      editedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  } catch (error) {
+    console.error(`[WhatsApp BRM Bridge] Error editando mensaje ${targetMessageId}:`, error);
+    return {
+      success: false,
+      error: error?.message || "Error al editar mensaje en Baileys"
     };
   }
 }
@@ -2254,6 +2625,51 @@ ${query}` : String(query);
   app.post("/api/brm/whatsapp/offline-queue", handleWhatsappOfflineQueue);
   app.get("/api/whatsapp/offline-queue", handleWhatsappOfflineQueue);
   app.post("/api/whatsapp/offline-queue", handleWhatsappOfflineQueue);
+  const handleWhatsappMessagesHistory = (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    const lineaId = req.query?.lineaId ? String(req.query.lineaId) : void 0;
+    const phone = req.query?.phone ? String(req.query.phone) : void 0;
+    const limit = req.query?.limit ? Number(req.query.limit) : 200;
+    const history = getChatMessagesHistoryHandler(lineaId, phone, limit);
+    res.json(history);
+  };
+  app.get("/api/brm/whatsapp/messages", handleWhatsappMessagesHistory);
+  app.get("/api/whatsapp/messages", handleWhatsappMessagesHistory);
+  const handleWhatsappEditMessage = async (req, res) => {
+    try {
+      const {
+        lineaId = DEFAULT_BRM_LINEA_ID,
+        messageId = "",
+        toPhone = "",
+        phone = "",
+        newText = "",
+        text = ""
+      } = req.body || {};
+      const targetPhone = toPhone || phone;
+      const finalText = newText || text;
+      if (!messageId || !targetPhone || !finalText) {
+        res.status(400).json({
+          success: false,
+          error: "messageId, toPhone y newText son requeridos para editar el mensaje."
+        });
+        return;
+      }
+      const result = await editWhatsAppMessageHandler(
+        lineaId,
+        messageId,
+        targetPhone,
+        finalText
+      );
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err?.message || "Error modificando mensaje en WhatsApp"
+      });
+    }
+  };
+  app.post("/api/brm/whatsapp/edit-message", handleWhatsappEditMessage);
+  app.post("/api/whatsapp/edit-message", handleWhatsappEditMessage);
   const handleWhatsappSend = async (req, res) => {
     let messageId = "";
     let normalizedDest = "";
@@ -2473,8 +2889,9 @@ ${query}` : String(query);
     console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
   });
   const distPath = path2.join(process.cwd(), "dist");
-  const isProductionMode = process.env.NODE_ENV === "production" || fs2.existsSync(distPath);
-  if (isProductionMode) {
+  const isCompiledServerJs = typeof process.argv[1] === "string" && process.argv[1].endsWith("server.js");
+  const isProductionMode = process.env.NODE_ENV === "production" || isCompiledServerJs;
+  if (isProductionMode && fs2.existsSync(distPath)) {
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
       const indexFile = path2.join(distPath, "index.html");
@@ -2515,6 +2932,12 @@ ${query}` : String(query);
 }
 var isTestRun = process.argv.some((arg) => arg.includes("--test") || arg.includes(".test.")) || process.env.NODE_ENV === "test";
 if (!isTestRun) {
+  process.on("uncaughtException", (err) => {
+    console.warn("[Chrystal ERP] Uncaught exception intercepted (keeping server alive):", err?.message || err);
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.warn("[Chrystal ERP] Unhandled rejection intercepted (keeping server alive):", reason);
+  });
   startServer().catch((err) => {
     console.error("[Chrystal ERP] Critical startup error captured (keeping degraded HTTP listener alive):", err);
     try {

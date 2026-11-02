@@ -511,6 +511,7 @@ export type AuditActionType =
   | 'PRODUCTION_RECIPE_CREATE'
   | 'PRODUCTION_ORDER_EXECUTE'
   | 'BRM_WHATSAPP_SEND'
+  | 'BRM_WHATSAPP_EDIT'
   | 'BRM_WHATSAPP_INVOICE_PRELOAD'
   | 'BRM_WHATSAPP_SESSION_RESET'
   | 'BRM_WHATSAPP_DELETE_CHAT'
@@ -1225,6 +1226,9 @@ export interface BrmWhatsappMessage {
   isUnregisteredContact?: boolean;
   /** Marca de envío a Pre-Auditoría OCR (Compuerta 1) */
   sentToOcrPreAudit?: boolean;
+  /** Mensaje editado en tiempo real desde el dispositivo móvil o la web */
+  isEdited?: boolean;
+  editedAtVet?: string;
 }
 
 export interface BrmSupplierPreInvoice {

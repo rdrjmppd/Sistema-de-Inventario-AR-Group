@@ -20,6 +20,8 @@ import {
   readPendingOcrQueue,
   clearSyncedOfflineQueueItems,
   autoRestoreExistingSessions,
+  getChatMessagesHistoryHandler,
+  editWhatsAppMessageHandler,
 } from './server/whatsappQrBridge';
 
 Decimal.set({
@@ -1083,6 +1085,58 @@ async function startServer() {
   app.post('/api/brm/whatsapp/offline-queue', handleWhatsappOfflineQueue);
   app.get('/api/whatsapp/offline-queue', handleWhatsappOfflineQueue);
   app.post('/api/whatsapp/offline-queue', handleWhatsappOfflineQueue);
+
+  // 8.1 Endpoint Messages History (Almacén persistente duradero para recargas, cambio de pestañas o re-sincronizaciones)
+  const handleWhatsappMessagesHistory = (req: express.Request, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const lineaId = req.query?.lineaId ? String(req.query.lineaId) : undefined;
+    const phone = req.query?.phone ? String(req.query.phone) : undefined;
+    const limit = req.query?.limit ? Number(req.query.limit) : 200;
+    const history = getChatMessagesHistoryHandler(lineaId, phone, limit);
+    res.json(history);
+  };
+  app.get('/api/brm/whatsapp/messages', handleWhatsappMessagesHistory);
+  app.get('/api/whatsapp/messages', handleWhatsappMessagesHistory);
+
+  // 8.2 Endpoint Edit Message (Edición en caliente móvil <-> web en Baileys)
+  const handleWhatsappEditMessage = async (req: express.Request, res: express.Response) => {
+    try {
+      const {
+        lineaId = DEFAULT_BRM_LINEA_ID,
+        messageId = '',
+        toPhone = '',
+        phone = '',
+        newText = '',
+        text = '',
+      } = req.body || {};
+
+      const targetPhone = toPhone || phone;
+      const finalText = newText || text;
+
+      if (!messageId || !targetPhone || !finalText) {
+        res.status(400).json({
+          success: false,
+          error: 'messageId, toPhone y newText son requeridos para editar el mensaje.',
+        });
+        return;
+      }
+
+      const result = await editWhatsAppMessageHandler(
+        lineaId,
+        messageId,
+        targetPhone,
+        finalText
+      );
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        error: err?.message || 'Error modificando mensaje en WhatsApp',
+      });
+    }
+  };
+  app.post('/api/brm/whatsapp/edit-message', handleWhatsappEditMessage);
+  app.post('/api/whatsapp/edit-message', handleWhatsappEditMessage);
 
   // 9. Endpoint Send (Despacho real por Baileys con soporte Texto, Imagen, Nota de Voz y @lid)
   const handleWhatsappSend = async (req: express.Request, res: express.Response) => {

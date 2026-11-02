@@ -584,6 +584,9 @@ export interface BrmBridgeQueuedMessage {
   isPtt?: boolean;
   attachmentFileName?: string;
   timestamp?: string;
+  isEdited?: boolean;
+  editedAt?: string;
+  action?: 'NUEVO' | 'MODIFICAR' | 'ESTADO';
 }
 
 function formatIsoToVet(iso?: string): string {
@@ -671,5 +674,41 @@ export function mapBridgeMessageToBrmMessage(params: {
     isPtt: queued.isPtt,
     senderName: contactName,
     isUnregisteredContact: !supplier,
+    isEdited: Boolean(queued.isEdited),
+    editedAtVet: queued.editedAt ? formatIsoToVet(queued.editedAt) : undefined,
   };
+}
+
+/**
+ * Fusiona o actualiza una lista de mensajes BRM preservando la consistencia en tiempo real:
+ * - Si el mensaje ya existe (por messageId), actualiza el contenido (ediciones), estado de entrega y multimedia.
+ * - Si es nuevo, lo incorpora al conjunto.
+ */
+export function updateOrAppendBrmMessages(
+  existingMessages: BrmWhatsappMessage[],
+  incomingMessages: BrmWhatsappMessage[]
+): BrmWhatsappMessage[] {
+  if (!incomingMessages || incomingMessages.length === 0) return existingMessages;
+
+  const result = [...existingMessages];
+  for (const inc of incomingMessages) {
+    const existingIndex = result.findIndex((m) => m.messageId === inc.messageId);
+    if (existingIndex >= 0) {
+      const prev = result[existingIndex];
+      result[existingIndex] = {
+        ...prev,
+        ...inc,
+        bodyText: inc.bodyText || prev.bodyText,
+        deliveryStatus: inc.deliveryStatus || prev.deliveryStatus,
+        isEdited: inc.isEdited ?? prev.isEdited,
+        editedAtVet: inc.editedAtVet || prev.editedAtVet,
+        mediaUrl: inc.mediaUrl || prev.mediaUrl,
+        mediaMimeType: inc.mediaMimeType || prev.mediaMimeType,
+      };
+    } else {
+      result.push(inc);
+    }
+  }
+
+  return result;
 }
