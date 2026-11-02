@@ -244,11 +244,55 @@ var DEFAULT_BRM_LINEA_ID = "linea_brm";
 var activeSockets = /* @__PURE__ */ new Map();
 var lineStatusMemory = /* @__PURE__ */ new Map();
 var initializingPromises = /* @__PURE__ */ new Map();
+var reconnectTimers = /* @__PURE__ */ new Map();
 var qrRotationCounters = /* @__PURE__ */ new Map();
 var lineContactsCache = /* @__PURE__ */ new Map();
 var lidToPhoneCache = /* @__PURE__ */ new Map();
 var phoneToLidCache = /* @__PURE__ */ new Map();
 var MAX_QR_ROTATIONS = 5;
+function clearReconnectTimer(lineaId) {
+  const timer = reconnectTimers.get(lineaId);
+  if (timer) {
+    clearTimeout(timer);
+    reconnectTimers.delete(lineaId);
+  }
+}
+function safeDestroyBaileysSocket(sock) {
+  if (!sock) return;
+  try {
+    sock.ev.removeAllListeners("connection.update");
+    sock.ev.removeAllListeners("creds.update");
+    sock.ev.removeAllListeners("messages.upsert");
+    sock.ev.removeAllListeners("messages.update");
+    sock.ev.removeAllListeners("messaging-history.set");
+    sock.ev.removeAllListeners("contacts.upsert");
+    sock.ev.removeAllListeners("contacts.update");
+    sock.ev.removeAllListeners("chats.delete");
+  } catch {
+  }
+  try {
+    const wsWrapper = sock.ws;
+    if (wsWrapper) {
+      wsWrapper.removeAllListeners?.("error");
+      wsWrapper.on?.("error", () => {
+      });
+      if (wsWrapper.socket) {
+        wsWrapper.socket.removeAllListeners?.("error");
+        wsWrapper.socket.on?.("error", () => {
+        });
+      }
+      const readyState = wsWrapper.socket?.readyState ?? wsWrapper.readyState;
+      if (readyState === 1) {
+        wsWrapper.close?.();
+      }
+    }
+  } catch {
+  }
+  try {
+    sock.end(void 0);
+  } catch {
+  }
+}
 var bridgeEvents = new EventEmitter();
 bridgeEvents.setMaxListeners(100);
 var ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
@@ -1183,6 +1227,7 @@ async function processIncomingOrHistoryMessage(lineaId, msg, sock, isHistorical 
   }
 }
 async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
+  clearReconnectTimer(lineaId);
   if (initializingPromises.has(lineaId)) {
     return initializingPromises.get(lineaId);
   }
@@ -1190,17 +1235,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
     try {
       const existing = activeSockets.get(lineaId);
       if (existing) {
-        try {
-          existing.ev.removeAllListeners("connection.update");
-          existing.ev.removeAllListeners("creds.update");
-          existing.ev.removeAllListeners("messages.upsert");
-          existing.ev.removeAllListeners("messaging-history.set");
-          existing.ev.removeAllListeners("contacts.upsert");
-          existing.ev.removeAllListeners("contacts.update");
-          existing.ev.removeAllListeners("chats.delete");
-          existing.end(void 0);
-        } catch {
-        }
+        safeDestroyBaileysSocket(existing);
         activeSockets.delete(lineaId);
       }
       const sessionDir = path.join(SESSIONS_ROOT, lineaId);
@@ -1237,10 +1272,18 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
       });
       try {
         const rawWs = sock.ws;
+        const handleWsError = (wsErr) => {
+          const msg = wsErr instanceof Error ? wsErr.message : String(wsErr || "");
+          if (msg.includes("WebSocket was closed before the connection was established") || msg.includes("closed before the connection") || msg.includes("ECONNRESET")) {
+            return;
+          }
+          console.log(`[WhatsApp BRM Bridge] Evento de red WS (${lineaId}): ${msg}`);
+        };
         if (rawWs && typeof rawWs.on === "function") {
-          rawWs.on("error", (wsErr) => {
-            console.warn(`[WhatsApp BRM Bridge] Aviso de socket WS (${lineaId}):`, wsErr);
-          });
+          rawWs.on("error", handleWsError);
+        }
+        if (rawWs?.socket && typeof rawWs.socket.on === "function") {
+          rawWs.socket.on("error", handleWsError);
         }
       } catch {
       }
@@ -1353,11 +1396,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
               qrRotations: MAX_QR_ROTATIONS,
               ultimoError: 'El c\xF3digo QR expir\xF3 por inactividad tras 5 rotaciones. Haz clic en "Refrescar C\xF3digo QR" para generar uno nuevo.'
             });
-            try {
-              sock.ws?.close?.();
-              sock.end(void 0);
-            } catch {
-            }
+            safeDestroyBaileysSocket(sock);
             activeSockets.delete(lineaId);
             return;
           }
@@ -1388,6 +1427,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           }
         }
         if (connection === "open") {
+          clearReconnectTimer(lineaId);
           qrRotationCounters.set(lineaId, 0);
           const rawUser = sock.user?.id || "";
           const phoneNumber = rawUser.split(":")[0].split("@")[0].replace(/\D/g, "");
@@ -1410,6 +1450,10 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           });
         }
         if (connection === "close") {
+          const currentActive = activeSockets.get(lineaId);
+          if (currentActive && currentActive !== sock) {
+            return;
+          }
           const statusCode = lastDisconnect?.error?.output?.statusCode;
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBadSession = statusCode === DisconnectReason.badSession;
@@ -1418,6 +1462,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
             `[WhatsApp BRM Bridge] Conexi\xF3n cerrada para ${lineaId}. C\xF3digo: ${statusCode}. LoggedOut: ${isLoggedOut}`
           );
           activeSockets.delete(lineaId);
+          clearReconnectTimer(lineaId);
           const currentMem = lineStatusMemory.get(lineaId);
           if (currentMem?.estado === "QR_EXPIRADO") {
             return;
@@ -1426,11 +1471,13 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
             console.log(
               `[WhatsApp BRM Bridge] Reinicio requerido (515) tras emparejar ${lineaId}. Reconectando de inmediato...`
             );
-            setTimeout(() => {
+            const timer = setTimeout(() => {
+              reconnectTimers.delete(lineaId);
               initializeBaileysSocket(lineaId).catch(
                 (e) => console.error("Error en reconexi\xF3n 515:", e)
               );
             }, 500);
+            reconnectTimers.set(lineaId, timer);
             return;
           }
           if (isLoggedOut || isBadSession) {
@@ -1443,11 +1490,13 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           } else {
             const isManualUnlink = currentMem?.estado === "DESCONECTADO" && !currentMem?.qrCodeDataUri;
             if (!isManualUnlink) {
-              setTimeout(() => {
+              const timer = setTimeout(() => {
+                reconnectTimers.delete(lineaId);
                 initializeBaileysSocket(lineaId).catch(
                   (e) => console.error("Error reconectando:", e)
                 );
               }, 3e3);
+              reconnectTimers.set(lineaId, timer);
             }
           }
         }
@@ -1487,29 +1536,20 @@ async function forceResetAndUnlinkSession(lineaId = DEFAULT_BRM_LINEA_ID, genera
     `[WhatsApp BRM Bridge] Ejecutando purga at\xF3mica de 7 pasos para ${lineaId} (generateNewQr=${generateNewQr})...`
   );
   qrRotationCounters.set(lineaId, 0);
+  clearReconnectTimer(lineaId);
+  const pendingInit = initializingPromises.get(lineaId);
+  if (pendingInit) {
+    try {
+      await pendingInit;
+    } catch {
+    }
+    initializingPromises.delete(lineaId);
+  }
   const existing = activeSockets.get(lineaId);
   if (existing) {
-    try {
-      existing.ev.removeAllListeners("connection.update");
-      existing.ev.removeAllListeners("creds.update");
-      existing.ev.removeAllListeners("messages.upsert");
-      existing.ev.removeAllListeners("messaging-history.set");
-      existing.ev.removeAllListeners("contacts.upsert");
-      existing.ev.removeAllListeners("contacts.update");
-      existing.ev.removeAllListeners("chats.delete");
-    } catch {
-    }
-    try {
-      existing.ws?.close?.();
-    } catch {
-    }
-    try {
-      existing.end(void 0);
-    } catch {
-    }
+    safeDestroyBaileysSocket(existing);
     activeSockets.delete(lineaId);
   }
-  initializingPromises.delete(lineaId);
   const resetState = setLineState(lineaId, {
     estado: generateNewQr ? "ESPERANDO_QR" : "DESCONECTADO",
     state: generateNewQr ? "GENERATING_QR" : "DISCONNECTED",
