@@ -22,6 +22,7 @@ import {
   autoRestoreExistingSessions,
   getChatMessagesHistoryHandler,
   editWhatsAppMessageHandler,
+  bridgeEvents,
 } from './server/whatsappQrBridge';
 
 Decimal.set({
@@ -1137,6 +1138,54 @@ async function startServer() {
   };
   app.post('/api/brm/whatsapp/edit-message', handleWhatsappEditMessage);
   app.post('/api/whatsapp/edit-message', handleWhatsappEditMessage);
+
+  // 8.3 Endpoint EventSource / SSE (Transmisión en tiempo real de mensajes, ediciones y estado)
+  const handleWhatsappEvents = (req: express.Request, res: express.Response) => {
+    const lineaId = String(req.query.lineaId || DEFAULT_BRM_LINEA_ID);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+
+    res.write(
+      `data: ${JSON.stringify({ type: 'CONNECTED_SSE', timestamp: new Date().toISOString() })}\n\n`
+    );
+
+    const onMessage = (msg: any) => {
+      if (!msg || (msg.lineaId && msg.lineaId !== lineaId)) return;
+      res.write(`data: ${JSON.stringify({ type: 'MESSAGE', message: msg })}\n\n`);
+    };
+
+    const onEdit = (edit: any) => {
+      if (!edit || (edit.lineaId && edit.lineaId !== lineaId)) return;
+      res.write(`data: ${JSON.stringify({ type: 'MESSAGE_EDIT', edit })}\n\n`);
+    };
+
+    const onStatus = (status: any) => {
+      if (!status || (status.lineaId && status.lineaId !== lineaId)) return;
+      res.write(`data: ${JSON.stringify({ type: 'STATUS', status })}\n\n`);
+    };
+
+    bridgeEvents.on('message', onMessage);
+    bridgeEvents.on('message_edit', onEdit);
+    bridgeEvents.on('status', onStatus);
+
+    const pingInterval = setInterval(() => {
+      res.write(': ping\n\n');
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(pingInterval);
+      bridgeEvents.off('message', onMessage);
+      bridgeEvents.off('message_edit', onEdit);
+      bridgeEvents.off('status', onStatus);
+    });
+  };
+  app.get('/api/brm/whatsapp/events', handleWhatsappEvents);
+  app.get('/api/whatsapp/events', handleWhatsappEvents);
 
   // 9. Endpoint Send (Despacho real por Baileys con soporte Texto, Imagen, Nota de Voz y @lid)
   const handleWhatsappSend = async (req: express.Request, res: express.Response) => {

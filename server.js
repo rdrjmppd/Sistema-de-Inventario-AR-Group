@@ -235,6 +235,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import zlib from "node:zlib";
+import { EventEmitter } from "node:events";
 var SESSIONS_ROOT = path.resolve(process.cwd(), ".whatsapp_sessions");
 if (!fs.existsSync(SESSIONS_ROOT)) {
   fs.mkdirSync(SESSIONS_ROOT, { recursive: true });
@@ -248,6 +249,8 @@ var lineContactsCache = /* @__PURE__ */ new Map();
 var lidToPhoneCache = /* @__PURE__ */ new Map();
 var phoneToLidCache = /* @__PURE__ */ new Map();
 var MAX_QR_ROTATIONS = 5;
+var bridgeEvents = new EventEmitter();
+bridgeEvents.setMaxListeners(100);
 var ENCRYPTED_SESSIONS_BACKUP_FILE = path.join(
   SESSIONS_ROOT,
   "session_backup_encrypted.json"
@@ -326,6 +329,10 @@ function setLineState(lineaId, partial) {
     updated.corporatePhoneE164 = "";
   }
   lineStatusMemory.set(lineaId, updated);
+  try {
+    bridgeEvents.emit("status", updated);
+  } catch {
+  }
   return updated;
 }
 function getEncryptionKey() {
@@ -545,11 +552,30 @@ function resolveLidToPhoneNumber(lineaId, remoteJid, participant) {
       } catch {
       }
     }
+    return remoteJid;
   }
   const rawId = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
   return rawId ? `+${rawId}` : remoteJid;
 }
-async function resolveLidToPhoneNumberAsync(lineaId, remoteJid, participant) {
+async function resolveLidToPhoneNumberAsync(lineaId, remoteJid, participant, keyAlt) {
+  if (keyAlt?.remoteJidAlt && keyAlt.remoteJidAlt.includes("@s.whatsapp.net")) {
+    const altDigits = keyAlt.remoteJidAlt.split("@")[0].split(":")[0].replace(/\D/g, "");
+    if (altDigits.length >= 10 && altDigits.length <= 15) {
+      if (remoteJid.endsWith("@lid")) {
+        storeLidPhoneMapping(lineaId, remoteJid, altDigits, false);
+      }
+      return `+${altDigits}`;
+    }
+  }
+  if (keyAlt?.participantAlt && keyAlt.participantAlt.includes("@s.whatsapp.net")) {
+    const partDigits = keyAlt.participantAlt.split("@")[0].split(":")[0].replace(/\D/g, "");
+    if (partDigits.length >= 10 && partDigits.length <= 15) {
+      if (remoteJid.endsWith("@lid")) {
+        storeLidPhoneMapping(lineaId, remoteJid, partDigits, false);
+      }
+      return `+${partDigits}`;
+    }
+  }
   const syncResolved = resolveLidToPhoneNumber(lineaId, remoteJid, participant);
   if (syncResolved.startsWith("+") && syncResolved.length >= 10 && syncResolved.length <= 16 && !syncResolved.includes("@lid")) {
     return syncResolved;
@@ -562,13 +588,17 @@ async function resolveLidToPhoneNumberAsync(lineaId, remoteJid, participant) {
         if (pn) {
           const cleanPn = String(pn).split("@")[0].replace(/\D/g, "");
           if (cleanPn.length >= 10 && cleanPn.length <= 15) {
-            storeLidPhoneMapping(lineaId, remoteJid, cleanPn);
+            storeLidPhoneMapping(lineaId, remoteJid, cleanPn, false);
             return `+${cleanPn}`;
           }
         }
       }
     } catch {
     }
+  }
+  if (!remoteJid.endsWith("@lid")) {
+    const rawId = remoteJid.split("@")[0].split(":")[0].replace(/\D/g, "");
+    return rawId ? `+${rawId}` : remoteJid;
   }
   return syncResolved;
 }
@@ -833,6 +863,10 @@ function saveMessageToDurableStore(msg) {
       JSON.stringify(store, null, 2),
       "utf-8"
     );
+    try {
+      bridgeEvents.emit("message", msg);
+    } catch {
+    }
   } catch (err) {
     console.warn("[WhatsApp BRM Bridge] Error guardando en almac\xE9n duradero:", err);
   }
@@ -905,6 +939,17 @@ function updateMessageTextInStoreAndQueue(lineaId, targetMessageId, newText) {
     );
   } catch {
   }
+  if (updatedAny) {
+    try {
+      bridgeEvents.emit("message_edit", {
+        lineaId,
+        messageId: targetMessageId,
+        text: newText,
+        editedAt: nowIso
+      });
+    } catch {
+    }
+  }
   return updatedAny;
 }
 function updateMessageStatusInStore(messageId, rawStatus) {
@@ -961,6 +1006,182 @@ function getChatMessagesHistoryHandler(lineaId = DEFAULT_BRM_LINEA_ID, contactPh
     messages: filtered.slice(-Math.min(limit, 500))
   };
 }
+async function processIncomingOrHistoryMessage(lineaId, msg, sock, isHistorical = false) {
+  try {
+    if (!msg || !msg.message) return null;
+    const remoteJid = msg.key?.remoteJid || "";
+    if (!remoteJid || remoteJid === "status@broadcast" || remoteJid.endsWith("@g.us") || remoteJid.endsWith("@newsletter")) {
+      return null;
+    }
+    const rawMsg = msg.message;
+    if (rawMsg.protocolMessage) {
+      const proto = rawMsg.protocolMessage;
+      const targetKey = proto.key;
+      const targetId = targetKey?.id;
+      const editedMsg = proto.editedMessage;
+      if (targetId && editedMsg) {
+        const unwrapEdited = editedMsg.ephemeralMessage?.message || editedMsg.viewOnceMessage?.message || editedMsg.viewOnceMessageV2?.message || editedMsg.documentWithCaptionMessage?.message || editedMsg;
+        const editedText = unwrapEdited.conversation || unwrapEdited.extendedTextMessage?.text || unwrapEdited.imageMessage?.caption || unwrapEdited.documentMessage?.caption || "";
+        if (editedText) {
+          updateMessageTextInStoreAndQueue(lineaId, targetId, editedText);
+          console.log(
+            `[WhatsApp BRM Bridge] Mensaje ${targetId} modificado en tiempo real: "${editedText}"`
+          );
+        }
+      }
+      return null;
+    }
+    const isFromMe = Boolean(msg.key?.fromMe);
+    const participant = msg.key?.participant || msg.participant || null;
+    const keyAlt = {
+      remoteJidAlt: msg.key?.remoteJidAlt,
+      participantAlt: msg.key?.participantAlt
+    };
+    const counterpartyPhone = await resolveLidToPhoneNumberAsync(
+      lineaId,
+      remoteJid,
+      participant,
+      keyAlt
+    );
+    const innerMessage = rawMsg.ephemeralMessage?.message || rawMsg.viewOnceMessage?.message || rawMsg.viewOnceMessageV2?.message || rawMsg.documentWithCaptionMessage?.message || rawMsg;
+    const pushNameClean = cleanContactDisplayName(msg.pushName);
+    const contactsMap = loadLineContacts(lineaId);
+    if (!isFromMe && pushNameClean && counterpartyPhone.startsWith("+")) {
+      const existingContact = contactsMap.get(counterpartyPhone);
+      if (!existingContact) {
+        contactsMap.set(counterpartyPhone, {
+          phone: counterpartyPhone,
+          name: pushNameClean,
+          lid: remoteJid.endsWith("@lid") ? remoteJid : void 0,
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        saveLineContacts(lineaId);
+      }
+    }
+    const savedContactName = contactsMap.get(counterpartyPhone)?.name;
+    const resolvedContactName = savedContactName || (!isFromMe ? pushNameClean : void 0) || void 0;
+    const textBody = innerMessage.conversation || innerMessage.extendedTextMessage?.text || innerMessage.imageMessage?.caption || innerMessage.videoMessage?.caption || innerMessage.documentMessage?.caption || "";
+    const hasImage = Boolean(innerMessage.imageMessage);
+    const hasDoc = Boolean(innerMessage.documentMessage);
+    const hasAudio = Boolean(innerMessage.audioMessage);
+    let mediaDataUrl;
+    let mediaMimeType;
+    let audioDurationSeconds;
+    let isPtt;
+    let attachmentFileName;
+    if (!isHistorical && (hasImage || hasDoc)) {
+      try {
+        const mimeType = innerMessage.imageMessage?.mimetype || innerMessage.documentMessage?.mimetype || "image/jpeg";
+        mediaMimeType = mimeType;
+        attachmentFileName = innerMessage.documentMessage?.fileName || (hasImage ? `Factura_BRM_${Date.now()}.jpg` : void 0);
+        if (mimeType.startsWith("image/") || mimeType === "application/pdf") {
+          const buffer = await downloadMediaMessage(
+            msg,
+            "buffer",
+            {},
+            {
+              logger: pino({ level: "silent" }),
+              reuploadRequest: sock?.updateMediaMessage
+            }
+          );
+          if (buffer && buffer.length < 5 * 1024 * 1024) {
+            mediaDataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
+          }
+        }
+      } catch (dlErr) {
+        console.warn(
+          "[WhatsApp BRM Bridge] No se pudo descargar adjunto binario:",
+          dlErr
+        );
+      }
+    }
+    if (!isHistorical && hasAudio && innerMessage.audioMessage) {
+      try {
+        const rawMime = innerMessage.audioMessage.mimetype || "audio/ogg; codecs=opus";
+        mediaMimeType = rawMime;
+        audioDurationSeconds = Number(
+          innerMessage.audioMessage.seconds || 0
+        );
+        isPtt = Boolean(innerMessage.audioMessage.ptt);
+        const buffer = await downloadMediaMessage(
+          msg,
+          "buffer",
+          {},
+          {
+            logger: pino({ level: "silent" }),
+            reuploadRequest: sock?.updateMediaMessage
+          }
+        );
+        if (buffer && buffer.length < 8 * 1024 * 1024) {
+          mediaDataUrl = `data:${rawMime};base64,${buffer.toString("base64")}`;
+        }
+      } catch (audioErr) {
+        console.warn(
+          "[WhatsApp BRM Bridge] No se pudo descargar nota de voz:",
+          audioErr
+        );
+      }
+    }
+    const ownPhone = lineStatusMemory.get(lineaId)?.numeroConectado || "LINEA_BRM";
+    const messageId = msg.key?.id || `baileys_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const formatAudioDuration = (sec) => {
+      if (!sec || sec <= 0) return "";
+      const mins = Math.floor(sec / 60);
+      const rem = sec % 60;
+      return ` (${mins}:${rem < 10 ? "0" : ""}${rem})`;
+    };
+    const defaultCuerpo = hasImage ? "\u{1F4F7} [Imagen / Factura o Comprobante Adjunto]" : hasDoc ? `\u{1F4C4} [Documento: ${innerMessage.documentMessage?.fileName || "Archivo"}]` : hasAudio ? `${isPtt ? "\u{1F3A4} Nota de voz" : "\u{1F3B5} Mensaje de audio"}${formatAudioDuration(audioDurationSeconds)}` : "";
+    const finalBody = textBody || defaultCuerpo;
+    if (!finalBody && !mediaDataUrl) return null;
+    let msgTimestampIso = (/* @__PURE__ */ new Date()).toISOString();
+    if (msg.messageTimestamp) {
+      const tsNum = typeof msg.messageTimestamp === "number" ? msg.messageTimestamp : typeof msg.messageTimestamp.toNumber === "function" ? msg.messageTimestamp.toNumber() : Number(msg.messageTimestamp);
+      if (!isNaN(tsNum) && tsNum > 1e9) {
+        msgTimestampIso = new Date(tsNum * 1e3).toISOString();
+      }
+    }
+    const queuedMsg = {
+      id: messageId,
+      lineaId,
+      messageId,
+      remitente: isFromMe ? ownPhone : counterpartyPhone,
+      senderName: isFromMe ? "Compras / Tesorer\xEDa BRM" : resolvedContactName,
+      destinatario: isFromMe ? counterpartyPhone : ownPhone,
+      destinatarioNombre: isFromMe ? resolvedContactName : void 0,
+      direccion: isFromMe ? "SALIENTE" : "ENTRANTE",
+      cuerpo: finalBody,
+      bodyText: finalBody,
+      tipoMensaje: hasImage ? "IMAGEN" : hasDoc ? "DOCUMENTO" : hasAudio ? "AUDIO" : "TEXTO",
+      mediaUrl: mediaDataUrl,
+      mediaMimeType,
+      audioDurationSeconds,
+      isPtt,
+      attachmentFileName,
+      timestamp: msgTimestampIso,
+      estadoEntrega: isFromMe ? "ENTREGADO" : "RECIBIDO"
+    };
+    saveMessageToDurableStore(queuedMsg);
+    appendToLocalMessagesQueue(queuedMsg);
+    if (!isHistorical && !isFromMe && hasImage && mediaDataUrl) {
+      appendToLocalOcrQueue({
+        id: `ocr_${messageId}`,
+        lineaId,
+        messageId,
+        remitente: counterpartyPhone,
+        senderName: resolvedContactName,
+        mediaDataUrl,
+        mimeType: mediaMimeType || "image/jpeg",
+        caption: textBody,
+        timestamp: msgTimestampIso,
+        estado: "pendiente_verificacion"
+      });
+    }
+    return queuedMsg;
+  } catch (err) {
+    console.error(`[WhatsApp BRM Bridge] Error procesando mensaje en ${lineaId}:`, err);
+    return null;
+  }
+}
 async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
   if (initializingPromises.has(lineaId)) {
     return initializingPromises.get(lineaId);
@@ -997,8 +1218,22 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Desktop"),
         printQRInTerminal: false,
-        syncFullHistory: false,
-        markOnlineOnConnect: true
+        syncFullHistory: true,
+        emitOwnEvents: true,
+        shouldSyncHistoryMessage: () => true,
+        markOnlineOnConnect: true,
+        getMessage: async (key) => {
+          if (key?.id) {
+            const all = readDurableMessagesStore(lineaId);
+            const found = all.find((m) => m.messageId === key.id || m.id === key.id);
+            if (found) {
+              return {
+                conversation: found.bodyText || found.cuerpo || ""
+              };
+            }
+          }
+          return void 0;
+        }
       });
       try {
         const rawWs = sock.ws;
@@ -1021,9 +1256,29 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           );
         }
       });
-      sock.ev.on("messaging-history.set", ({ contacts }) => {
-        if (contacts && contacts.length > 0) {
-          ingestLineContacts(lineaId, contacts);
+      sock.ev.on("messaging-history.set", async (historySet) => {
+        try {
+          const { contacts, messages, lidPnMappings } = historySet || {};
+          if (contacts && contacts.length > 0) {
+            ingestLineContacts(lineaId, contacts);
+          }
+          if (lidPnMappings && Array.isArray(lidPnMappings)) {
+            for (const item of lidPnMappings) {
+              if (item.lid && item.pn) {
+                storeLidPhoneMapping(lineaId, item.lid, item.pn, false);
+              }
+            }
+          }
+          if (messages && Array.isArray(messages)) {
+            for (const histMsg of messages) {
+              await processIncomingOrHistoryMessage(lineaId, histMsg, sock, true);
+            }
+          }
+        } catch (histErr) {
+          console.warn(
+            `[WhatsApp BRM Bridge] Error procesando messaging-history.set (${lineaId}):`,
+            histErr
+          );
         }
       });
       sock.ev.on("contacts.upsert", (contacts) => {
@@ -1071,166 +1326,11 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
       sock.ev.on("messages.upsert", async (m) => {
         try {
           for (const msg of m.messages) {
-            if (!msg.message) continue;
-            const remoteJid = msg.key.remoteJid || "";
-            if (!remoteJid || remoteJid === "status@broadcast" || remoteJid.endsWith("@g.us") || remoteJid.endsWith("@newsletter")) {
-              continue;
-            }
-            const rawMsg = msg.message;
-            if (rawMsg.protocolMessage) {
-              const proto = rawMsg.protocolMessage;
-              const targetKey = proto.key;
-              const targetId = targetKey?.id;
-              const editedMsg = proto.editedMessage;
-              if (targetId && editedMsg) {
-                const unwrapEdited = editedMsg.ephemeralMessage?.message || editedMsg.viewOnceMessage?.message || editedMsg.viewOnceMessageV2?.message || editedMsg.documentWithCaptionMessage?.message || editedMsg;
-                const editedText = unwrapEdited.conversation || unwrapEdited.extendedTextMessage?.text || unwrapEdited.imageMessage?.caption || unwrapEdited.documentMessage?.caption || "";
-                if (editedText) {
-                  updateMessageTextInStoreAndQueue(lineaId, targetId, editedText);
-                  console.log(
-                    `[WhatsApp BRM Bridge] Mensaje ${targetId} modificado en tiempo real: "${editedText}"`
-                  );
-                }
-              }
-              continue;
-            }
-            const isFromMe = Boolean(msg.key.fromMe);
-            const participant = msg.key.participant || msg.participant || null;
-            const counterpartyPhone = await resolveLidToPhoneNumberAsync(
-              lineaId,
-              remoteJid,
-              participant
-            );
-            const innerMessage = rawMsg.ephemeralMessage?.message || rawMsg.viewOnceMessage?.message || rawMsg.viewOnceMessageV2?.message || rawMsg.documentWithCaptionMessage?.message || rawMsg;
-            const pushNameClean = cleanContactDisplayName(msg.pushName);
-            const contactsMap = loadLineContacts(lineaId);
-            if (!isFromMe && pushNameClean && counterpartyPhone.startsWith("+")) {
-              const existingContact = contactsMap.get(counterpartyPhone);
-              if (!existingContact) {
-                contactsMap.set(counterpartyPhone, {
-                  phone: counterpartyPhone,
-                  name: pushNameClean,
-                  lid: remoteJid.endsWith("@lid") ? remoteJid : void 0,
-                  updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-                });
-                saveLineContacts(lineaId);
-              }
-            }
-            const savedContactName = contactsMap.get(counterpartyPhone)?.name;
-            const resolvedContactName = savedContactName || (!isFromMe ? pushNameClean : void 0) || void 0;
-            const textBody = innerMessage.conversation || innerMessage.extendedTextMessage?.text || innerMessage.imageMessage?.caption || innerMessage.videoMessage?.caption || innerMessage.documentMessage?.caption || "";
-            const hasImage = Boolean(innerMessage.imageMessage);
-            const hasDoc = Boolean(innerMessage.documentMessage);
-            const hasAudio = Boolean(innerMessage.audioMessage);
-            let mediaDataUrl;
-            let mediaMimeType;
-            let audioDurationSeconds;
-            let isPtt;
-            let attachmentFileName;
-            if (hasImage || hasDoc) {
-              try {
-                const mimeType = innerMessage.imageMessage?.mimetype || innerMessage.documentMessage?.mimetype || "image/jpeg";
-                mediaMimeType = mimeType;
-                attachmentFileName = innerMessage.documentMessage?.fileName || (hasImage ? `Factura_BRM_${Date.now()}.jpg` : void 0);
-                if (mimeType.startsWith("image/") || mimeType === "application/pdf") {
-                  const buffer = await downloadMediaMessage(
-                    msg,
-                    "buffer",
-                    {},
-                    {
-                      logger: pino({ level: "silent" }),
-                      reuploadRequest: sock.updateMediaMessage
-                    }
-                  );
-                  if (buffer && buffer.length < 5 * 1024 * 1024) {
-                    mediaDataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
-                  }
-                }
-              } catch (dlErr) {
-                console.warn(
-                  "[WhatsApp BRM Bridge] No se pudo descargar adjunto binario:",
-                  dlErr
-                );
-              }
-            }
-            if (hasAudio && innerMessage.audioMessage) {
-              try {
-                const rawMime = innerMessage.audioMessage.mimetype || "audio/ogg; codecs=opus";
-                mediaMimeType = rawMime;
-                audioDurationSeconds = Number(
-                  innerMessage.audioMessage.seconds || 0
-                );
-                isPtt = Boolean(innerMessage.audioMessage.ptt);
-                const buffer = await downloadMediaMessage(
-                  msg,
-                  "buffer",
-                  {},
-                  {
-                    logger: pino({ level: "silent" }),
-                    reuploadRequest: sock.updateMediaMessage
-                  }
-                );
-                if (buffer && buffer.length < 8 * 1024 * 1024) {
-                  mediaDataUrl = `data:${rawMime};base64,${buffer.toString("base64")}`;
-                }
-              } catch (audioErr) {
-                console.warn(
-                  "[WhatsApp BRM Bridge] No se pudo descargar nota de voz:",
-                  audioErr
-                );
-              }
-            }
-            const ownPhone = lineStatusMemory.get(lineaId)?.numeroConectado || "LINEA_BRM";
-            const messageId = msg.key.id || `baileys_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-            const formatAudioDuration = (sec) => {
-              if (!sec || sec <= 0) return "";
-              const mins = Math.floor(sec / 60);
-              const rem = sec % 60;
-              return ` (${mins}:${rem < 10 ? "0" : ""}${rem})`;
-            };
-            const defaultCuerpo = hasImage ? "\u{1F4F7} [Imagen / Factura o Comprobante Adjunto]" : hasDoc ? `\u{1F4C4} [Documento: ${innerMessage.documentMessage?.fileName || "Archivo"}]` : hasAudio ? `${isPtt ? "\u{1F3A4} Nota de voz" : "\u{1F3B5} Mensaje de audio"}${formatAudioDuration(audioDurationSeconds)}` : "";
-            const finalBody = textBody || defaultCuerpo;
-            if (!finalBody && !mediaDataUrl) continue;
-            const queuedMsg = {
-              id: messageId,
-              lineaId,
-              messageId,
-              remitente: isFromMe ? ownPhone : counterpartyPhone,
-              senderName: isFromMe ? "Compras / Tesorer\xEDa BRM" : resolvedContactName,
-              destinatario: isFromMe ? counterpartyPhone : ownPhone,
-              destinatarioNombre: isFromMe ? resolvedContactName : void 0,
-              direccion: isFromMe ? "SALIENTE" : "ENTRANTE",
-              cuerpo: finalBody,
-              bodyText: finalBody,
-              tipoMensaje: hasImage ? "IMAGEN" : hasDoc ? "DOCUMENTO" : hasAudio ? "AUDIO" : "TEXTO",
-              mediaUrl: mediaDataUrl,
-              mediaMimeType,
-              audioDurationSeconds,
-              isPtt,
-              attachmentFileName,
-              timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-              estadoEntrega: isFromMe ? "ENTREGADO" : "RECIBIDO"
-            };
-            saveMessageToDurableStore(queuedMsg);
-            appendToLocalMessagesQueue(queuedMsg);
-            if (!isFromMe && hasImage && mediaDataUrl) {
-              appendToLocalOcrQueue({
-                id: `ocr_${messageId}`,
-                lineaId,
-                messageId,
-                remitente: counterpartyPhone,
-                senderName: resolvedContactName,
-                mediaDataUrl,
-                mimeType: mediaMimeType || "image/jpeg",
-                caption: textBody,
-                timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-                estado: "pendiente_verificacion"
-              });
-            }
+            await processIncomingOrHistoryMessage(lineaId, msg, sock, false);
           }
         } catch (err) {
           console.error(
-            `[WhatsApp BRM Bridge] Error procesando mensaje entrante en ${lineaId}:`,
+            `[WhatsApp BRM Bridge] Error procesando messages.upsert en ${lineaId}:`,
             err
           );
         }
@@ -2670,6 +2770,53 @@ ${query}` : String(query);
   };
   app.post("/api/brm/whatsapp/edit-message", handleWhatsappEditMessage);
   app.post("/api/whatsapp/edit-message", handleWhatsappEditMessage);
+  const handleWhatsappEvents = (req, res) => {
+    const lineaId = String(req.query.lineaId || DEFAULT_BRM_LINEA_ID);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+    res.write(
+      `data: ${JSON.stringify({ type: "CONNECTED_SSE", timestamp: (/* @__PURE__ */ new Date()).toISOString() })}
+
+`
+    );
+    const onMessage = (msg) => {
+      if (!msg || msg.lineaId && msg.lineaId !== lineaId) return;
+      res.write(`data: ${JSON.stringify({ type: "MESSAGE", message: msg })}
+
+`);
+    };
+    const onEdit = (edit) => {
+      if (!edit || edit.lineaId && edit.lineaId !== lineaId) return;
+      res.write(`data: ${JSON.stringify({ type: "MESSAGE_EDIT", edit })}
+
+`);
+    };
+    const onStatus = (status) => {
+      if (!status || status.lineaId && status.lineaId !== lineaId) return;
+      res.write(`data: ${JSON.stringify({ type: "STATUS", status })}
+
+`);
+    };
+    bridgeEvents.on("message", onMessage);
+    bridgeEvents.on("message_edit", onEdit);
+    bridgeEvents.on("status", onStatus);
+    const pingInterval = setInterval(() => {
+      res.write(": ping\n\n");
+    }, 15e3);
+    req.on("close", () => {
+      clearInterval(pingInterval);
+      bridgeEvents.off("message", onMessage);
+      bridgeEvents.off("message_edit", onEdit);
+      bridgeEvents.off("status", onStatus);
+    });
+  };
+  app.get("/api/brm/whatsapp/events", handleWhatsappEvents);
+  app.get("/api/whatsapp/events", handleWhatsappEvents);
   const handleWhatsappSend = async (req, res) => {
     let messageId = "";
     let normalizedDest = "";

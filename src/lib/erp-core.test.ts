@@ -260,6 +260,8 @@ import {
   readDurableMessagesStore,
   updateMessageTextInStoreAndQueue,
   getChatMessagesHistoryHandler,
+  processIncomingOrHistoryMessage,
+  bridgeEvents,
 } from '../../server/whatsappQrBridge';
 import {
   computeDaysUntilExpiration,
@@ -6787,6 +6789,122 @@ test('81. Certificación de Consistencia Bidireccional Android <-> Web en Tiempo
   }
   const stressLatency = Date.now() - startStress;
   assert.ok(stressLatency < 50, `200 resoluciones LID concurrentes en memoria deben tardar < 50ms (tardó ${stressLatency}ms)`);
+});
+
+test('82. Certificación de Persistencia y Tiempo Real Multi-Device: Sincronización messaging-history.set, Streaming SSE (bridgeEvents), Resolución WAMessageKey (remoteJidAlt/participantAlt) y Carga Inmediata', async () => {
+  const testLineId = 'test_linea_brm_realtime';
+
+  // 1. Ingesta por Lote de lidPnMappings (Simulación de chunk de messaging-history.set de WhatsApp Multi-Device)
+  const incomingLidPnMappings = [
+    { lid: '1029384756@lid', pn: '584121112233' },
+    { lid: '1092837465@lid', pn: '584144445566' },
+  ];
+  for (const item of incomingLidPnMappings) {
+    storeLidPhoneMapping(testLineId, item.lid, item.pn, false);
+  }
+
+  assert.strictEqual(
+    resolveLidToPhoneNumber(testLineId, '1029384756@lid'),
+    '+584121112233',
+    'El mapeo por lote de lidPnMappings debe resolver de inmediato el teléfono E.164'
+  );
+
+  // 2. Transmisión de Eventos en Tiempo Real (bridgeEvents para SSE)
+  let receivedSseMessage: any = null;
+  let receivedSseEdit: any = null;
+
+  const onMessageListener = (m: any) => {
+    receivedSseMessage = m;
+  };
+  const onEditListener = (e: any) => {
+    receivedSseEdit = e;
+  };
+
+  bridgeEvents.on('message', onMessageListener);
+  bridgeEvents.on('message_edit', onEditListener);
+
+  try {
+    // 3. Procesamiento de Mensaje Saliente Enviado Directamente en Teléfono Android con remoteJidAlt
+    const mobileSentMsg = {
+      key: {
+        remoteJid: '1029384756@lid',
+        fromMe: true,
+        id: 'wamid.ANDROID_REALTIME.999',
+        remoteJidAlt: '584121112233@s.whatsapp.net',
+      },
+      message: {
+        extendedTextMessage: {
+          text: 'Buenas tardes estimado proveedor, se adjunta comprobante de retención IVA.',
+        },
+      },
+      messageTimestamp: 1762085000,
+    };
+
+    const processedMsg = await processIncomingOrHistoryMessage(
+      testLineId,
+      mobileSentMsg,
+      null,
+      false
+    );
+
+    assert.ok(processedMsg !== null, 'El mensaje enviado en Android debe ser procesado con éxito');
+    assert.strictEqual(processedMsg?.direccion, 'SALIENTE');
+    assert.strictEqual(processedMsg?.destinatario, '+584121112233');
+    assert.strictEqual(processedMsg?.timestamp, new Date(1762085000 * 1000).toISOString());
+
+    // Verificar que bridgeEvents emitió el mensaje para SSE en tiempo real
+    assert.ok(receivedSseMessage !== null, 'bridgeEvents debe emitir el evento message para alimentar SSE');
+    assert.strictEqual(receivedSseMessage?.messageId, 'wamid.ANDROID_REALTIME.999');
+
+    // 4. Procesamiento de Mensaje de Edición en Tiempo Real (ProtocolMessage)
+    const mobileEditMsg = {
+      key: {
+        remoteJid: '1029384756@lid',
+        fromMe: true,
+        id: 'wamid.ANDROID_EDIT.001',
+      },
+      message: {
+        protocolMessage: {
+          key: {
+            remoteJid: '1029384756@lid',
+            fromMe: true,
+            id: 'wamid.ANDROID_REALTIME.999',
+          },
+          type: 14,
+          editedMessage: {
+            conversation: 'Buenas tardes estimado proveedor, se adjunta comprobante de retención IVA rectificado.',
+          },
+        },
+      },
+    };
+
+    await processIncomingOrHistoryMessage(
+      testLineId,
+      mobileEditMsg,
+      null,
+      false
+    );
+
+    // Verificar que bridgeEvents emitió el evento de edición
+    assert.ok(receivedSseEdit !== null, 'bridgeEvents debe emitir el evento message_edit para alimentar SSE');
+    assert.strictEqual(receivedSseEdit?.messageId, 'wamid.ANDROID_REALTIME.999');
+    assert.strictEqual(
+      receivedSseEdit?.text,
+      'Buenas tardes estimado proveedor, se adjunta comprobante de retención IVA rectificado.'
+    );
+
+    // 5. Verificación de Actualización en Almacén Duradero
+    const durable = readDurableMessagesStore(testLineId);
+    const updatedInDurable = durable.find((m) => m.messageId === 'wamid.ANDROID_REALTIME.999');
+    assert.strictEqual(
+      updatedInDurable?.bodyText,
+      'Buenas tardes estimado proveedor, se adjunta comprobante de retención IVA rectificado.'
+    );
+    assert.strictEqual(updatedInDurable?.isEdited, true);
+  } finally {
+    bridgeEvents.off('message', onMessageListener);
+    bridgeEvents.off('message_edit', onEditListener);
+  }
 });
 
 

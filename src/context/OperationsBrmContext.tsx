@@ -663,7 +663,86 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     await fetchBrmMessagesHistory();
   }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory]);
 
-  // Polling adaptativo (Patrón Puro Apure ERP): 2s mientras se espera escaneo, 8s en reposo
+  // Carga inicial inmediata del historial duradero al montar el contexto
+  useEffect(() => {
+    fetchBrmMessagesHistory().catch(() => {});
+  }, [fetchBrmMessagesHistory]);
+
+  // Transmisión en tiempo real vía Server-Sent Events (SSE) para recepción instantánea de mensajes y ediciones
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+
+    let es: EventSource | null = null;
+    let reconnectTimeout: any = null;
+
+    const connectSse = () => {
+      try {
+        es = new EventSource(
+          `/api/whatsapp/events?lineaId=${encodeURIComponent(BRM_WHATSAPP_LINEA_ID)}`
+        );
+
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data?.type === 'MESSAGE' && data.message) {
+              const ownPhone = brmSessionRef.current.numeroConectado;
+              const mapped = mapBridgeMessageToBrmMessage({
+                queued: data.message,
+                suppliers: suppliersRef.current,
+                connectedOwnPhoneE164: ownPhone,
+              });
+              if (mapped) {
+                setBrmMessages((prev) => updateOrAppendBrmMessages(prev, [mapped]));
+              }
+            } else if (data?.type === 'MESSAGE_EDIT' && data.edit) {
+              const { messageId, text } = data.edit;
+              if (messageId && text) {
+                const nowVet = getCaracasNow();
+                setBrmMessages((prev) =>
+                  prev.map((m) =>
+                    m.messageId === messageId ||
+                    m.id === messageId ||
+                    m.id === `brm-wa-${messageId}`
+                      ? {
+                          ...m,
+                          bodyText: text,
+                          isEdited: true,
+                          editedAtVet: `${nowVet.dateFormatted} ${nowVet.timeFormatted}`,
+                        }
+                      : m
+                  )
+                );
+              }
+            } else if (data?.type === 'STATUS' && data.status) {
+              setBrmSession((prev) => mergeBrmGatewayStatus(prev, data.status));
+            }
+          } catch {}
+        };
+
+        es.onerror = () => {
+          if (es) {
+            es.close();
+            es = null;
+          }
+          if (!reconnectTimeout) {
+            reconnectTimeout = setTimeout(() => {
+              reconnectTimeout = null;
+              connectSse();
+            }, 4000);
+          }
+        };
+      } catch {}
+    };
+
+    connectSse();
+
+    return () => {
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (es) es.close();
+    };
+  }, []);
+
+  // Polling adaptativo (Patrón Puro Apure ERP): 2s mientras se espera escaneo o conectado, 8s en reposo
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
@@ -671,18 +750,19 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       fetchBrmGatewayStatus().catch(() => {});
       if (brmSessionRef.current.state === 'CONNECTED') {
         syncBrmBridgeOfflineQueue().catch(() => {});
+        fetchBrmMessagesHistory().catch(() => {});
       }
     };
     tick();
     const isPairing =
       brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR';
-    const intervalMs = isPairing ? 2000 : brmSession.state === 'CONNECTED' ? 4000 : 8000;
+    const intervalMs = isPairing ? 2000 : brmSession.state === 'CONNECTED' ? 2000 : 8000;
     const timer = setInterval(tick, intervalMs);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [brmSession.state, fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue]);
+  }, [brmSession.state, fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory]);
 
   const setDefaultScaleMode = useCallback((mode: ScaleBarcodeMode) => {
     setDefaultScaleModeState(mode);
