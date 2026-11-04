@@ -4,6 +4,7 @@ import makeWASocket, {
   Browsers,
   WASocket,
   downloadMediaMessage,
+  fetchLatestWaWebVersion,
 } from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -114,6 +115,25 @@ const lidToPhoneCache = new Map<string, string>();
 const phoneToLidCache = new Map<string, string>();
 const explicitlyUnlinkedLines = new Set<string>();
 const MAX_QR_ROTATIONS = 5;
+
+let cachedWaVersion: [number, number, number] = [2, 3000, 1053070940];
+let lastVersionFetchMs = 0;
+
+export async function getEffectiveWaVersion(): Promise<[number, number, number]> {
+  const now = Date.now();
+  if (now - lastVersionFetchMs < 6 * 3600 * 1000) {
+    return cachedWaVersion;
+  }
+  try {
+    const res = await fetchLatestWaWebVersion().catch(() => null);
+    if (res?.version && Array.isArray(res.version) && res.version.length === 3) {
+      cachedWaVersion = res.version as [number, number, number];
+      lastVersionFetchMs = now;
+      console.log(`[WhatsApp BRM Bridge] Versión activa de WhatsApp Web: ${cachedWaVersion.join('.')}`);
+    }
+  } catch {}
+  return cachedWaVersion;
+}
 
 function clearReconnectTimer(lineaId: string): void {
   const timer = reconnectTimers.get(lineaId);
@@ -1434,15 +1454,21 @@ export async function initializeBaileysSocket(
           : ((makeWASocket as unknown as { default: typeof makeWASocket }).default ||
             makeWASocket);
 
+      const waVersion = await getEffectiveWaVersion();
+
       const sock = createWASocket({
         auth: state,
+        version: waVersion,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.ubuntu('Chrome'),
         printQRInTerminal: false,
-        syncFullHistory: true,
+        syncFullHistory: false,
         emitOwnEvents: true,
         shouldSyncHistoryMessage: () => true,
         markOnlineOnConnect: true,
+        connectTimeoutMs: 60_000,
+        defaultQueryTimeoutMs: 60_000,
+        keepAliveIntervalMs: 25_000,
         getMessage: async (key) => {
           if (key?.id) {
             const all = readDurableMessagesStore(lineaId);
@@ -1693,6 +1719,7 @@ export async function initializeBaileysSocket(
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBadSession = statusCode === DisconnectReason.badSession;
           const isRestartRequired = statusCode === DisconnectReason.restartRequired; // 515
+          const isConnectionClosed = statusCode === DisconnectReason.connectionClosed; // 428
 
           console.log(
             `[WhatsApp BRM Bridge] Conexión cerrada para ${lineaId}. Código: ${statusCode}. LoggedOut: ${isLoggedOut}`
@@ -1718,6 +1745,21 @@ export async function initializeBaileysSocket(
                 console.error('Error en reconexión 515:', e)
               );
             }, 500);
+            reconnectTimers.set(lineaId, timer);
+            return;
+          }
+
+          // Código 428: Cierre transitorio durante negociación WSS / QR. Reconectar velozmente (400ms)
+          if (isConnectionClosed && !explicitlyUnlinkedLines.has(lineaId)) {
+            console.log(
+              `[WhatsApp BRM Bridge] Cierre transitorio WSS (428) en ${lineaId}. Reintentando handshake en 400ms...`
+            );
+            const timer = setTimeout(() => {
+              reconnectTimers.delete(lineaId);
+              initializeBaileysSocket(lineaId).catch((e) =>
+                console.error('Error en reconexión 428:', e)
+              );
+            }, 400);
             reconnectTimers.set(lineaId, timer);
             return;
           }
@@ -1806,6 +1848,23 @@ export function getWhatsAppLineStatusHandler(
     return setLineState(lineaId, {
       numeroConectado: undefined,
       corporatePhoneE164: '',
+    });
+  }
+
+  // Si la línea quedó en GENERATING_QR pero no hay socket activo ni inicialización en curso,
+  // transicionar de vuelta a DISCONNECTED para evitar loaders infinitos en clientes frontend
+  if (
+    status.state === 'GENERATING_QR' &&
+    !status.qrCodeDataUri &&
+    !isPendingInitOrReconnect &&
+    !sock
+  ) {
+    return setLineState(lineaId, {
+      estado: 'DESCONECTADO',
+      state: 'DISCONNECTED',
+      qrCodeDataUri: undefined,
+      qrPayloadData: undefined,
+      ultimoError: status.ultimoError,
     });
   }
 
@@ -1917,10 +1976,17 @@ export async function forceResetAndUnlinkSession(
     while (
       !lineStatusMemory.get(lineaId)?.qrCodeDataUri &&
       lineStatusMemory.get(lineaId)?.estado !== 'CONECTADO' &&
-      waited < 8000
+      waited < 15000
     ) {
-      await new Promise((r) => setTimeout(r, 200));
-      waited += 200;
+      await new Promise((r) => setTimeout(r, 150));
+      waited += 150;
+    }
+
+    const currentCheck = lineStatusMemory.get(lineaId);
+    if (!currentCheck?.qrCodeDataUri && currentCheck?.estado !== 'CONECTADO') {
+      setLineState(lineaId, {
+        ultimoError: 'Tiempo de espera de conexión agotado. Haz clic en "Refrescar Código QR" para reintentar.',
+      });
     }
 
     const current = getWhatsAppLineStatusHandler(lineaId);
@@ -2007,10 +2073,17 @@ export async function generateQrCodeHandler(
     while (
       !lineStatusMemory.get(lineaId)?.qrCodeDataUri &&
       lineStatusMemory.get(lineaId)?.estado !== 'CONECTADO' &&
-      waited < 8000
+      waited < 15000
     ) {
-      await new Promise((r) => setTimeout(r, 200));
-      waited += 200;
+      await new Promise((r) => setTimeout(r, 150));
+      waited += 150;
+    }
+
+    const currentCheck = lineStatusMemory.get(lineaId);
+    if (!currentCheck?.qrCodeDataUri && currentCheck?.estado !== 'CONECTADO') {
+      setLineState(lineaId, {
+        ultimoError: 'Tiempo de espera de conexión agotado. Haz clic en "Refrescar Código QR" para reintentar.',
+      });
     }
 
     const updated = getWhatsAppLineStatusHandler(lineaId);

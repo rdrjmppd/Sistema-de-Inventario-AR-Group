@@ -536,7 +536,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                     )}
                   </div>
                 ) : brmSession.state === 'GENERATING_QR' || isRegenerating ? (
-                  <div className="flex flex-col items-center justify-center p-6 text-center text-slate-800">
+                  <div className="flex flex-col items-center justify-center p-6 text-center text-slate-800 max-w-[240px]">
                     <RefreshCw className="w-10 h-10 text-emerald-600 animate-spin mb-3" />
                     <span className="font-bold text-xs text-slate-900">
                       Negociando con WhatsApp...
@@ -544,6 +544,23 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                     <span className="text-[10px] text-slate-600 mt-1">
                       Generando token oficial de emparejamiento WSS
                     </span>
+                    {brmSession.ultimoError && (
+                      <span className="text-[10px] text-rose-600 mt-2 bg-rose-50 p-1.5 rounded-lg border border-rose-200">
+                        {brmSession.ultimoError}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setIsRegenerating(true);
+                        await regenerateBrmQrSession(corpPhoneInput, 'NOISE_PAIRING');
+                        setIsRegenerating(false);
+                      }}
+                      className="mt-3 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-[11px] font-bold flex items-center gap-1.5 cursor-pointer transition shadow-sm"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Refrescar Conexión
+                    </button>
                   </div>
                 ) : brmSession.state === 'QR_EXPIRADO' ? (
                   <div className="flex flex-col items-center justify-center p-6 text-center text-amber-900 space-y-2 max-w-[230px]">

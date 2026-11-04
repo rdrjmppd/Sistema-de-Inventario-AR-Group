@@ -1096,9 +1096,19 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
           const data = await resp.json();
           setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
           return;
+        } else {
+          setBrmSession((prev) => ({
+            ...prev,
+            state: prev.state === 'CONNECTED' ? 'CONNECTED' : 'DISCONNECTED',
+            ultimoError: 'No se pudo obtener el código QR de WhatsApp. Haz clic en Refrescar.',
+          }));
         }
       } catch {
-        // Fallback local resiliente sin emitir tokens falsos
+        setBrmSession((prev) => ({
+          ...prev,
+          state: prev.state === 'CONNECTED' ? 'CONNECTED' : 'DISCONNECTED',
+          ultimoError: 'Error de red al conectar con la pasarela WhatsApp.',
+        }));
       }
     },
     []
@@ -1134,9 +1144,21 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
           const data = await resp.json();
           setBrmSession((prev) => mergeBrmGatewayStatus(prev, data));
           return;
+        } else {
+          setBrmSession((prev) => ({
+            ...prev,
+            state: 'DISCONNECTED',
+            estado: 'DESCONECTADO',
+            ultimoError: 'No se pudo refrescar la sesión de WhatsApp.',
+          }));
         }
       } catch {
-        // Fallback resiliente
+        setBrmSession((prev) => ({
+          ...prev,
+          state: 'DISCONNECTED',
+          estado: 'DESCONECTADO',
+          ultimoError: 'Error de red al conectar con la pasarela WhatsApp.',
+        }));
       }
     },
     []

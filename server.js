@@ -227,7 +227,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   Browsers,
-  downloadMediaMessage
+  downloadMediaMessage,
+  fetchLatestWaWebVersion
 } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import pino from "pino";
@@ -251,6 +252,24 @@ var lidToPhoneCache = /* @__PURE__ */ new Map();
 var phoneToLidCache = /* @__PURE__ */ new Map();
 var explicitlyUnlinkedLines = /* @__PURE__ */ new Set();
 var MAX_QR_ROTATIONS = 5;
+var cachedWaVersion = [2, 3e3, 1053070940];
+var lastVersionFetchMs = 0;
+async function getEffectiveWaVersion() {
+  const now = Date.now();
+  if (now - lastVersionFetchMs < 6 * 3600 * 1e3) {
+    return cachedWaVersion;
+  }
+  try {
+    const res = await fetchLatestWaWebVersion().catch(() => null);
+    if (res?.version && Array.isArray(res.version) && res.version.length === 3) {
+      cachedWaVersion = res.version;
+      lastVersionFetchMs = now;
+      console.log(`[WhatsApp BRM Bridge] Versi\xF3n activa de WhatsApp Web: ${cachedWaVersion.join(".")}`);
+    }
+  } catch {
+  }
+  return cachedWaVersion;
+}
 function clearReconnectTimer(lineaId) {
   const timer = reconnectTimers.get(lineaId);
   if (timer) {
@@ -1265,15 +1284,20 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
       }
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
       const createWASocket = typeof makeWASocket === "function" ? makeWASocket : makeWASocket.default || makeWASocket;
+      const waVersion = await getEffectiveWaVersion();
       const sock = createWASocket({
         auth: state,
+        version: waVersion,
         logger: pino({ level: "silent" }),
-        browser: Browsers.macOS("Desktop"),
+        browser: Browsers.ubuntu("Chrome"),
         printQRInTerminal: false,
-        syncFullHistory: true,
+        syncFullHistory: false,
         emitOwnEvents: true,
         shouldSyncHistoryMessage: () => true,
         markOnlineOnConnect: true,
+        connectTimeoutMs: 6e4,
+        defaultQueryTimeoutMs: 6e4,
+        keepAliveIntervalMs: 25e3,
         getMessage: async (key) => {
           if (key?.id) {
             const all = readDurableMessagesStore(lineaId);
@@ -1485,6 +1509,7 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
           const isLoggedOut = statusCode === DisconnectReason.loggedOut;
           const isBadSession = statusCode === DisconnectReason.badSession;
           const isRestartRequired = statusCode === DisconnectReason.restartRequired;
+          const isConnectionClosed = statusCode === DisconnectReason.connectionClosed;
           console.log(
             `[WhatsApp BRM Bridge] Conexi\xF3n cerrada para ${lineaId}. C\xF3digo: ${statusCode}. LoggedOut: ${isLoggedOut}`
           );
@@ -1504,6 +1529,19 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
                 (e) => console.error("Error en reconexi\xF3n 515:", e)
               );
             }, 500);
+            reconnectTimers.set(lineaId, timer);
+            return;
+          }
+          if (isConnectionClosed && !explicitlyUnlinkedLines.has(lineaId)) {
+            console.log(
+              `[WhatsApp BRM Bridge] Cierre transitorio WSS (428) en ${lineaId}. Reintentando handshake en 400ms...`
+            );
+            const timer = setTimeout(() => {
+              reconnectTimers.delete(lineaId);
+              initializeBaileysSocket(lineaId).catch(
+                (e) => console.error("Error en reconexi\xF3n 428:", e)
+              );
+            }, 400);
             reconnectTimers.set(lineaId, timer);
             return;
           }
@@ -1566,6 +1604,15 @@ function getWhatsAppLineStatusHandler(lineaId = DEFAULT_BRM_LINEA_ID) {
     return setLineState(lineaId, {
       numeroConectado: void 0,
       corporatePhoneE164: ""
+    });
+  }
+  if (status.state === "GENERATING_QR" && !status.qrCodeDataUri && !isPendingInitOrReconnect && !sock) {
+    return setLineState(lineaId, {
+      estado: "DESCONECTADO",
+      state: "DISCONNECTED",
+      qrCodeDataUri: void 0,
+      qrPayloadData: void 0,
+      ultimoError: status.ultimoError
     });
   }
   return status;
@@ -1640,9 +1687,15 @@ async function forceResetAndUnlinkSession(lineaId = DEFAULT_BRM_LINEA_ID, genera
       (err) => console.error(`[WhatsApp BRM Bridge] Error iniciando socket limpio (${lineaId}):`, err)
     );
     let waited = 0;
-    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 8e3) {
-      await new Promise((r) => setTimeout(r, 200));
-      waited += 200;
+    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 15e3) {
+      await new Promise((r) => setTimeout(r, 150));
+      waited += 150;
+    }
+    const currentCheck = lineStatusMemory.get(lineaId);
+    if (!currentCheck?.qrCodeDataUri && currentCheck?.estado !== "CONECTADO") {
+      setLineState(lineaId, {
+        ultimoError: 'Tiempo de espera de conexi\xF3n agotado. Haz clic en "Refrescar C\xF3digo QR" para reintentar.'
+      });
     }
     const current = getWhatsAppLineStatusHandler(lineaId);
     return {
@@ -1708,9 +1761,15 @@ async function generateQrCodeHandler(lineaId = DEFAULT_BRM_LINEA_ID, forceNew = 
       });
     }
     let waited = 0;
-    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 8e3) {
-      await new Promise((r) => setTimeout(r, 200));
-      waited += 200;
+    while (!lineStatusMemory.get(lineaId)?.qrCodeDataUri && lineStatusMemory.get(lineaId)?.estado !== "CONECTADO" && waited < 15e3) {
+      await new Promise((r) => setTimeout(r, 150));
+      waited += 150;
+    }
+    const currentCheck = lineStatusMemory.get(lineaId);
+    if (!currentCheck?.qrCodeDataUri && currentCheck?.estado !== "CONECTADO") {
+      setLineState(lineaId, {
+        ultimoError: 'Tiempo de espera de conexi\xF3n agotado. Haz clic en "Refrescar C\xF3digo QR" para reintentar.'
+      });
     }
     const updated = getWhatsAppLineStatusHandler(lineaId);
     return {
