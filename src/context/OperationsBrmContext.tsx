@@ -1256,7 +1256,24 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       attachmentFileName?: string;
       openWaMeWindow?: boolean;
     }) => {
-      const supplier = suppliers.find((s) => s.id === params.supplierId);
+      let supplier = suppliers.find((s) => s.id === params.supplierId);
+      if (!supplier && params.supplierId.startsWith('wa-')) {
+        const phone = params.supplierId.replace('wa-', '');
+        const matchingMsg = brmMessages.find((m) => m.phoneE164 === phone);
+        supplier = {
+          id: params.supplierId,
+          name: matchingMsg?.supplierName || matchingMsg?.senderName || `Contacto ${phone}`,
+          rif: matchingMsg?.supplierRif || 'WhatsApp Directo',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: matchingMsg?.senderName || 'Contacto WhatsApp',
+          phone,
+          whatsappE164: phone,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        };
+      }
       if (!supplier) {
         return { success: false, error: 'Proveedor no encontrado en el directorio BRM.' };
       }
@@ -1332,7 +1349,24 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const editBrmMessage = useCallback(
     async (params: { messageId: string; supplierId: string; newText: string }) => {
-      const supplier = suppliers.find((s) => s.id === params.supplierId);
+      let supplier = suppliers.find((s) => s.id === params.supplierId);
+      if (!supplier && params.supplierId.startsWith('wa-')) {
+        const phone = params.supplierId.replace('wa-', '');
+        const matchingMsg = brmMessages.find((m) => m.phoneE164 === phone);
+        supplier = {
+          id: params.supplierId,
+          name: matchingMsg?.supplierName || matchingMsg?.senderName || `Contacto ${phone}`,
+          rif: matchingMsg?.supplierRif || 'WhatsApp Directo',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: matchingMsg?.senderName || 'Contacto WhatsApp',
+          phone,
+          whatsappE164: phone,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        };
+      }
       if (!supplier) {
         return { success: false, error: 'Proveedor no encontrado en el directorio BRM.' };
       }
@@ -1395,7 +1429,24 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       fileName?: string;
       audioDurationSeconds?: number;
     }) => {
-      const supplier = suppliers.find((s) => s.id === params.supplierId);
+      let supplier = suppliers.find((s) => s.id === params.supplierId);
+      if (!supplier && params.supplierId.startsWith('wa-')) {
+        const phone = params.supplierId.replace('wa-', '');
+        const matchingMsg = brmMessages.find((m) => m.phoneE164 === phone);
+        supplier = {
+          id: params.supplierId,
+          name: matchingMsg?.supplierName || matchingMsg?.senderName || `Contacto ${phone}`,
+          rif: matchingMsg?.supplierRif || 'WhatsApp Directo',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: matchingMsg?.senderName || 'Contacto WhatsApp',
+          phone,
+          whatsappE164: phone,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        };
+      }
       if (!supplier) {
         return { success: false, error: 'Proveedor no encontrado en el directorio BRM.' };
       }

@@ -625,10 +625,34 @@ export function mapBridgeMessageToBrmMessage(params: {
   const isOutbound =
     queued.direccion === 'SALIENTE' || queued.direccion === 'OUTBOUND_TO_SUPPLIER';
   const counterpartyRaw = isOutbound ? queued.destinatario : queued.remitente;
-  if (isCorruptedOrRawLid(counterpartyRaw)) return null;
+  if (!counterpartyRaw || counterpartyRaw === 'status@broadcast') return null;
 
-  const counterpartyE164 = normalizePhoneE164(counterpartyRaw);
-  if (!counterpartyE164) return null;
+  const isLid = counterpartyRaw.includes('@lid');
+  let counterpartyE164 = normalizePhoneE164(counterpartyRaw);
+  if (!counterpartyE164 && isLid) {
+    const matchedSup = suppliers.find(
+      (s) =>
+        (s as any).lid === counterpartyRaw ||
+        (s.whatsappE164 && counterpartyRaw.includes(s.whatsappE164.replace(/\D/g, '')))
+    );
+    if (matchedSup) {
+      counterpartyE164 = normalizePhoneE164(matchedSup.whatsappE164 || matchedSup.phone || '') || '';
+    }
+    if (!counterpartyE164) {
+      const lidDigits = counterpartyRaw.split('@')[0].replace(/\D/g, '');
+      counterpartyE164 = lidDigits ? `+${lidDigits}` : counterpartyRaw;
+    }
+  }
+
+  if (!counterpartyE164) {
+    const rawDigits = counterpartyRaw.replace(/[:@].*$/, '').replace(/\D/g, '');
+    if (rawDigits.length >= 7) {
+      counterpartyE164 = `+${rawDigits}`;
+    } else {
+      counterpartyE164 = counterpartyRaw;
+    }
+  }
+
   if (connectedOwnPhoneE164 && isCorporateSelfPhone(counterpartyE164, connectedOwnPhoneE164)) {
     return null; // Exclusión determinista del número propio
   }
@@ -656,7 +680,7 @@ export function mapBridgeMessageToBrmMessage(params: {
     id: `brm-wa-${messageId}`,
     messageId,
     supplierId: supplier?.id || '',
-    supplierName: supplier?.name || contactName || counterpartyE164,
+    supplierName: supplier?.name || contactName || (isLid ? 'Contacto WhatsApp' : counterpartyE164),
     supplierRif: supplier?.rif || '',
     phoneE164: counterpartyE164,
     direction: isOutbound ? 'OUTBOUND_TO_SUPPLIER' : 'INBOUND_FROM_SUPPLIER',

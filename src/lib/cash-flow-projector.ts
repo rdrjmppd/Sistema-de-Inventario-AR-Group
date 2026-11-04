@@ -75,6 +75,7 @@ export interface CashFlowCalculationParams {
   invoices: PurchaseInvoice[];
   retentionVouchers: TaxRetentionVoucher[];
   bcvSlippagePercent?: number; // e.g. 0, 2, 5, 10
+  asOfDate?: string; // Fecha de corte referencial YYYY-MM-DD (por defecto hoy en Caracas)
 }
 
 /**
@@ -107,9 +108,10 @@ export function calculateConservativeCashFlowProjection({
   invoices,
   retentionVouchers,
   bcvSlippagePercent = 0,
+  asOfDate,
 }: CashFlowCalculationParams): ConservativeCashFlowProjectionResult {
   const vetNow = getCaracasNow();
-  const todayStr = vetNow.dateString;
+  const todayStr = asOfDate || vetNow.dateString;
   const rateDec = toDecimal(Math.max(0.0001, activeBcvRate));
   
   // Tasa con deslizamiento simulado (ej. +5% de devaluación esperada)

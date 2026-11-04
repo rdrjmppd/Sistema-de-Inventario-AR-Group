@@ -31,7 +31,7 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { NavigationTab, StorageZone } from '../../types';
+import { NavigationTab, StorageZone, Supplier } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
@@ -175,31 +175,98 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     }
   }, [brmSession.state]);
 
+  const allSuppliersAndChats = useMemo(() => {
+    const list: Supplier[] = [...suppliers];
+    const existingPhones = new Set(
+      suppliers
+        .map((s) => normalizePhoneE164(s.whatsappE164 || s.phone || ''))
+        .filter(Boolean)
+    );
+
+    for (const msg of brmMessages) {
+      if (!msg.phoneE164) continue;
+      const norm = normalizePhoneE164(msg.phoneE164) || msg.phoneE164;
+      const digits = norm.replace(/\D/g, '');
+      const last10 = digits.slice(-10);
+
+      const matchesSupplier = Array.from(existingPhones).some((p) => {
+        const pDigits = p.replace(/\D/g, '');
+        return pDigits === digits || (last10 && pDigits.endsWith(last10));
+      });
+
+      if (!matchesSupplier && !list.some((s) => s.id === `wa-${norm}`)) {
+        list.push({
+          id: `wa-${norm}`,
+          name: msg.supplierName || msg.senderName || `Contacto ${norm}`,
+          rif: msg.supplierRif || 'WhatsApp Directo',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: msg.senderName || 'Contacto WhatsApp',
+          phone: norm,
+          whatsappE164: norm,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        });
+        existingPhones.add(norm);
+      }
+    }
+
+    return list.sort((a, b) => {
+      const aNorm = normalizePhoneE164(a.whatsappE164 || a.phone || '');
+      const bNorm = normalizePhoneE164(b.whatsappE164 || b.phone || '');
+      const aLast = brmMessages
+        .filter((m) => m.supplierId === a.id || (aNorm && m.phoneE164 === aNorm))
+        .slice(-1)[0];
+      const bLast = brmMessages
+        .filter((m) => m.supplierId === b.id || (bNorm && m.phoneE164 === bNorm))
+        .slice(-1)[0];
+      const aTime = aLast ? aLast.timestampVet || '' : '';
+      const bTime = bLast ? bLast.timestampVet || '' : '';
+      return bTime.localeCompare(aTime);
+    });
+  }, [suppliers, brmMessages]);
+
   const activeSupplier = useMemo(
-    () => suppliers.find((s) => s.id === selectedSupplierId) || suppliers[0],
-    [suppliers, selectedSupplierId]
+    () => allSuppliersAndChats.find((s) => s.id === selectedSupplierId) || allSuppliersAndChats[0],
+    [allSuppliersAndChats, selectedSupplierId]
   );
 
   // Filtrado de contactos activos de proveedores para el directorio izquierdo
   const filteredSuppliers = useMemo(() => {
     const q = contactSearch.trim().toLowerCase();
-    return suppliers.filter((s) => {
+    return allSuppliersAndChats.filter((s) => {
       if (!q) return true;
       const name = s.name.toLowerCase();
       const rif = s.rif.toLowerCase();
       const phone = (s.whatsappE164 || s.phone || '').toLowerCase();
       return name.includes(q) || rif.includes(q) || phone.includes(q);
     });
-  }, [suppliers, contactSearch]);
+  }, [allSuppliersAndChats, contactSearch]);
 
   // Histórico de mensajes del chat para el proveedor seleccionado
   const activeSupplierMessages = useMemo(() => {
     if (!activeSupplier) return [];
     const supPhoneNorm = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone);
+    const supDigits = (supPhoneNorm || activeSupplier.phone || '').replace(/\D/g, '');
+    const last10 = supDigits.slice(-10);
+
     return brmMessages
       .filter((m) => {
         if (m.supplierId && m.supplierId === activeSupplier.id) return true;
-        if (supPhoneNorm && m.phoneE164 === supPhoneNorm) return true;
+        if (m.phoneE164) {
+          if (supPhoneNorm && m.phoneE164 === supPhoneNorm) return true;
+          const mDigits = m.phoneE164.replace(/\D/g, '');
+          if (
+            last10 &&
+            mDigits &&
+            (mDigits === supDigits ||
+              mDigits.endsWith(last10) ||
+              supDigits.endsWith(mDigits.slice(-10)))
+          ) {
+            return true;
+          }
+        }
         return false;
       })
       .sort((a, b) => a.id.localeCompare(b.id));

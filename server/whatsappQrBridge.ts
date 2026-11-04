@@ -112,6 +112,7 @@ const qrRotationCounters = new Map<string, number>();
 const lineContactsCache = new Map<string, Map<string, SyncedWhatsAppContact>>();
 const lidToPhoneCache = new Map<string, string>();
 const phoneToLidCache = new Map<string, string>();
+const explicitlyUnlinkedLines = new Set<string>();
 const MAX_QR_ROTATIONS = 5;
 
 function clearReconnectTimer(lineaId: string): void {
@@ -133,6 +134,7 @@ function safeDestroyBaileysSocket(sock: WASocket | undefined): void {
     sock.ev.removeAllListeners('contacts.upsert');
     sock.ev.removeAllListeners('contacts.update');
     sock.ev.removeAllListeners('chats.delete');
+    sock.ev.removeAllListeners('lid-mapping.update' as any);
   } catch {}
 
   try {
@@ -469,7 +471,10 @@ export function storeLidPhoneMapping(
   persistToDisk: boolean = true
 ): void {
   const cleanLid = String(lid || '').replace('@lid', '').replace(/\D/g, '');
-  const cleanPhoneDigits = String(phone || '').replace(/\D/g, '');
+  let cleanPhoneDigits = String(phone || '').replace(/\D/g, '');
+  if (cleanPhoneDigits.startsWith('0') && cleanPhoneDigits.length === 11) {
+    cleanPhoneDigits = '58' + cleanPhoneDigits.slice(1);
+  }
   if (!cleanLid || cleanPhoneDigits.length < 10 || cleanPhoneDigits.length > 15) return;
   const e164 = `+${cleanPhoneDigits}`;
   lidToPhoneCache.set(cleanLid, e164);
@@ -566,7 +571,7 @@ export async function resolveLidToPhoneNumberAsync(
     const altDigits = keyAlt.remoteJidAlt.split('@')[0].split(':')[0].replace(/\D/g, '');
     if (altDigits.length >= 10 && altDigits.length <= 15) {
       if (remoteJid.endsWith('@lid')) {
-        storeLidPhoneMapping(lineaId, remoteJid, altDigits, false);
+        storeLidPhoneMapping(lineaId, remoteJid, altDigits, true);
       }
       return `+${altDigits}`;
     }
@@ -575,7 +580,7 @@ export async function resolveLidToPhoneNumberAsync(
     const partDigits = keyAlt.participantAlt.split('@')[0].split(':')[0].replace(/\D/g, '');
     if (partDigits.length >= 10 && partDigits.length <= 15) {
       if (remoteJid.endsWith('@lid')) {
-        storeLidPhoneMapping(lineaId, remoteJid, partDigits, false);
+        storeLidPhoneMapping(lineaId, remoteJid, partDigits, true);
       }
       return `+${partDigits}`;
     }
@@ -597,11 +602,15 @@ export async function resolveLidToPhoneNumberAsync(
     try {
       const sock = activeSockets.get(lineaId);
       if (sock && (sock as any).signalRepository?.lidMapping?.getPNForLID) {
-        const pn = await (sock as any).signalRepository.lidMapping.getPNForLID(remoteJid);
+        let pn = await (sock as any).signalRepository.lidMapping.getPNForLID(remoteJid);
+        if (!pn) {
+          const lidOnly = remoteJid.split('@')[0];
+          pn = await (sock as any).signalRepository.lidMapping.getPNForLID(lidOnly);
+        }
         if (pn) {
           const cleanPn = String(pn).split('@')[0].replace(/\D/g, '');
           if (cleanPn.length >= 10 && cleanPn.length <= 15) {
-            storeLidPhoneMapping(lineaId, remoteJid, cleanPn, false);
+            storeLidPhoneMapping(lineaId, remoteJid, cleanPn, true);
             return `+${cleanPn}`;
           }
         }
@@ -722,6 +731,7 @@ export function ingestLineContacts(
     name?: string;
     notify?: string;
     verifiedName?: string;
+    phoneNumber?: string;
   }>
 ): void {
   if (!Array.isArray(contacts) || contacts.length === 0) return;
@@ -737,6 +747,15 @@ export function ingestLineContacts(
       rawId.endsWith('@newsletter')
     ) {
       continue;
+    }
+
+    const effectiveLidCandidate = c.lid || (rawId.endsWith('@lid') ? rawId : undefined);
+    const candidatePhone = (c as any).phoneNumber || (!rawId.endsWith('@lid') ? rawId : undefined);
+    if (effectiveLidCandidate && candidatePhone) {
+      const cleanPhoneDigits = String(candidatePhone).split('@')[0].split(':')[0].replace(/\D/g, '');
+      if (cleanPhoneDigits.length >= 10 && cleanPhoneDigits.length <= 15) {
+        storeLidPhoneMapping(lineaId, effectiveLidCandidate, cleanPhoneDigits, true);
+      }
     }
 
     const bestName =
@@ -1515,6 +1534,17 @@ export async function initializeBaileysSocket(
         ingestLineContacts(lineaId, updates as any);
       });
 
+      // Mapeo dinámico en tiempo real emitido por Baileys al resolver LID <-> Teléfono
+      sock.ev.on('lid-mapping.update' as any, (data: any) => {
+        try {
+          if (data && data.lid && data.pn) {
+            storeLidPhoneMapping(lineaId, String(data.lid), String(data.pn), true);
+          }
+        } catch (lidErr) {
+          console.warn(`[WhatsApp BRM Bridge] Error en lid-mapping.update (${lineaId}):`, lidErr);
+        }
+      });
+
       // Eliminación asimétrica de chats desde el móvil hacia la aplicación
       sock.ev.on('chats.delete', async (deletedChatIds) => {
         try {
@@ -1628,6 +1658,7 @@ export async function initializeBaileysSocket(
 
         if (connection === 'open') {
           clearReconnectTimer(lineaId);
+          explicitlyUnlinkedLines.delete(lineaId);
           qrRotationCounters.set(lineaId, 0);
           const rawUser = sock.user?.id || '';
           const phoneNumber = rawUser.split(':')[0].split('@')[0].replace(/\D/g, '');
@@ -1701,7 +1732,7 @@ export async function initializeBaileysSocket(
             );
           } else {
             const isManualUnlink =
-              currentMem?.estado === 'DESCONECTADO' && !currentMem?.qrCodeDataUri;
+              explicitlyUnlinkedLines.has(lineaId);
             if (!isManualUnlink) {
               const timer = setTimeout(() => {
                 reconnectTimers.delete(lineaId);
@@ -1740,11 +1771,27 @@ export function getWhatsAppLineStatusHandler(
   const status = lineStatusMemory.get(lineaId) || getDefaultLineState(lineaId);
   const sock = activeSockets.get(lineaId);
   const isSocketReallyOpen = Boolean(sock && sock.user?.id);
+  const isPendingInitOrReconnect =
+    reconnectTimers.has(lineaId) || initializingPromises.has(lineaId);
 
   if (
     (status.estado === 'CONECTADO' || status.state === 'CONNECTED') &&
     !isSocketReallyOpen
   ) {
+
+    if (isPendingInitOrReconnect) {
+      return status;
+    }
+
+    const sessionDir = path.join(SESSIONS_ROOT, lineaId);
+    const credsFile = path.join(sessionDir, 'creds.json');
+    if (fs.existsSync(credsFile) && !explicitlyUnlinkedLines.has(lineaId)) {
+      initializeBaileysSocket(lineaId).catch((err) =>
+        console.warn('[WhatsApp BRM Bridge] Error reactivando socket desde status handler:', err)
+      );
+      return status;
+    }
+
     return setLineState(lineaId, {
       estado: 'DESCONECTADO',
       state: 'DISCONNECTED',
@@ -1789,6 +1836,11 @@ export async function forceResetAndUnlinkSession(
 
   qrRotationCounters.set(lineaId, 0);
   clearReconnectTimer(lineaId);
+  if (generateNewQr) {
+    explicitlyUnlinkedLines.delete(lineaId);
+  } else {
+    explicitlyUnlinkedLines.add(lineaId);
+  }
 
   // Esperar si hay una inicialización en vuelo antes de destruir el socket para evitar colisiones
   const pendingInit = initializingPromises.get(lineaId);
@@ -2449,4 +2501,5 @@ export function extractNestedBaileysMessageDescriptor(rawMsg: Record<string, any
       innerMessage.documentMessage?.mimetype,
   };
 }
+
 

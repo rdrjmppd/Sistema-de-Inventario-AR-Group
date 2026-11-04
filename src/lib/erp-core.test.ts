@@ -250,6 +250,7 @@ import {
   resolveLidToPhoneNumber,
   resolveLidToPhoneNumberAsync,
   storeLidPhoneMapping,
+  ingestLineContacts,
   cleanContactDisplayName,
   getWhatsAppLineStatusHandler,
   forceResetAndUnlinkSession,
@@ -5469,6 +5470,7 @@ test('62. Flujo de Caja Bimonetario Conservador Estricto (USD / VES) con Decimal
     invoices: mockInvoices,
     retentionVouchers: mockVouchers,
     bcvSlippagePercent: 0,
+    asOfDate: '2026-10-29',
   });
 
   assert.equal(result.currentAvailableLiquidity.usdAvailable, 5000);
@@ -5499,6 +5501,7 @@ test('62. Flujo de Caja Bimonetario Conservador Estricto (USD / VES) con Decimal
     invoices: mockInvoices,
     retentionVouchers: mockVouchers,
     bcvSlippagePercent: 5, // Tasa simulada = 52.50
+    asOfDate: '2026-10-29',
   });
 
   assert.equal(simResult.simulatedBcvRate, 52.5);
@@ -6906,6 +6909,63 @@ test('82. Certificación de Persistencia y Tiempo Real Multi-Device: Sincronizac
     bridgeEvents.off('message_edit', onEditListener);
   }
 });
+
+test('83. Certificación de Persistencia y Reanudación Sin Caídas (Zero-Drop Reconnect & @lid Ingestion)', async () => {
+  const testLineId = 'test_linea_brm_persistence';
+
+  // 1. Ingesta de contactos con LID sin nombre (mapeo incondicional)
+  ingestLineContacts(testLineId, [
+    {
+      id: '584145556677@s.whatsapp.net',
+      lid: '108877665544@lid',
+      name: '',
+      notify: '',
+      phoneNumber: '584145556677',
+    },
+    {
+      id: '109988112233@lid',
+      name: 'Distribuidora Central',
+      phoneNumber: '04149991122', // Formato venezolano con 0
+    },
+  ]);
+
+  // Verificar que el mapeo se registró y se canonicalizó a E.164
+  const resPhone1 = resolveLidToPhoneNumber(testLineId, '108877665544@lid');
+  assert.strictEqual(resPhone1, '+584145556677', 'Debe mapear LID a teléfono aun sin nombre de contacto');
+
+  const resPhone2 = resolveLidToPhoneNumber(testLineId, '109988112233@lid');
+  assert.strictEqual(resPhone2, '+584149991122', 'Debe canonicalizar 0414 a +58414 para el LID');
+
+  // 2. Mapeo de mensaje entrante/saliente con @lid crudo sin descarte en frontend
+  const unmappedLidMsg = mapBridgeMessageToBrmMessage({
+    queued: {
+      id: 'msg-raw-lid-001',
+      messageId: 'wamid.LID_TEST.001',
+      remitente: '10776655443322@lid',
+      destinatario: '+582410001122',
+      direccion: 'ENTRANTE',
+      bodyText: 'Buenas tardes, adjunto comprobante de despacho.',
+      timestamp: '2026-11-04T12:00:00Z',
+    },
+    suppliers: [],
+    connectedOwnPhoneE164: '+582410001122',
+  });
+
+  assert.ok(unmappedLidMsg !== null, 'mapBridgeMessageToBrmMessage NO debe descartar mensajes con contraparte @lid');
+  assert.strictEqual(unmappedLidMsg?.direction, 'INBOUND_FROM_SUPPLIER');
+  assert.strictEqual(unmappedLidMsg?.bodyText, 'Buenas tardes, adjunto comprobante de despacho.');
+  assert.ok(unmappedLidMsg?.phoneE164.includes('10776655443322'));
+
+  // 3. Verificación de Purga Atómica y Protección contra Desconexión Manual Falsa
+  const purgeRes = await forceResetAndUnlinkSession(testLineId, false);
+  assert.strictEqual(purgeRes.success, true);
+  assert.strictEqual(purgeRes.estado, 'DESCONECTADO');
+
+  // Al consultar estado tras desvinculación explícita, se reporta DESCONECTADO
+  const postPurgeStatus = getWhatsAppLineStatusHandler(testLineId);
+  assert.strictEqual(postPurgeStatus.estado, 'DESCONECTADO');
+});
+
 
 
 
