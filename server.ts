@@ -898,10 +898,15 @@ async function startServer() {
   // Aislamiento Socket/Puente vs. Persistencia + SSoT Anti-Split-Brain + Cortacircuitos 5 Rotaciones
   // ============================================================================
 
-  // Auto-restaurar sesiones previas en segundo plano con .catch() defensivo (Cláusula B)
-  autoRestoreExistingSessions().catch((err) =>
-    console.warn('[BRM WhatsApp] Aviso en auto-restauración inicial:', err)
-  );
+  // Auto-restaurar sesiones previas en segundo plano diferido con .catch() defensivo (Cláusula B)
+  const restoreTimer = setTimeout(() => {
+    autoRestoreExistingSessions().catch((err) =>
+      console.warn('[BRM WhatsApp] Aviso en auto-restauración inicial:', err)
+    );
+  }, 1500);
+  if (typeof restoreTimer.unref === 'function') {
+    restoreTimer.unref();
+  }
 
   // 1. Endpoint Status (SSoT en tiempo real con Anti-Split-Brain)
   const handleWhatsappStatus = (req: express.Request, res: express.Response) => {
@@ -1501,11 +1506,6 @@ async function startServer() {
     console.error('[Chrystal ERP] HTTP Server socket error captured:', err);
   });
 
-  // Bind to 0.0.0.0:PORT immediately so Cloud Run healthchecks (/api/health) receive 200 OK without waiting for asset middleware
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
-  });
-
   const distPath = path.join(process.cwd(), 'dist');
   const isCompiledServerJs =
     typeof process.argv[1] === 'string' && process.argv[1].endsWith('server.js');
@@ -1522,7 +1522,36 @@ async function startServer() {
         res.status(200).json({ status: 'ok', mode: 'degraded_static', port: PORT });
       }
     });
+
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
+    });
   } else {
+    let activeFrontendMiddleware: express.RequestHandler | null = null;
+    const StaticFallbackMiddleware = express.static(distPath);
+
+    // Hold any early non-API pre-warming requests until Vite finishes initializing
+    let resolveViteReady!: () => void;
+    const viteReadyPromise = new Promise<void>((resolve) => {
+      resolveViteReady = resolve;
+    });
+
+    app.use(async (req, res, next) => {
+      if (req.path.startsWith('/api/')) {
+        return next();
+      }
+      await viteReadyPromise;
+      if (activeFrontendMiddleware) {
+        return activeFrontendMiddleware(req, res, next);
+      }
+      return StaticFallbackMiddleware(req, res, next);
+    });
+
+    // Bind to 0.0.0.0:PORT immediately so Cloud Run /api/health responds 200 OK without delay
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`[Chrystal ERP] Server + BCV Live Connector listening on http://0.0.0.0:${PORT}`);
+    });
+
     try {
       const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
@@ -1547,10 +1576,12 @@ async function startServer() {
         },
         appType: 'spa',
       });
-      app.use(vite.middlewares);
+      activeFrontendMiddleware = vite.middlewares;
     } catch (viteErr) {
       console.error('[Chrystal ERP] Vite middleware initialization fallback:', viteErr);
-      app.use(express.static(distPath));
+      activeFrontendMiddleware = StaticFallbackMiddleware;
+    } finally {
+      resolveViteReady();
     }
   }
 }
