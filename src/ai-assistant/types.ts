@@ -13,6 +13,7 @@ export interface ChatMessage {
   timestampVet: string;
   isBlockedByRbac?: boolean;
   suggestedPrompts?: string[];
+  engineUsed?: string;
 }
 
 export interface LiveErpOperationalContext {
@@ -72,6 +73,15 @@ export interface LiveErpOperationalContext {
     abcClass: string;
     category: string;
   }>;
+  productsSummary?: Array<{
+    sku: string;
+    name: string;
+    category: string;
+    currentStock: number;
+    unit: string;
+    costUsd: number;
+    priceUsd: number;
+  }>;
 }
 
 export interface AssistantQueryRequest {
@@ -85,5 +95,6 @@ export interface AssistantQueryResponse {
   answer: string;
   isBlockedByRbac: boolean;
   usedFallbackEngine: boolean;
+  engineUsed?: string;
   suggestedPrompts?: string[];
 }

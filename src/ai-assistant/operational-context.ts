@@ -108,6 +108,24 @@ export function buildLiveErpOperationalContext(params: {
       category: p.category,
     }));
 
+  const productsSummary = products.map((p) => {
+    let stockTotal = 0;
+    if (p.stockByLocation) {
+      for (const locId of Object.keys(p.stockByLocation)) {
+        stockTotal += p.stockByLocation[locId] || 0;
+      }
+    }
+    return {
+      sku: p.sku,
+      name: p.name,
+      category: p.category || 'General',
+      currentStock: round2(toDecimal(stockTotal)),
+      unit: p.unit || 'UND',
+      costUsd: p.costUsd || 0,
+      priceUsd: p.priceUsd || 0,
+    };
+  });
+
   return {
     activeUser: {
       uid: user?.uid || 'anon',
@@ -140,6 +158,7 @@ export function buildLiveErpOperationalContext(params: {
     pendingDiscardsSummary,
     locationsList,
     topRotationSkus,
+    productsSummary,
   };
 }
 
@@ -175,6 +194,17 @@ export function formatLiveContextForPrompt(ctx: LiveErpOperationalContext): stri
           .join('\n')
       : 'Sin datos históricos de rotación.';
 
+  const sampleProductsText =
+    ctx.productsSummary && ctx.productsSummary.length > 0
+      ? ctx.productsSummary
+          .slice(0, 15)
+          .map(
+            (p) =>
+              `- [${p.sku}] ${p.name} (${p.category}): Stock ${p.currentStock} ${p.unit} | Costo $${p.costUsd.toFixed(2)} | PVP $${p.priceUsd.toFixed(2)} (Bs. ${(p.priceUsd * ctx.bcvState.activeRate).toFixed(2)})`
+          )
+          .join('\n')
+      : 'Catálogo sin productos registrados.';
+
   return `
 ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
 - Usuario Activo en Sesión: ${ctx.activeUser.displayName} (${ctx.activeUser.email}) — Rol RBAC: ${ctx.activeUser.role}
@@ -191,6 +221,8 @@ ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
   * SKUs en Alarma Crítica de Quiebre: ${ctx.metrics.atRiskSkusCount}
 - Top Productos de Mayor Rotación (Demanda Mensual):
 ${rotationText}
+- Muestra de SKUs en Catálogo Activo:
+${sampleProductsText}
 - Detalle de SKUs en Riesgo Crítico:
 ${stockoutText}
 - Solicitudes de Bajas / Mermas Pendientes por Firma Gerencial (${ctx.metrics.pendingDiscardsCount} solicitudes — Total: ${formatUsd(ctx.metrics.pendingDiscardsTotalUsd)}):

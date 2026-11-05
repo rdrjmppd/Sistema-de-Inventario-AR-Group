@@ -13,6 +13,137 @@ import { evaluateSecurityGuardrails, buildOutOfScopeResponse } from './security-
 import { COMPANY_IDENTITY } from './knowledge-base';
 
 /**
+ * Detects whether a user query pertains to topics entirely outside the operational ERP scope,
+ * such as everyday health/diet, home cooking, cinema/music, video games, casual sports,
+ * non-corporate downloads, astrology, personal life, or household DIY.
+ */
+export function isExternalOutOfScopeQuery(query: string): boolean {
+  const q = query.toLowerCase().trim();
+
+  // If query explicitly mentions ERP identity or corporate core concepts, it's NOT out-of-scope
+  const explicitErpKeywords = [
+    'chrystal',
+    'polarbot',
+    'ar group',
+    'hiperabasto',
+    'bcv',
+    'seniat',
+    'sada',
+    'sunagro',
+    'sku',
+    'kardex',
+    'fefo',
+    'desposte',
+    'fruver',
+    'merma',
+    'opex',
+    'igtf',
+    'totp',
+    'arqueo',
+    'cierre z',
+    'reporte x',
+    'reporte z',
+    'impresora fiscal',
+    'split-screen',
+    'brm',
+    'baileys',
+    'pasarela whatsapp',
+    'quiebre de stock',
+    'punto de reorden',
+    'orden de reabastecimiento',
+  ];
+  if (explicitErpKeywords.some((kw) => q.includes(kw))) {
+    return false;
+  }
+
+  // 1. Health, fitness, weight, medicine
+  const healthPatterns = [
+    /bajar\s+de\s+peso/,
+    /perder\s+peso/,
+    /adelgazar/,
+    /calor[ií]as/,
+    /gimnasio/,
+    /rutina\s+de\s+ejercicio/,
+    /dieta/,
+    /dolor\s+de\s+(cabeza|est[oó]mago|espalda|garganta|muela)/,
+    /medicamento/,
+    /s[ií]ntoma/,
+    /gripe/,
+    /remedio\s+casero/,
+    /m[eé]dico/,
+    /presi[oó]n\s+arterial/,
+  ];
+
+  // 2. Cooking at home / culinary recipes (distinguished from ERP production BOM)
+  const homeCookingPatterns = [
+    /receta\s+(casera|de\s+cocina|para\s+hacer|de\s+torta|de\s+pastel|de\s+postre|de\s+comida|f[aá]cil)/,
+    /receta\s+de\s+(pastel|torta|galleta|pizza|sopa|arroz|panqueque|ensalada|jugo|batido)/,
+    /c[oó]mo\s+cocinar/,
+    /c[oó]mo\s+preparar\s+(un\s+|una\s+|el\s+|la\s+)?(arroz|pollo|carne|torta|pastel|sopa|pizza|pasta|ensalada|postre|desayuno|almuerzo|cena)/,
+    /c[oó]mo\s+hacer\s+(pollo\s+frito|pollo\s+asado|torta|pastel|postre|pizza|galleta|arroz|panqueque)/,
+    /ingredientes\s+para\s+(un\s+|una\s+)?(torta|pastel|postre|pizza|sopa|arroz)/,
+    /c[oó]mo\s+ali[ñn]ar/,
+    /c[oó]mo\s+sazonar/,
+  ];
+
+  // 3. Entertainment, movies, music, gaming, sports
+  const entertainmentPatterns = [
+    /pel[ií]cula/,
+    /serie\s+(de\s+tv|de\s+netflix)?/,
+    /netflix/,
+    /cine/,
+    /canci[oó]n/,
+    /m[uú]sica/,
+    /spotify/,
+    /videojuego/,
+    /juego\s+de\s+(playstation|xbox|pc|f[uú]tbol)/,
+    /minecraft/,
+    /partido\s+de\s+(f[uú]tbol|b[eé]isbol|baloncesto)/,
+    /champions\s+league/,
+    /mundial\s+de\s+f[uú]tbol/,
+    /qui[eé]n\s+ganar[aá]/,
+  ];
+
+  // 4. Non-corporate downloads / External apps
+  const downloadPatterns = [
+    /descargar\s+(pel[ií]cula|m[uú]sica|video|cancion|juego|app|aplicaci[oó]n|whatsapp\s+plus|windows|office|gta|gratis|torrent)/,
+    /d[oó]nde\s+descargo\s+(una?\s+)?(pel[ií]cula|serie|m[uú]sica|juego|video|cancion)/,
+    /crackear/,
+    /descargar\s+gratis/,
+  ];
+
+  // 5. Personal, horoscopes, love, philosophy, geography, general trivia
+  const triviaPatterns = [
+    /hor[oó]scopo/,
+    /signo\s+zodiacal/,
+    /amor/,
+    /poema/,
+    /capital\s+de\s+/,
+    /qui[eé]n\s+(gan[oó]|descubri[oó]|cre[oó]|invent[oó])/,
+    /cu[aá]ntos\s+habitantes/,
+    /distancia\s+(a\s+la\s+luna|entre|del\s+sol)/,
+    /clima\s+(en|de)\s+/,
+  ];
+
+  // 6. Household DIY, crafts, shoe box, etc.
+  const householdPatterns = [
+    /caja\s+de\s+(zapato|cart[oó]n|regalo|madera|herramienta)/,
+    /c[oó]mo\s+(pintar|arreglar|decorar|reparar)\s+(una\s+|un\s+)?(caja|mesa|pared|puerta|casa)/,
+  ];
+
+  const allPatterns = [
+    ...healthPatterns,
+    ...homeCookingPatterns,
+    ...entertainmentPatterns,
+    ...downloadPatterns,
+    ...triviaPatterns,
+    ...householdPatterns,
+  ];
+
+  return allPatterns.some((p) => p.test(q));
+}
+
+/**
  * Heuristic Local Engine: Responds immediately and deterministically when
  * offline, in unit tests, or when the server-side Gemini endpoint is unavailable.
  */
@@ -22,6 +153,19 @@ export function answerQueryWithHeuristicEngine(
 ): { answer: string; suggestedPrompts: string[] } {
   const q = query.toLowerCase().trim();
   const userName = liveContext.activeUser.displayName;
+
+  // 0. Filtro estricto para consultas cotidianas fuera de alcance (salud, recetas caseras, cine, juegos, etc.)
+  if (isExternalOutOfScopeQuery(query)) {
+    return {
+      answer: buildOutOfScopeResponse(query, userName),
+      suggestedPrompts: [
+        '¿Cuál es la tasa oficial BCV hoy?',
+        '¿Qué productos están en quiebre de stock?',
+        '¿Cómo solicito una baja de inventario?',
+        '¿Cuál es la valorización total del inventario?',
+      ],
+    };
+  }
 
   // 1. Saludo inicial o presentación (empático, cercano y profesional)
   if (
@@ -134,16 +278,118 @@ Para emitir el pedido sugerido al proveedor, ingresa a **"Inteligencia y Gobiern
     };
   }
 
+  // 3.5. Búsqueda factual de existencias y precios por SKU / Nombre de producto
+  const isFactualProductInquiry =
+    (q.includes('precio') ||
+      q.includes('costo') ||
+      q.includes('cuanto vale') ||
+      q.includes('cuánto vale') ||
+      q.includes('cuanto cuesta') ||
+      q.includes('cuánto cuesta') ||
+      q.includes('hay ') ||
+      q.includes('tienen ') ||
+      q.includes('queda ') ||
+      q.includes('stock de') ||
+      q.includes('existencia de') ||
+      q.includes('existencias de')) &&
+    !q.includes('desposte') &&
+    !q.includes('rendimiento') &&
+    !q.includes('merma') &&
+    !q.includes('cómo funciona') &&
+    !q.includes('como funciona');
+
+  if (isFactualProductInquiry) {
+    const allKnownProducts = [
+      ...(liveContext.productsSummary || []),
+      ...(liveContext.criticalStockoutSkus || []).map((c) => ({
+        sku: c.sku,
+        name: c.name,
+        category: 'Inventario',
+        currentStock: c.currentStock,
+        unit: 'UND',
+        costUsd: 0,
+        priceUsd: 0,
+      })),
+      ...(liveContext.topRotationSkus || []).map((r) => ({
+        sku: r.sku,
+        name: r.name,
+        category: r.category,
+        currentStock: 0,
+        unit: 'UND',
+        costUsd: 0,
+        priceUsd: 0,
+      })),
+    ];
+
+    const matched = allKnownProducts.find(
+      (p) =>
+        q.includes(p.sku.toLowerCase()) ||
+        p.name
+          .toLowerCase()
+          .split(' ')
+          .filter((w) => w.length > 3)
+          .some((w) => q.includes(w))
+    );
+
+    if (matched) {
+      const bcvRate = liveContext.bcvState.activeRate;
+      const retailVes = matched.priceUsd > 0 ? (matched.priceUsd * bcvRate).toFixed(2) : null;
+      const priceText =
+        matched.priceUsd > 0
+          ? `* **PVP en Anaquel**: $${matched.priceUsd.toFixed(2)} USD${retailVes ? ` (Bs. ${retailVes} VES a tasa BCV ${bcvRate.toFixed(4)})` : ''}\n* **Costo de Reposición**: $${matched.costUsd.toFixed(2)} USD`
+          : '* **PVP / Costo**: Consulta el Catálogo Maestro para valores actualizados.';
+
+      return {
+        answer: `Hola ${userName}. Información de inventario en vivo para **${matched.name}** (SKU: \`${matched.sku}\`):
+
+* **Existencia Física Disponible**: **${matched.currentStock} ${matched.unit}**
+${priceText}
+* **Categoría**: ${matched.category}
+
+¿Deseas verificar el movimiento de Kardex o generar una orden de reposición para este artículo?`,
+        suggestedPrompts: [
+          '¿Cuál es la tasa oficial BCV hoy?',
+          '¿Qué productos están en quiebre de stock?',
+          '¿Cómo dar de alta un nuevo producto (SKU)?',
+        ],
+      };
+    }
+  }
+
   // 4. Descargas y Bajas de inventario / Mermas / Vencimiento
-  if (
-    q.includes('baja') ||
-    q.includes('descarga') ||
+  const isDiscardQuery =
+    q.includes('baja de inventario') ||
+    q.includes('bajas de inventario') ||
+    q.includes('solicitud de descarga') ||
+    q.includes('solicitud de baja') ||
+    q.includes('dar de baja') ||
+    q.includes('desincorpor') ||
     q.includes('vencim') ||
     q.includes('rotura') ||
     q.includes('dañad') ||
     q.includes('accidente') ||
-    q.includes('desincorpor')
-  ) {
+    (q.includes('baja') &&
+      (q.includes('stock') ||
+        q.includes('producto') ||
+        q.includes('merma') ||
+        q.includes('firma') ||
+        q.includes('gerente') ||
+        q.includes('solicit') ||
+        q.includes('doble firma') ||
+        q.includes('mercancia') ||
+        q.includes('mercancía'))) ||
+    (q.includes('descarga') &&
+      (q.includes('inventario') ||
+        q.includes('stock') ||
+        q.includes('merma') ||
+        q.includes('firma') ||
+        q.includes('gerente') ||
+        q.includes('solicit') ||
+        q.includes('gandola') ||
+        q.includes('camion') ||
+        q.includes('camión')));
+
+  if (isDiscardQuery) {
     const pendingCount = liveContext.metrics.pendingDiscardsCount;
     const pendingLoss = liveContext.metrics.pendingDiscardsTotalUsd;
 
@@ -177,14 +423,30 @@ Un usuario con rol **GERENTE** o **SUPERADMIN** revisa la pérdida en USD y Bol�
   }
 
   // 4B1. Rendimiento Cárnico — Desposte de POLLO (Aves)
-  if (
-    q.includes('pollo') ||
-    q.includes('pechuga') ||
-    q.includes('alita') ||
-    /\balas\b/.test(q) ||
-    q.includes('muslo') ||
-    q.includes('milanesa')
-  ) {
+  const isChickenYieldQuery =
+    (q.includes('pollo') ||
+      q.includes('pechuga') ||
+      q.includes('alita') ||
+      /\balas\b/.test(q) ||
+      q.includes('muslo') ||
+      q.includes('milanesa')) &&
+    (q.includes('desposte') ||
+      q.includes('desglose') ||
+      q.includes('desglos') ||
+      q.includes('rendimiento') ||
+      q.includes('cárnic') ||
+      q.includes('carnic') ||
+      q.includes('merma') ||
+      q.includes('canal') ||
+      q.includes('corte') ||
+      q.includes('calculadora') ||
+      q.includes('beneficiado') ||
+      q.includes('como desgloso') ||
+      q.includes('cómo desgloso') ||
+      q.includes('proyect') ||
+      q.includes('compra'));
+
+  if (isChickenYieldQuery) {
     return {
       answer: `Hola ${userName}. Con gusto te oriento en el desposte y rendimiento de **Pollo Beneficiado** en el módulo **"Operaciones > Rendimiento Cárnico"**:
 
@@ -212,15 +474,30 @@ El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) r
   }
 
   // 4B2. Rendimiento Cárnico — Desglose de CERDO (Porcino)
-  if (
-    q.includes('cerdo') ||
-    q.includes('cochino') ||
-    q.includes('pernil') ||
-    q.includes('chuleta') ||
-    q.includes('costillita') ||
-    q.includes('tocino') ||
-    q.includes('panceta')
-  ) {
+  const isPorkYieldQuery =
+    (q.includes('cerdo') ||
+      q.includes('cochino') ||
+      q.includes('pernil') ||
+      q.includes('chuleta') ||
+      q.includes('costillita') ||
+      q.includes('tocino') ||
+      q.includes('panceta')) &&
+    (q.includes('desposte') ||
+      q.includes('desglose') ||
+      q.includes('desglos') ||
+      q.includes('rendimiento') ||
+      q.includes('cárnic') ||
+      q.includes('carnic') ||
+      q.includes('canal') ||
+      q.includes('corte') ||
+      q.includes('merma') ||
+      q.includes('calculadora') ||
+      q.includes('porcin') ||
+      q.includes('como hago la carga') ||
+      q.includes('cómo hago la carga') ||
+      q.includes('proyect'));
+
+  if (isPorkYieldQuery) {
     return {
       answer: `Hola ${userName}. Con gusto te oriento en el desglose y rendimiento de **Canal de Cerdo** en el módulo **"Operaciones > Rendimiento Cárnico"**:
 
@@ -248,19 +525,34 @@ El usuario **Supervisor de Carnicería** (\`carniceria@hiperabastopolar.com\`) r
   }
 
   // 4B3. Rendimiento Cárnico — Desposte de RES (Bovino)
-  if (
-    /\bres\b/.test(q) ||
-    q.includes('canal de res') ||
-    q.includes('carne de res') ||
-    q.includes('solomo') ||
-    q.includes('lomito') ||
-    q.includes('chocozuela') ||
-    q.includes('pulpa negra') ||
-    q.includes('costilla') ||
-    q.includes('lagarto') ||
-    q.includes('vacuno') ||
-    q.includes('bovino')
-  ) {
+  const isBeefYieldQuery =
+    (/\bres\b/.test(q) ||
+      q.includes('canal de res') ||
+      q.includes('carne de res') ||
+      q.includes('solomo') ||
+      q.includes('lomito') ||
+      q.includes('chocozuela') ||
+      q.includes('pulpa negra') ||
+      q.includes('costilla') ||
+      q.includes('lagarto') ||
+      q.includes('vacuno') ||
+      q.includes('bovino')) &&
+    (q.includes('desposte') ||
+      q.includes('desglose') ||
+      q.includes('desglos') ||
+      q.includes('rendimiento') ||
+      q.includes('cárnic') ||
+      q.includes('carnic') ||
+      q.includes('canal') ||
+      q.includes('corte') ||
+      q.includes('bovin') ||
+      q.includes('como desgloso') ||
+      q.includes('cómo desgloso') ||
+      q.includes('transformaci') ||
+      q.includes('calculadora') ||
+      q.includes('proyect'));
+
+  if (isBeefYieldQuery) {
     return {
       answer: `Hola ${userName}. Con gusto te oriento en el desposte de canal bovina (**Res**) en el módulo **"Operaciones > Rendimiento Cárnico"**:
 
@@ -728,16 +1020,35 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
   }
 
   // 15. Recetas de Producción / BOM / Panadería
-  if (
-    q.includes('receta') ||
+  const isProductionBomQuery =
     q.includes('bom') ||
-    q.includes('panader') ||
-    q.includes('produccion') ||
-    q.includes('producción') ||
-    q.includes('formula') ||
-    q.includes('fórmula') ||
-    q.includes('pan canilla')
-  ) {
+    q.includes('orden de produccion') ||
+    q.includes('orden de producción') ||
+    q.includes('lista de materiales') ||
+    q.includes('pan canilla') ||
+    ((q.includes('receta') ||
+      q.includes('formula') ||
+      q.includes('fórmula') ||
+      q.includes('produccion') ||
+      q.includes('producción') ||
+      q.includes('panader')) &&
+      (q.includes('modulo') ||
+        q.includes('módulo') ||
+        q.includes('erp') ||
+        q.includes('costo') ||
+        q.includes('insumo') ||
+        q.includes('tanda') ||
+        q.includes('materia prima') ||
+        q.includes('elaboracion') ||
+        q.includes('elaboración') ||
+        q.includes('descontar') ||
+        q.includes('nueva receta') ||
+        q.includes('cómo funciona') ||
+        q.includes('como funciona') ||
+        q.includes('industrial') ||
+        q.includes('planta')));
+
+  if (isProductionBomQuery) {
     return {
       answer: `Hola ${userName}. El módulo **"Recetas y Producción"** gestiona la manufactura interna de panadería, pastelería y charcutería mediante listas de materiales (**BOM**):
 
@@ -1027,15 +1338,15 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     'cava',
     'lote',
     'sada',
-    'receta',
     'bom',
     'panader',
     'produccion',
     'producción',
-    'formula',
-    'fórmula',
-    'flujo',
-    'caja',
+    'flujo de caja',
+    'arqueo de caja',
+    'cierre de caja',
+    'caja registradora',
+    'caja chica',
     'liquidez',
     'sesion',
     'sesión',
@@ -1088,6 +1399,7 @@ export async function queryAssistant(
       answer: guardrail.responseMessage || 'Operación restringida por políticas de seguridad.',
       isBlockedByRbac: true,
       usedFallbackEngine: false,
+      engineUsed: 'rbac-guardrail',
       suggestedPrompts: [
         '¿Cómo consultar existencias de productos?',
         '¿Cuál es la tasa oficial BCV hoy?',
@@ -1102,16 +1414,31 @@ export async function queryAssistant(
     const timeoutId = controller ? setTimeout(() => controller.abort(), 35000) : null;
 
     try {
+      let clientApiKey = request.apiKey;
+      if (!clientApiKey && typeof window !== 'undefined') {
+        try {
+          clientApiKey = localStorage.getItem('chrystal_gemini_api_key') || undefined;
+        } catch {
+          // ignore
+        }
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (clientApiKey) {
+        headers['x-gemini-api-key'] = clientApiKey;
+      }
+
       const response = await fetch('/api/assistant/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers,
         signal: controller ? controller.signal : undefined,
         body: JSON.stringify({
           query,
           conversationHistory: (request.conversationHistory || []).slice(-6),
           liveContext,
+          clientApiKey,
         }),
       });
 
@@ -1120,7 +1447,10 @@ export async function queryAssistant(
       if (response.ok) {
         const data = (await response.json()) as AssistantQueryResponse;
         if (data && typeof data.answer === 'string' && data.answer.trim().length > 0) {
-          return data;
+          return {
+            ...data,
+            engineUsed: data.engineUsed || 'gemini-2.5-pro',
+          };
         }
       }
     } catch {
@@ -1135,6 +1465,7 @@ export async function queryAssistant(
     answer: heuristic.answer,
     isBlockedByRbac: false,
     usedFallbackEngine: true,
+    engineUsed: 'heuristic-local',
     suggestedPrompts: heuristic.suggestedPrompts,
   };
 }

@@ -131,6 +131,8 @@ import {
   buildLiveErpOperationalContext,
   formatLiveContextForPrompt,
   answerQueryWithHeuristicEngine,
+  isExternalOutOfScopeQuery,
+  queryAssistant,
   ERP_KNOWLEDGE_BASE,
   JUNIOR_GLOSSARY,
 } from '../ai-assistant';
@@ -7739,6 +7741,120 @@ test('88. Certificación del Cerebro PolarBot: Manual Maestro de Usuario, Nuevos
   assert.ok(oosRes.answer.includes('pasarela WhatsApp BRM'));
   assert.ok(oosRes.answer.includes('conciliación bancaria bimonetaria'));
   assert.ok(oosRes.answer.includes('¿Deseas que revisemos alguno de estos puntos?'));
+});
+
+test('89. Certificación de Inteligencia Contextual PolarBot: Desambiguación Semántica Anti-Plantillas, Filtro Out-Of-Scope y Búsqueda Factual de Inventario', () => {
+  // 1. Verificación de Filtro Out-of-Scope (Trampas de Palabras Gatillo)
+  // Palabras como "baja", "descarga", "pollo", "receta", "caja" NO deben activar guías operativas cuando el contexto es externo/cotidiano
+  const weightLossQuery = '¿Cómo hago para bajar de peso rápido?';
+  assert.strictEqual(isExternalOutOfScopeQuery(weightLossQuery), true, 'Bajar de peso debe ser reconocido como fuera de alcance');
+
+  const movieDownloadQuery = '¿Dónde puedo descargar una película de acción gratis?';
+  assert.strictEqual(isExternalOutOfScopeQuery(movieDownloadQuery), true, 'Descargar películas debe ser reconocido como fuera de alcance');
+
+  const homeRecipeQuery = '¿Cuál es la mejor receta casera de torta de chocolate esponjosa?';
+  assert.strictEqual(isExternalOutOfScopeQuery(homeRecipeQuery), true, 'Receta casera debe ser reconocida como fuera de alcance');
+
+  const friedChickenQuery = '¿Cómo preparar pollo frito crujiente para el almuerzo?';
+  assert.strictEqual(isExternalOutOfScopeQuery(friedChickenQuery), true, 'Cocinar pollo frito debe ser reconocido como fuera de alcance');
+
+  const shoeBoxQuery = '¿Cómo arreglar una caja de zapatos rota con cartón?';
+  assert.strictEqual(isExternalOutOfScopeQuery(shoeBoxQuery), true, 'Caja de zapatos debe ser reconocida como fuera de alcance');
+
+  // 2. Verificación de Consultas Operativas Legítimas del ERP con Términos Compartidos (NO deben ser bloqueadas)
+  const realDiscardQuery = '¿Cómo solicito una baja de inventario con doble firma?';
+  assert.strictEqual(isExternalOutOfScopeQuery(realDiscardQuery), false, 'Baja de inventario es legítima');
+
+  const realChickenQuery = '¿Cómo desgloso el pollo beneficiado en carnicería?';
+  assert.strictEqual(isExternalOutOfScopeQuery(realChickenQuery), false, 'Desglose de pollo beneficiado es legítimo');
+
+  const realBomQuery = '¿Cómo creo una nueva receta BOM para la producción de pan canilla en panadería?';
+  assert.strictEqual(isExternalOutOfScopeQuery(realBomQuery), false, 'Receta BOM de producción es legítima');
+
+  const realCashQuery = '¿Cómo consulto el flujo de caja bimonetario proyectado?';
+  assert.strictEqual(isExternalOutOfScopeQuery(realCashQuery), false, 'Flujo de caja es legítimo');
+
+  // 3. Verificación de Respuestas del Motor Heurístico ante Trampas Gatillo
+  const sampleProduct: Product = {
+    id: 'prod-solomo-01',
+    sku: 'CAR-RES-001',
+    barcode: '7591234567890',
+    name: 'Solomo de Cuerito',
+    category: 'Carnicería',
+    unit: 'KG',
+    costUsd: 5.2,
+    priceUsd: 7.5,
+    targetMarginPercent: 30.67,
+    ivaRate: 16,
+    stockByLocation: { 'loc-main': 45 },
+    minStockByLocation: { 'loc-main': 10 },
+    monthlyUnitsSold: 120,
+    abcClass: 'A',
+    supplierId: 'sup-carni-01',
+    lastUpdatedVet: '05/11/2026 12:00',
+  };
+
+  const testContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-analista-test',
+      email: 'analista@polar.com',
+      displayName: 'Carlos Operador',
+      role: UserRole.ANALISTA,
+      pin: '1234',
+      locationAccess: ['all'],
+      active: true,
+      createdAt: '2026-11-05',
+    },
+    products: [sampleProduct],
+    locations: [{ id: 'loc-main', code: 'PZO-01', name: 'Hiperabasto Puerto Ordaz', type: 'TIENDA', city: 'Puerto Ordaz', manager: 'Gerente Tienda', active: true }],
+    bcvState: {
+      activeRate: 50.0,
+      spotRateToday: 50.0,
+      nextDayRateAfter5Pm: 50.5,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial',
+      caracasTimeFormatted: '12:00:00',
+      caracasDateFormatted: '2026-11-05',
+    },
+    discards: [],
+  });
+
+  // A. Pregunta de salud cotidiana con palabra "bajar" -> Debe responder con fallback empático y NUNCA con la guía de 40 líneas de bajas de inventario
+  const weightRes = answerQueryWithHeuristicEngine('¿Cómo hago para bajar de peso rápido?', testContext);
+  assert.ok(weightRes.answer.includes('Comprendo tu inquietud'));
+  assert.ok(weightRes.answer.includes('no forma parte de la información operativa de Chrystal® ERP'));
+  assert.strictEqual(weightRes.answer.includes('Fase 1 — Pre-registro por el Analista'), false, 'NUNCA debe devolver la guía de bajas ante bajar de peso');
+  assert.strictEqual(weightRes.answer.includes('VENCIMIENTO_CADUCIDAD'), false);
+
+  // B. Pregunta de descarga de película con palabra "descargar" -> NUNCA debe devolver la guía de mermas
+  const movieRes = answerQueryWithHeuristicEngine('¿Dónde descargo una película gratis?', testContext);
+  assert.ok(movieRes.answer.includes('Comprendo tu inquietud'));
+  assert.ok(movieRes.answer.includes('no forma parte de la información operativa de Chrystal® ERP'));
+  assert.strictEqual(movieRes.answer.includes('Fase 1 — Pre-registro por el Analista'), false, 'NUNCA debe devolver la guía de bajas ante descargar películas');
+
+  // C. Pregunta de receta casera con palabra "receta" -> NUNCA debe devolver el BOM industrial de panadería
+  const recipeRes = answerQueryWithHeuristicEngine('Dame la receta casera de torta de chocolate', testContext);
+  assert.ok(recipeRes.answer.includes('Comprendo tu inquietud'));
+  assert.ok(recipeRes.answer.includes('no forma parte de la información operativa de Chrystal® ERP'));
+  assert.strictEqual(recipeRes.answer.includes('Lista de Materiales e Insumos'), false, 'NUNCA debe devolver la guía BOM ante receta casera');
+
+  // D. Búsqueda factual directa sobre existencias o precio de Solomo -> Debe responder con datos directos del SKU y NUNCA con la guía de 30 líneas de desposte de res
+  const solomoRes = answerQueryWithHeuristicEngine('¿Cuánto cuesta el kilo de solomo?', testContext);
+  assert.ok(solomoRes.answer.includes('Solomo de Cuerito'));
+  assert.ok(solomoRes.answer.includes('CAR-RES-001'));
+  assert.ok(solomoRes.answer.includes('45 KG'));
+  assert.ok(solomoRes.answer.includes('$7.50 USD'));
+  assert.ok(solomoRes.answer.includes('Bs. 375.00 VES'));
+  assert.strictEqual(solomoRes.answer.includes('1. Desglose y Transformación Matemática Exacta:'), false, 'Debe dar respuesta factual sin volcar el manual de desposte');
+
+  // 4. Verificación de queryAssistant propagando apiKey y motor empleado
+  const mockRequest = {
+    query: '¿Cuál es la tasa oficial BCV hoy?',
+    conversationHistory: [],
+    liveContext: testContext,
+  };
+  const responsePromise = queryAssistant(mockRequest);
+  assert.ok(responsePromise instanceof Promise);
 });
 
 

@@ -1,4 +1,5 @@
 // server.ts
+import dotenv from "dotenv";
 import express from "express";
 import fs2 from "node:fs";
 import http from "node:http";
@@ -53,6 +54,9 @@ function formatLiveContextForPrompt(ctx) {
   const rotationText = ctx.topRotationSkus && ctx.topRotationSkus.length > 0 ? ctx.topRotationSkus.map(
     (r, i) => `${i + 1}. [${r.sku}] ${r.name} (${r.category}) \u2014 ${r.monthlyUnitsSold} und/mes (Clase ${r.abcClass})`
   ).join("\n") : "Sin datos hist\xF3ricos de rotaci\xF3n.";
+  const sampleProductsText = ctx.productsSummary && ctx.productsSummary.length > 0 ? ctx.productsSummary.slice(0, 15).map(
+    (p) => `- [${p.sku}] ${p.name} (${p.category}): Stock ${p.currentStock} ${p.unit} | Costo $${p.costUsd.toFixed(2)} | PVP $${p.priceUsd.toFixed(2)} (Bs. ${(p.priceUsd * ctx.bcvState.activeRate).toFixed(2)})`
+  ).join("\n") : "Cat\xE1logo sin productos registrados.";
   return `
 ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
 - Usuario Activo en Sesi\xF3n: ${ctx.activeUser.displayName} (${ctx.activeUser.email}) \u2014 Rol RBAC: ${ctx.activeUser.role}
@@ -69,6 +73,8 @@ ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
   * SKUs en Alarma Cr\xEDtica de Quiebre: ${ctx.metrics.atRiskSkusCount}
 - Top Productos de Mayor Rotaci\xF3n (Demanda Mensual):
 ${rotationText}
+- Muestra de SKUs en Cat\xE1logo Activo:
+${sampleProductsText}
 - Detalle de SKUs en Riesgo Cr\xEDtico:
 ${stockoutText}
 - Solicitudes de Bajas / Mermas Pendientes por Firma Gerencial (${ctx.metrics.pendingDiscardsCount} solicitudes \u2014 Total: ${formatUsd(ctx.metrics.pendingDiscardsTotalUsd)}):
@@ -237,11 +243,24 @@ Copyright Oficial: ${COMPANY_IDENTITY.copyright}
   * Procedimiento: Configurar la impresora homologada (BMC, Dascom, Bixolon, HKA). Para cortes de turno de cajero, pulsar **"Generar Reporte X Fiscal"**. Al culminar la jornada comercial, pulsar **"Emitir Reporte Z Fiscal"** para asentar las ventas en la memoria fiscal inalterable. Para cumplir con el SENIAT, pulsar **"Descargar Libro de Ventas SENIAT (.xlsx)"** con el formato oficial de columnas.
 
 ## 5. FORMATO OBLIGATORIO DE RESPUESTA PARA GU\xCDAS PASO A PASO
-Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le doy...", "cu\xE1les son los pasos para...", debes responder SIEMPRE con:
+Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le doy...", "cu\xE1les son los pasos para...", debes responder con:
 1. Una gu\xEDa estructurada y enumerada paso a paso (1., 2., 3., etc.).
 2. Indicaci\xF3n clara de la pesta\xF1a o men\xFA lateral exacto.
 3. El nombre EXACTO de los botones de la pantalla en negrita o comillas (ej. **"+ Registrar Gasto"**, **"Subir Factura o Ticket Escaneado"**, **"Aprobar y Asentar Factura"**, **"Ejecutar Descarga en Inventario"**, etc.).
 4. La explicaci\xF3n sencilla del t\xE9rmino t\xE9cnico para juniors entre par\xE9ntesis.
+
+## 6. PRINCIPIOS DE INTELIGENCIA CONTEXTUAL Y RAZONAMIENTO COGNITIVO (ANTI-PLANTILLAS)
+1. **PENSAMIENTO RACIONAL Y RESPUESTAS SIMPLIFICADAS A LA MEDIDA**:
+   - Prohibido terminantemente escupir plantillas prefabricadas o copiar y pegar manuales completos cuando no se requieren.
+   - Si el usuario te hace una pregunta directa sobre un dato puntual (ej. "\xBFcu\xE1l es el precio de la harina?", "\xBFcu\xE1ntas unidades quedan en La Morita?", "\xBFcu\xE1l es la tasa oficial?", "\xBFqu\xE9 significa este mensaje?"), responde DIRECTAMENTE en 2 a 3 l\xEDneas concisas, racionales y \xFAtiles con los datos reales en vivo.
+   - Solo entrega una gu\xEDa paso a paso numerada cuando el usuario te pregunte expl\xEDcitamente "c\xF3mo hacer" o "cu\xE1les son los pasos" de un procedimiento operativo del sistema.
+2. **DISCRIMINACI\xD3N DE CONTEXTO REAL VS. PALABRAS AISLADAS (CERO GATILLOS CIEGOS)**:
+   - Que un usuario mencione una palabra como "pollo", "cerdo", "descarga", "bajar", "receta", "caja", "whatsapp" o "foto" NO significa autom\xE1ticamente que est\xE9 pidiendo el m\xF3dulo del ERP.
+   - Analiza el contexto completo de la frase:
+     * Si un usuario pregunta sobre algo de la vida cotidiana, ocio, entretenimiento, finanzas personales o terceros externos (ej. "\xBFc\xF3mo cocino un pollo al horno?", "quiero descargar una pel\xEDcula", "me baj\xF3 la tensi\xF3n", "receta de torta de chocolate en mi casa", "mensaje de whatsapp de mi prima"), debes razonar que NO tiene relaci\xF3n con la operativa interna de Hiper Abasto Polar, C.A.
+     * En ese caso, aplica de inmediato el Fallback Emp\xE1tico: sal\xFAdalo amablemente por su nombre, reconoce su inquietud, expl\xEDcale que esa consulta no forma parte de la informaci\xF3n operativa de Chrystal\xAE ERP (Chrystal\xAE Enterprise Food Retail ERP), e ind\xEDcale con cortes\xEDa en qu\xE9 temas del sistema s\xED puedes orientarlo.
+3. **S\xCDNTESIS INTELIGENTE Y ELEVADA**:
+   - Eres un asistente ejecutivo de alto nivel, no un aut\xF3mata repetidor. Piensa antes de responder, resume lo esencial con elegancia y ofrece valor anal\xEDtico concreto.
 
 ${liveDataBlock}
 `;
@@ -2167,6 +2186,8 @@ async function autoRestoreExistingSessions() {
 }
 
 // server.ts
+dotenv.config();
+dotenv.config({ path: ".env.local" });
 Decimal2.set({
   precision: 28,
   rounding: Decimal2.ROUND_HALF_UP
@@ -2730,14 +2751,28 @@ async function startServer() {
       sha256Hash
     });
   });
+  app.get("/api/assistant/status", (_req, res) => {
+    const hasServerApiKey = Boolean(
+      process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY" && process.env.GEMINI_API_KEY.length > 20 || process.env.API_KEY && process.env.API_KEY !== "MY_GEMINI_API_KEY" && process.env.API_KEY.length > 20 || process.env.VITE_GEMINI_API_KEY && process.env.VITE_GEMINI_API_KEY !== "MY_GEMINI_API_KEY" && process.env.VITE_GEMINI_API_KEY.length > 20
+    );
+    res.json({
+      geminiConfigured: hasServerApiKey,
+      primaryModel: "gemini-2.5-pro",
+      fallbackModel: "gemini-2.5-flash",
+      localEngineReady: true,
+      copyright: "\xA9 2026 AR Group. Todos los derechos de desarrollo reservados."
+    });
+  });
   app.post("/api/assistant/chat", async (req, res) => {
     try {
-      const { query, conversationHistory = [], liveContext } = req.body || {};
+      const { query, conversationHistory = [], liveContext, clientApiKey } = req.body || {};
       if (!query || !liveContext) {
         res.status(400).json({ error: "Consulta o contexto operativo faltante." });
         return;
       }
-      const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
+      const headerKey = req.headers["x-gemini-api-key"];
+      const explicitClientKey = typeof clientApiKey === "string" && clientApiKey.trim().length > 20 ? clientApiKey.trim() : void 0;
+      const apiKey = (headerKey && headerKey.trim().length > 20 ? headerKey.trim() : void 0) || explicitClientKey || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
       const canUseGemini = Boolean(apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.length > 20);
       if (canUseGemini) {
         try {
@@ -2759,20 +2794,37 @@ ${historyContext}
 
 Nueva consulta del usuario (${liveContext?.activeUser?.displayName || "Analista"}):
 ${query}` : String(query);
-          const response = await ai.models.generateContent({
-            model: "gemini-3.8-flash",
-            contents: promptWithHistory,
-            config: {
-              systemInstruction,
-              temperature: 0.3
-            }
-          });
+          let response;
+          let modelUsed = "gemini-2.5-pro";
+          try {
+            response = await ai.models.generateContent({
+              model: "gemini-2.5-pro",
+              contents: promptWithHistory,
+              config: {
+                systemInstruction,
+                temperature: 0.2
+              }
+            });
+          } catch (proError) {
+            console.warn("[PolarBot] Advertencia en gemini-2.5-pro, conmutando a gemini-2.5-flash:", proError?.message || proError);
+            modelUsed = "gemini-2.5-flash";
+            response = await ai.models.generateContent({
+              model: "gemini-2.5-flash",
+              contents: promptWithHistory,
+              config: {
+                systemInstruction,
+                temperature: 0.2
+              }
+            });
+          }
           const answerText = response.text?.trim() || "";
           if (answerText) {
             res.json({
               answer: answerText,
               isBlockedByRbac: false,
               usedFallbackEngine: false,
+              engineUsed: modelUsed,
+              isGeminiActive: true,
               suggestedPrompts: [
                 "\xBFCu\xE1l es la tasa oficial BCV hoy?",
                 "\xBFQu\xE9 productos est\xE1n en quiebre de stock?",
@@ -2782,7 +2834,8 @@ ${query}` : String(query);
             });
             return;
           }
-        } catch {
+        } catch (geminiCatchErr) {
+          console.warn("[PolarBot] Fallo de llamada a Gemini API, activando fallback local:", geminiCatchErr?.message || geminiCatchErr);
         }
       }
       res.status(204).end();

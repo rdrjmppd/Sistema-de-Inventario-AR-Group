@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+dotenv.config();
+dotenv.config({ path: '.env.local' });
+
 import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -766,26 +770,48 @@ async function startServer() {
     });
   });
 
-  // PolarBot Operational Assistant Endpoint (Server-Side Gemini API)
+  // Endpoint de estado y disponibilidad del motor de IA de PolarBot
+  app.get('/api/assistant/status', (_req, res) => {
+    const hasServerApiKey = Boolean(
+      (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY' && process.env.GEMINI_API_KEY.length > 20) ||
+      (process.env.API_KEY && process.env.API_KEY !== 'MY_GEMINI_API_KEY' && process.env.API_KEY.length > 20) ||
+      (process.env.VITE_GEMINI_API_KEY && process.env.VITE_GEMINI_API_KEY !== 'MY_GEMINI_API_KEY' && process.env.VITE_GEMINI_API_KEY.length > 20)
+    );
+
+    res.json({
+      geminiConfigured: hasServerApiKey,
+      primaryModel: 'gemini-2.5-pro',
+      fallbackModel: 'gemini-2.5-flash',
+      localEngineReady: true,
+      copyright: '© 2026 AR Group. Todos los derechos de desarrollo reservados.',
+    });
+  });
+
+  // PolarBot Operational Assistant Endpoint (Server-Side Gemini API con Gemini 2.5 Pro)
   app.post('/api/assistant/chat', async (req, res) => {
     try {
-      const { query, conversationHistory = [], liveContext } = req.body || {};
+      const { query, conversationHistory = [], liveContext, clientApiKey } = req.body || {};
 
       if (!query || !liveContext) {
         res.status(400).json({ error: 'Consulta o contexto operativo faltante.' });
         return;
       }
 
+      const headerKey = req.headers['x-gemini-api-key'] as string | undefined;
+      const explicitClientKey = typeof clientApiKey === 'string' && clientApiKey.trim().length > 20 ? clientApiKey.trim() : undefined;
       const apiKey =
+        (headerKey && headerKey.trim().length > 20 ? headerKey.trim() : undefined) ||
+        explicitClientKey ||
         process.env.GEMINI_API_KEY ||
         process.env.API_KEY ||
         process.env.VITE_GEMINI_API_KEY;
+
       const canUseGemini = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY' && apiKey.length > 20);
 
       if (canUseGemini) {
         try {
           const ai = new GoogleGenAI({
-            apiKey,
+            apiKey: apiKey as string,
             httpOptions: {
               headers: {
                 'User-Agent': 'aistudio-build',
@@ -808,14 +834,31 @@ async function startServer() {
             ? `Historial de conversación previa:\n${historyContext}\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
             : String(query);
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: promptWithHistory,
-            config: {
-              systemInstruction,
-              temperature: 0.3,
-            },
-          });
+          // Intento primario con el modelo más alto y analítico: gemini-2.5-pro
+          let response;
+          let modelUsed = 'gemini-2.5-pro';
+
+          try {
+            response = await ai.models.generateContent({
+              model: 'gemini-2.5-pro',
+              contents: promptWithHistory,
+              config: {
+                systemInstruction,
+                temperature: 0.2,
+              },
+            });
+          } catch (proError: any) {
+            console.warn('[PolarBot] Advertencia en gemini-2.5-pro, conmutando a gemini-2.5-flash:', proError?.message || proError);
+            modelUsed = 'gemini-2.5-flash';
+            response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: promptWithHistory,
+              config: {
+                systemInstruction,
+                temperature: 0.2,
+              },
+            });
+          }
 
           const answerText = response.text?.trim() || '';
           if (answerText) {
@@ -823,6 +866,8 @@ async function startServer() {
               answer: answerText,
               isBlockedByRbac: false,
               usedFallbackEngine: false,
+              engineUsed: modelUsed,
+              isGeminiActive: true,
               suggestedPrompts: [
                 '¿Cuál es la tasa oficial BCV hoy?',
                 '¿Qué productos están en quiebre de stock?',
@@ -832,7 +877,8 @@ async function startServer() {
             });
             return;
           }
-        } catch {
+        } catch (geminiCatchErr: any) {
+          console.warn('[PolarBot] Fallo de llamada a Gemini API, activando fallback local:', geminiCatchErr?.message || geminiCatchErr);
           // Fall through transparently so client uses deterministic heuristic engine
         }
       }
