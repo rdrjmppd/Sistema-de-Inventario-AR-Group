@@ -780,28 +780,25 @@ async function startServer() {
 
     res.json({
       geminiConfigured: hasServerApiKey,
-      primaryModel: 'gemini-2.5-pro',
-      fallbackModel: 'gemini-2.5-flash',
+      activeModel: 'gemini-3.8-flash',
+      primaryModel: 'gemini-3.8-flash',
+      fallbackModel: 'gemini-3.1-pro-preview',
       localEngineReady: true,
       copyright: '© 2026 AR Group. Todos los derechos de desarrollo reservados.',
     });
   });
 
-  // PolarBot Operational Assistant Endpoint (Server-Side Gemini API con Gemini 2.5 Pro)
+  // PolarBot Operational Assistant Endpoint (Server-Side Gemini API con Gemini 3.8 Flash / 3.1 Pro)
   app.post('/api/assistant/chat', async (req, res) => {
     try {
-      const { query, conversationHistory = [], liveContext, clientApiKey } = req.body || {};
+      const { query, conversationHistory = [], liveContext } = req.body || {};
 
       if (!query || !liveContext) {
         res.status(400).json({ error: 'Consulta o contexto operativo faltante.' });
         return;
       }
 
-      const headerKey = req.headers['x-gemini-api-key'] as string | undefined;
-      const explicitClientKey = typeof clientApiKey === 'string' && clientApiKey.trim().length > 20 ? clientApiKey.trim() : undefined;
       const apiKey =
-        (headerKey && headerKey.trim().length > 20 ? headerKey.trim() : undefined) ||
-        explicitClientKey ||
         process.env.GEMINI_API_KEY ||
         process.env.API_KEY ||
         process.env.VITE_GEMINI_API_KEY;
@@ -834,28 +831,24 @@ async function startServer() {
             ? `Historial de conversación previa:\n${historyContext}\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
             : String(query);
 
-          // Intento primario con el modelo más alto y analítico: gemini-2.5-pro
           let response;
-          let modelUsed = 'gemini-2.5-pro';
+          let modelUsed = 'gemini-3.8-flash';
 
           try {
             response = await ai.models.generateContent({
-              model: 'gemini-2.5-pro',
+              model: 'gemini-3.8-flash',
               contents: promptWithHistory,
               config: {
                 systemInstruction,
-                temperature: 0.2,
               },
             });
-          } catch (proError: any) {
-            console.warn('[PolarBot] Advertencia en gemini-2.5-pro, conmutando a gemini-2.5-flash:', proError?.message || proError);
-            modelUsed = 'gemini-2.5-flash';
+          } catch {
+            modelUsed = 'gemini-3.1-pro-preview';
             response = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
+              model: 'gemini-3.1-pro-preview',
               contents: promptWithHistory,
               config: {
                 systemInstruction,
-                temperature: 0.2,
               },
             });
           }
@@ -877,8 +870,7 @@ async function startServer() {
             });
             return;
           }
-        } catch (geminiCatchErr: any) {
-          console.warn('[PolarBot] Fallo de llamada a Gemini API, activando fallback local:', geminiCatchErr?.message || geminiCatchErr);
+        } catch {
           // Fall through transparently so client uses deterministic heuristic engine
         }
       }

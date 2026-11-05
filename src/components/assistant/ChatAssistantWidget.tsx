@@ -19,10 +19,6 @@ import {
   Zap,
   HelpCircle,
   ExternalLink,
-  Key,
-  Settings,
-  Check,
-  Cpu,
 } from 'lucide-react';
 import { NavigationTab } from '../../types';
 import { useAuth } from '../../context/AuthContext';
@@ -226,21 +222,6 @@ export const ChatAssistantWidget: React.FC<ChatAssistantWidgetProps> = ({ onNavi
     '¿Cuál es la valorización total del inventario?',
   ]);
 
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState<string>(() => {
-    try {
-      return typeof window !== 'undefined' ? localStorage.getItem('chrystal_gemini_api_key') || '' : '';
-    } catch {
-      return '';
-    }
-  });
-  const [hasCustomKey, setHasCustomKey] = useState<boolean>(() => {
-    try {
-      return typeof window !== 'undefined' ? Boolean(localStorage.getItem('chrystal_gemini_api_key')) : false;
-    } catch {
-      return false;
-    }
-  });
   const [geminiStatus, setGeminiStatus] = useState<{ configured: boolean; model: string } | null>(null);
 
   // Check Gemini status from server
@@ -253,7 +234,7 @@ export const ChatAssistantWidget: React.FC<ChatAssistantWidgetProps> = ({ onNavi
           if (isMounted && data) {
             setGeminiStatus({
               configured: Boolean(data.geminiConfigured),
-              model: data.activeModel || 'gemini-2.5-pro',
+              model: data.activeModel || 'gemini-3.8-flash',
             });
           }
         })
@@ -264,34 +245,7 @@ export const ChatAssistantWidget: React.FC<ChatAssistantWidgetProps> = ({ onNavi
     return () => {
       isMounted = false;
     };
-  }, [hasCustomKey]);
-
-  const handleSaveApiKey = () => {
-    const trimmed = apiKeyInput.trim();
-    try {
-      if (trimmed) {
-        localStorage.setItem('chrystal_gemini_api_key', trimmed);
-        setHasCustomKey(true);
-      } else {
-        localStorage.removeItem('chrystal_gemini_api_key');
-        setHasCustomKey(false);
-      }
-    } catch {
-      // ignore
-    }
-    setIsSettingsOpen(false);
-  };
-
-  const handleClearApiKey = () => {
-    try {
-      localStorage.removeItem('chrystal_gemini_api_key');
-      setHasCustomKey(false);
-      setApiKeyInput('');
-    } catch {
-      // ignore
-    }
-    setIsSettingsOpen(false);
-  };
+  }, []);
 
   const setIsOpen = (open: boolean) => {
     setIsOpenState(open);
@@ -523,15 +477,15 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
               <div>
                 <div className="flex items-center gap-1.5">
                   <h3 className="font-bold text-xs md:text-sm text-slate-100">PolarBot</h3>
-                  {geminiStatus?.configured || hasCustomKey ? (
+                  {geminiStatus?.configured ? (
                     <span className="text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-400/30 flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      Gemini 2.5 Pro
+                      Gemini 3.8 Flash
                     </span>
                   ) : (
-                    <span className="text-[9px] font-semibold bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-400/30 flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                      Modo Local
+                    <span className="text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-400/30 flex items-center gap-0.5">
+                      <Zap className="w-2.5 h-2.5 text-emerald-400" />
+                      En vivo
                     </span>
                   )}
                 </div>
@@ -545,29 +499,15 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
 
             <div className="flex items-center gap-1">
               {!isMinimized && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                    title="Configuración de Inteligencia Artificial (API Key Gemini)"
-                    aria-label="Configurar API Key Gemini"
-                    className={`p-1.5 rounded-lg transition min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer ${
-                      isSettingsOpen ? 'text-emerald-400 bg-slate-800' : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    <Key className="w-3.5 h-3.5" />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleResetChat}
-                    title="Reiniciar conversación"
-                    aria-label="Reiniciar conversación"
-                    className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                  </button>
-                </>
+                <button
+                  type="button"
+                  onClick={handleResetChat}
+                  title="Reiniciar conversación"
+                  aria-label="Reiniciar conversación"
+                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
               )}
 
               <button
@@ -591,76 +531,6 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
               </button>
             </div>
           </div>
-
-          {/* Settings Panel for Gemini API Key */}
-          {isSettingsOpen && !isMinimized && (
-            <div className="bg-slate-900 border-b border-emerald-500/30 p-3 text-xs text-slate-200">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-1.5 font-bold text-slate-100">
-                  <Key className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-xs">Motor de IA • Google Gemini 2.5 Pro</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="text-slate-400 hover:text-white p-1 rounded"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              <p className="text-[10px] text-slate-300 mb-2 leading-relaxed">
-                Ingresa tu clave de <strong>Google AI Studio</strong> para activar <strong>Gemini 2.5 Pro</strong> con razonamiento cognitivo anti-plantillas. Si no se define, PolarBot opera en <strong>Modo Local Racional</strong>.
-              </p>
-
-              <div className="space-y-2">
-                <div>
-                  <input
-                    type="password"
-                    value={apiKeyInput}
-                    onChange={(e) => setApiKeyInput(e.target.value)}
-                    placeholder="AIzaSy..."
-                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between pt-0.5">
-                  <div className="text-[10px]">
-                    {hasCustomKey ? (
-                      <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                        <Check className="w-3 h-3" /> Clave local activa
-                      </span>
-                    ) : geminiStatus?.configured ? (
-                      <span className="text-emerald-400 flex items-center gap-1 font-medium">
-                        <Check className="w-3 h-3" /> Servidor configurado (.env)
-                      </span>
-                    ) : (
-                      <span className="text-amber-400 font-medium">Motor Heurístico Local</span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    {hasCustomKey && (
-                      <button
-                        type="button"
-                        onClick={handleClearApiKey}
-                        className="px-2 py-1 rounded bg-slate-800 hover:bg-rose-900/40 text-rose-300 border border-slate-700 text-[10px] transition cursor-pointer"
-                      >
-                        Eliminar
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={handleSaveApiKey}
-                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[10px] transition cursor-pointer shadow"
-                    >
-                      Guardar
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Body (Messages) */}
           {!isMinimized && (
@@ -714,7 +584,7 @@ Tengo visibilidad de **${liveContext.metrics.totalSkus} SKUs** en **${liveContex
                       >
                         {msg.sender === 'assistant' && (
                           <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-slate-100 text-slate-500 border border-slate-200">
-                            {msg.engineUsed?.includes('gemini') ? 'Gemini 2.5 Pro' : 'Motor Local'}
+                            {msg.engineUsed?.includes('gemini') ? 'Gemini 3.8 Flash' : 'Motor Local'}
                           </span>
                         )}
                         <span className="ml-auto">{msg.timestampVet}</span>

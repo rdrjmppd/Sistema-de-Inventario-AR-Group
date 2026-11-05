@@ -1414,31 +1414,16 @@ export async function queryAssistant(
     const timeoutId = controller ? setTimeout(() => controller.abort(), 35000) : null;
 
     try {
-      let clientApiKey = request.apiKey;
-      if (!clientApiKey && typeof window !== 'undefined') {
-        try {
-          clientApiKey = localStorage.getItem('chrystal_gemini_api_key') || undefined;
-        } catch {
-          // ignore
-        }
-      }
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (clientApiKey) {
-        headers['x-gemini-api-key'] = clientApiKey;
-      }
-
       const response = await fetch('/api/assistant/chat', {
         method: 'POST',
-        headers,
+        headers: {
+          'Content-Type': 'application/json',
+        },
         signal: controller ? controller.signal : undefined,
         body: JSON.stringify({
           query,
           conversationHistory: (request.conversationHistory || []).slice(-6),
           liveContext,
-          clientApiKey,
         }),
       });
 
@@ -1449,7 +1434,7 @@ export async function queryAssistant(
         if (data && typeof data.answer === 'string' && data.answer.trim().length > 0) {
           return {
             ...data,
-            engineUsed: data.engineUsed || 'gemini-2.5-pro',
+            engineUsed: data.engineUsed || 'gemini-3.8-flash',
           };
         }
       }
