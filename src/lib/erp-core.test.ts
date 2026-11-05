@@ -7170,7 +7170,11 @@ test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppCha
     lineaId: testLineId,
     remitente: targetPhone,
     destinatario: '+584140001122',
+    direccion: 'ENTRANTE',
     cuerpo: 'Buenas tardes, remito lista de precios actualizada',
+    bodyText: 'Buenas tardes, remito lista de precios actualizada',
+    tipoMensaje: 'TEXTO',
+    estadoEntrega: 'RECIBIDO',
     timestamp: new Date().toISOString(),
   });
   saveMessageToDurableStore({
@@ -7179,7 +7183,11 @@ test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppCha
     lineaId: testLineId,
     remitente: '+584140001122',
     destinatario: targetPhone,
+    direccion: 'SALIENTE',
     cuerpo: 'Recibido Paola, muchas gracias',
+    bodyText: 'Recibido Paola, muchas gracias',
+    tipoMensaje: 'TEXTO',
+    estadoEntrega: 'ENTREGADO',
     timestamp: new Date().toISOString(),
   });
   // Mensaje de un tercer proveedor que debe preservarse intacto
@@ -7189,7 +7197,11 @@ test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppCha
     lineaId: testLineId,
     remitente: '+584129998877',
     destinatario: '+584140001122',
+    direccion: 'ENTRANTE',
     cuerpo: 'Mensaje de proveedor de empaques',
+    bodyText: 'Mensaje de proveedor de empaques',
+    tipoMensaje: 'TEXTO',
+    estadoEntrega: 'RECIBIDO',
     timestamp: new Date().toISOString(),
   });
 
@@ -7210,7 +7222,7 @@ test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppCha
   bridgeEvents.off('chat_deleted', onChatDeleted);
 
   assert.strictEqual(delResult.success, true, 'deleteWhatsAppChatHandler debe responder con éxito');
-  assert.ok(delResult.deletedFromDurableStore >= 2, 'Debe haber eliminado los 2 mensajes de Paola del almacén duradero');
+  assert.ok((delResult.deletedFromDurableStore ?? 0) >= 2, 'Debe haber eliminado los 2 mensajes de Paola del almacén duradero');
   assert.strictEqual(chatDeletedEventEmitted, true, 'Debe emitir el evento chat_deleted para sincronización SSE en tiempo real');
   assert.strictEqual(eventPayload?.contactPhone, targetPhone);
 
@@ -7327,7 +7339,146 @@ test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppCha
   assert.strictEqual(customTemplates.some((t) => t.id === 'tpl-3'), false);
 });
 
+test('86. Certificación Anti-Duplicación Saliente Semántica (Optimistic vs Baileys Echo) y Ciclo de Vida Inactivo al Desvincular WhatsApp BRM', async () => {
+  // 1. Verificación de Deduplicación Semántica Outbound (Optimista vs Eco Baileys)
+  const optimisticMsg: BrmWhatsappMessage = {
+    id: 'brm-wa-temp_msg_001',
+    messageId: 'wamid.BRM.temp_msg_001',
+    direction: 'OUTBOUND_TO_SUPPLIER',
+    category: 'SOPORTE_PAGO_CXP',
+    bodyText: 'Estimados Lácteos Los Andes, le confirmamos que su pago de $1450.50 ha sido emitido.',
+    phoneE164: '+584121234567',
+    supplierId: 'sup-1',
+    supplierName: 'Lácteos Los Andes',
+    supplierRif: 'J-30492817-0',
+    deliveryStatus: 'ENVIADO',
+    timestampIso: new Date(Date.now() - 3000).toISOString(),
+    transportUsed: 'QR_SOCKET_BRIDGE',
+    createdBy: 'Operador BRM',
+    timestampVet: '05/11/2026 02:45',
+  };
 
+  const initialList = [optimisticMsg];
 
+  // Baileys emite el mensaje confirmado con ID propio (ej: 3EB0A91B2C) y status ENTREGADO
+  const baileysEchoMsg: BrmWhatsappMessage = {
+    id: 'brm-wa-3EB0A91B2C',
+    messageId: '3EB0A91B2C',
+    direction: 'OUTBOUND_TO_SUPPLIER',
+    category: 'SOPORTE_PAGO_CXP',
+    bodyText: 'Estimados Lácteos Los Andes, le confirmamos que su pago de $1450.50 ha sido emitido.',
+    phoneE164: '+584121234567',
+    supplierId: 'sup-1',
+    supplierName: 'Lácteos Los Andes',
+    supplierRif: 'J-30492817-0',
+    deliveryStatus: 'ENTREGADO',
+    timestampIso: new Date().toISOString(),
+    transportUsed: 'QR_SOCKET_BRIDGE',
+    createdBy: 'Operador BRM',
+    timestampVet: '05/11/2026 02:45',
+  };
 
+  const deduplicatedList = updateOrAppendBrmMessages(initialList, [baileysEchoMsg]);
+
+  assert.strictEqual(
+    deduplicatedList.length,
+    1,
+    'updateOrAppendBrmMessages NO debe duplicar el mensaje saliente cuando coincide el texto, teléfono y ventana de tiempo'
+  );
+  assert.strictEqual(
+    deduplicatedList[0].messageId,
+    '3EB0A91B2C',
+    'El registro optimista debe adoptar el messageId oficial confirmado por Baileys'
+  );
+  assert.strictEqual(
+    deduplicatedList[0].deliveryStatus,
+    'ENTREGADO',
+    'El estado de entrega debe actualizarse a ENTREGADO sin crear un clon'
+  );
+
+  // 2. Verificación de Inactividad y Aislamiento al Desvincular WhatsApp BRM
+  const mockSuppliers: Supplier[] = [
+    {
+      id: 'sup-1',
+      name: 'Lácteos Los Andes',
+      rif: 'J-30492817-0',
+      category: 'Lácteos',
+      contactName: 'Carlos Andes',
+      phone: '+584121234567',
+      whatsappE164: '+584121234567',
+      email: 'contacto@losandes.com',
+      creditDays: 15,
+      paymentTerms: 'Crédito',
+      balanceUsd: 1450.50,
+    },
+  ];
+
+  // Simulación del filtro allSuppliersAndChats en estado DISCONNECTED vs CONNECTED
+  const filterSuppliersAndChats = (
+    suppliers: Supplier[],
+    messages: BrmWhatsappMessage[],
+    sessionState: string
+  ) => {
+    const list: Supplier[] = [...suppliers];
+    if (sessionState !== 'CONNECTED') {
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    // Si está conectado, agrega contactos informales de WhatsApp móvil
+    for (const msg of messages) {
+      if (!msg.phoneE164) continue;
+      if (!list.some((s) => s.id === `wa-${msg.phoneE164}`)) {
+        list.push({
+          id: `wa-${msg.phoneE164}`,
+          name: msg.senderName || `Contacto ${msg.phoneE164}`,
+          rif: 'WhatsApp Directo',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: msg.senderName || 'Contacto',
+          phone: msg.phoneE164,
+          whatsappE164: msg.phoneE164,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        });
+      }
+    }
+    return list;
+  };
+
+  const informalMsg: BrmWhatsappMessage = {
+    id: 'brm-wa-informal-999',
+    messageId: 'msg-inf-999',
+    direction: 'INBOUND_FROM_SUPPLIER',
+    category: 'MENSAJE_OPERATIVO_BRM',
+    bodyText: 'Hola, tengo una consulta sobre mi despacho',
+    phoneE164: '+584149999999',
+    supplierId: 'wa-+584149999999',
+    supplierName: 'Chofer Transporte',
+    supplierRif: 'WhatsApp Directo',
+    senderName: 'Chofer Transporte',
+    deliveryStatus: 'ENTREGADO',
+    timestampIso: new Date().toISOString(),
+    transportUsed: 'QR_SOCKET_BRIDGE',
+    createdBy: 'Chofer Transporte',
+    timestampVet: '05/11/2026 02:46',
+  };
+
+  // Cuando está CONNECTED: se incluyen contactos no registrados
+  const connectedContacts = filterSuppliersAndChats(mockSuppliers, [informalMsg], 'CONNECTED');
+  assert.strictEqual(connectedContacts.length, 2, 'En CONNECTED deben listarse proveedores y contactos móviles');
+  assert.strictEqual(connectedContacts.some((c) => c.id === 'wa-+584149999999'), true);
+
+  // Cuando está DISCONNECTED: se purgan/ocultan contactos informales y solo permanecen proveedores ERP
+  const disconnectedContacts = filterSuppliersAndChats(mockSuppliers, [informalMsg], 'DISCONNECTED');
+  assert.strictEqual(
+    disconnectedContacts.length,
+    1,
+    'En DISCONNECTED solo deben listarse los proveedores oficiales del catálogo ERP'
+  );
+  assert.strictEqual(
+    disconnectedContacts.some((c) => c.id.startsWith('wa-')),
+    false,
+    'Ningún chat informal de WhatsApp debe mostrarse cuando la línea está desvinculada'
+  );
+});
 

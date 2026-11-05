@@ -428,6 +428,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
 
   const allSuppliersAndChats = useMemo(() => {
     const list: Supplier[] = [...suppliers];
+    // Si la sesión de WhatsApp NO está conectada, NO poblamos chats ni contactos informales de WhatsApp móvil
+    if (brmSession.state !== 'CONNECTED') {
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    }
     const existingPhones = new Set(
       suppliers
         .map((s) => normalizePhoneE164(s.whatsappE164 || s.phone || ''))
@@ -534,7 +538,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
       // Contactos sin mensajes se ordenan alfabéticamente
       return a.name.localeCompare(b.name);
     });
-  }, [suppliers, brmMessages, syncedContacts, resolveContactName]);
+  }, [suppliers, brmMessages, syncedContacts, resolveContactName, brmSession.state]);
 
   const activeSupplier = useMemo(
     () => allSuppliersAndChats.find((s) => s.id === selectedSupplierId) || allSuppliersAndChats[0],
@@ -555,7 +559,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
 
   // Histórico de mensajes del chat para el proveedor seleccionado
   const activeSupplierMessages = useMemo(() => {
-    if (!activeSupplier) return [];
+    if (brmSession.state !== 'CONNECTED' || !activeSupplier) return [];
     const supPhoneNorm = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone);
     const supDigits = (supPhoneNorm || activeSupplier.phone || '').replace(/\D/g, '');
     const last10 = supDigits.slice(-10);
@@ -583,7 +587,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
         if (timeDiff !== 0) return timeDiff;
         return a.id.localeCompare(b.id);
       });
-  }, [brmMessages, activeSupplier]);
+  }, [brmMessages, activeSupplier, brmSession.state]);
 
   // Función garantizada para bajar al mensaje más reciente
   const scrollToBottom = (smooth = false) => {
@@ -1305,7 +1309,39 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
 
           {/* Panel Central/Derecho: Espacio del Chat e Histórico de Conversación */}
           <div className="lg:col-span-8 flex flex-col h-full min-h-0 bg-slate-950/40 relative">
-            {/* Cabecera del Chat Activo */}
+            {brmSession.state !== 'CONNECTED' ? (
+              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-slate-950/70 select-none">
+                <div className="w-20 h-20 rounded-3xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 shadow-xl">
+                  <PowerOff className="w-10 h-10 text-slate-500 animate-pulse" />
+                </div>
+                <h3 className="text-base font-bold text-white mb-2">
+                  Dispositivo WhatsApp no vinculado
+                </h3>
+                <p className="text-xs text-slate-400 max-w-md mb-6 leading-relaxed">
+                  Para resguardar la privacidad, confidencialidad corporativa y garantizar la sincronización en tiempo real, el histórico de conversaciones y la mensajería interactiva solo están disponibles cuando la línea WhatsApp BRM está vinculada y activa.
+                </p>
+                <div className="flex items-center gap-3 flex-wrap justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowQrModal(true)}
+                    className="min-h-[44px] px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-emerald-950/50 cursor-pointer"
+                  >
+                    <QrCode className="w-4 h-4" />
+                    <span>Vincular WhatsApp BRM</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('SUPPLIERS_360')}
+                    className="min-h-[44px] px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Ver Expediente 360°</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Cabecera del Chat Activo */}
             <div className="p-3.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center font-bold text-emerald-300 text-xs">
@@ -1699,6 +1735,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                 Enviar
               </button>
             </form>
+              </>
+            )}
           </div>
         </div>
       )}

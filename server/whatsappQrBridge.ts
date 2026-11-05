@@ -114,6 +114,14 @@ const lineContactsCache = new Map<string, Map<string, SyncedWhatsAppContact>>();
 const lidToPhoneCache = new Map<string, string>();
 const phoneToLidCache = new Map<string, string>();
 const explicitlyUnlinkedLines = new Set<string>();
+const recentlySentOutboundIds = new Set<string>();
+function markOutboundIdSent(id: string) {
+  if (!id) return;
+  recentlySentOutboundIds.add(id);
+  setTimeout(() => {
+    recentlySentOutboundIds.delete(id);
+  }, 60000);
+}
 const MAX_QR_ROTATIONS = 5;
 
 let cachedWaVersion: [number, number, number] = [2, 3000, 1053070940];
@@ -1615,6 +1623,11 @@ export async function initializeBaileysSocket(
       sock.ev.on('messages.upsert', async (m) => {
         try {
           for (const msg of m.messages) {
+            const mId = msg.key?.id;
+            if (msg.key?.fromMe && mId && recentlySentOutboundIds.has(mId)) {
+              // Eco saliente del mensaje que ya despachó sendWhatsAppMessageHandler; evitar duplicación en terminal y SSE
+              continue;
+            }
             await processIncomingOrHistoryMessage(lineaId, msg, sock, false);
           }
         } catch (err) {
@@ -1955,14 +1968,64 @@ export async function forceResetAndUnlinkSession(
   // 5. Eliminar respaldo cifrado en almacenamiento
   deleteSessionBackupFromStorage(lineaId);
 
+  // 5.1 Si la línea se está desvinculando definitivamente, purgar historial de chats y emitir evento inactivo
   if (!generateNewQr) {
+    try {
+      if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+        const store: QueuedBridgeMessage[] = JSON.parse(
+          fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8')
+        );
+        if (Array.isArray(store)) {
+          const filtered = store.filter((m) => m.lineaId && m.lineaId !== lineaId);
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(filtered, null, 2),
+            'utf-8'
+          );
+        }
+      }
+    } catch (storeErr) {
+      console.warn(
+        `[WhatsApp BRM Bridge] Error purgando almacén duradero al desvincular ${lineaId}:`,
+        storeErr
+      );
+    }
+
+    try {
+      if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+        const queue: QueuedBridgeMessage[] = JSON.parse(
+          fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, 'utf-8')
+        );
+        if (Array.isArray(queue)) {
+          const filtered = queue.filter((m) => m.lineaId && m.lineaId !== lineaId);
+          fs.writeFileSync(
+            PENDING_MESSAGES_QUEUE_FILE,
+            JSON.stringify(filtered, null, 2),
+            'utf-8'
+          );
+        }
+      }
+    } catch (queueErr) {
+      console.warn(
+        `[WhatsApp BRM Bridge] Error purgando cola pendiente al desvincular ${lineaId}:`,
+        queueErr
+      );
+    }
+
+    try {
+      bridgeEvents.emit('session_unlinked', {
+        lineaId,
+        timestamp: new Date().toISOString(),
+      });
+    } catch {}
+
     return {
       success: true,
       lineaId,
       estado: 'DESCONECTADO',
       state: 'DISCONNECTED',
       session: resetState,
-      message: 'Línea desvinculada y sesión eliminada con éxito',
+      message: 'Línea desvinculada, chats purgados y sesión eliminada con éxito',
     };
   }
 
@@ -2219,6 +2282,7 @@ export async function sendWhatsAppMessageHandler(
     }
 
     const messageId = sent?.key?.id || `msg_${Date.now()}`;
+    markOutboundIdSent(messageId);
     const outboundQueued: QueuedBridgeMessage = {
       id: messageId,
       lineaId,

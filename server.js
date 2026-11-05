@@ -251,6 +251,14 @@ var lineContactsCache = /* @__PURE__ */ new Map();
 var lidToPhoneCache = /* @__PURE__ */ new Map();
 var phoneToLidCache = /* @__PURE__ */ new Map();
 var explicitlyUnlinkedLines = /* @__PURE__ */ new Set();
+var recentlySentOutboundIds = /* @__PURE__ */ new Set();
+function markOutboundIdSent(id) {
+  if (!id) return;
+  recentlySentOutboundIds.add(id);
+  setTimeout(() => {
+    recentlySentOutboundIds.delete(id);
+  }, 6e4);
+}
 var MAX_QR_ROTATIONS = 5;
 var cachedWaVersion = [2, 3e3, 1053070940];
 var lastVersionFetchMs = 0;
@@ -1419,6 +1427,10 @@ async function initializeBaileysSocket(lineaId = DEFAULT_BRM_LINEA_ID) {
       sock.ev.on("messages.upsert", async (m) => {
         try {
           for (const msg of m.messages) {
+            const mId = msg.key?.id;
+            if (msg.key?.fromMe && mId && recentlySentOutboundIds.has(mId)) {
+              continue;
+            }
             await processIncomingOrHistoryMessage(lineaId, msg, sock, false);
           }
         } catch (err) {
@@ -1673,13 +1685,60 @@ async function forceResetAndUnlinkSession(lineaId = DEFAULT_BRM_LINEA_ID, genera
   }
   deleteSessionBackupFromStorage(lineaId);
   if (!generateNewQr) {
+    try {
+      if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+        const store = JSON.parse(
+          fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8")
+        );
+        if (Array.isArray(store)) {
+          const filtered = store.filter((m) => m.lineaId && m.lineaId !== lineaId);
+          fs.writeFileSync(
+            DURABLE_MESSAGES_STORE_FILE,
+            JSON.stringify(filtered, null, 2),
+            "utf-8"
+          );
+        }
+      }
+    } catch (storeErr) {
+      console.warn(
+        `[WhatsApp BRM Bridge] Error purgando almac\xE9n duradero al desvincular ${lineaId}:`,
+        storeErr
+      );
+    }
+    try {
+      if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
+        const queue = JSON.parse(
+          fs.readFileSync(PENDING_MESSAGES_QUEUE_FILE, "utf-8")
+        );
+        if (Array.isArray(queue)) {
+          const filtered = queue.filter((m) => m.lineaId && m.lineaId !== lineaId);
+          fs.writeFileSync(
+            PENDING_MESSAGES_QUEUE_FILE,
+            JSON.stringify(filtered, null, 2),
+            "utf-8"
+          );
+        }
+      }
+    } catch (queueErr) {
+      console.warn(
+        `[WhatsApp BRM Bridge] Error purgando cola pendiente al desvincular ${lineaId}:`,
+        queueErr
+      );
+    }
+    try {
+      bridgeEvents.emit("session_unlinked", {
+        lineaId,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString()
+      });
+    } catch {
+    }
     return {
       success: true,
       lineaId,
       estado: "DESCONECTADO",
       state: "DISCONNECTED",
       session: resetState,
-      message: "L\xEDnea desvinculada y sesi\xF3n eliminada con \xE9xito"
+      message: "L\xEDnea desvinculada, chats purgados y sesi\xF3n eliminada con \xE9xito"
     };
   }
   try {
@@ -1870,6 +1929,7 @@ async function sendWhatsAppMessageHandler(lineaId = DEFAULT_BRM_LINEA_ID, toPhon
       sent = await sock.sendMessage(jid, { text });
     }
     const messageId = sent?.key?.id || `msg_${Date.now()}`;
+    markOutboundIdSent(messageId);
     const outboundQueued = {
       id: messageId,
       lineaId,
@@ -2988,10 +3048,17 @@ ${query}` : String(query);
 
 `);
     };
+    const onSessionUnlinked = (data) => {
+      if (!data || data.lineaId && data.lineaId !== lineaId) return;
+      res.write(`data: ${JSON.stringify({ type: "SESSION_UNLINKED", data })}
+
+`);
+    };
     bridgeEvents.on("message", onMessage);
     bridgeEvents.on("message_edit", onEdit);
     bridgeEvents.on("status", onStatus);
     bridgeEvents.on("chat_deleted", onChatDeleted);
+    bridgeEvents.on("session_unlinked", onSessionUnlinked);
     const pingInterval = setInterval(() => {
       res.write(": ping\n\n");
     }, 15e3);
@@ -3001,6 +3068,7 @@ ${query}` : String(query);
       bridgeEvents.off("message_edit", onEdit);
       bridgeEvents.off("status", onStatus);
       bridgeEvents.off("chat_deleted", onChatDeleted);
+      bridgeEvents.off("session_unlinked", onSessionUnlinked);
     });
   };
   app.get("/api/brm/whatsapp/events", handleWhatsappEvents);

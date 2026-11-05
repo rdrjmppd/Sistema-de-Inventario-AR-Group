@@ -745,12 +745,49 @@ export function updateOrAppendBrmMessages(
 
   const result = [...existingMessages];
   for (const inc of incomingMessages) {
-    const existingIndex = result.findIndex((m) => m.messageId === inc.messageId);
+    const existingIndex = result.findIndex((m) => {
+      // 1. Coincidencia directa por messageId o id sintético
+      if (
+        m.messageId === inc.messageId ||
+        m.id === inc.id ||
+        (m.id && inc.messageId && m.id === `brm-wa-${inc.messageId}`) ||
+        (inc.id && m.messageId && inc.id === `brm-wa-${m.messageId}`)
+      ) {
+        return true;
+      }
+
+      // 2. Coincidencia semántica de mensajes salientes (mismo texto, mismo destinatario, ventana de 25s)
+      // Resuelve la duplicación entre la inserción optimista del cliente (wamid.BRM...) y el eco confirmado por Baileys (3EB0...)
+      if (
+        m.direction === 'OUTBOUND_TO_SUPPLIER' &&
+        inc.direction === 'OUTBOUND_TO_SUPPLIER'
+      ) {
+        const mDigits = (m.phoneE164 || '').replace(/\D/g, '');
+        const incDigits = (inc.phoneE164 || '').replace(/\D/g, '');
+        const sameDestination =
+          mDigits === incDigits ||
+          (mDigits.length >= 10 && incDigits.length >= 10 && (mDigits.endsWith(incDigits.slice(-10)) || incDigits.endsWith(mDigits.slice(-10))));
+
+        if (sameDestination && m.bodyText && inc.bodyText && m.bodyText.trim() === inc.bodyText.trim()) {
+          const mTime = parseMessageTimestampMs(m);
+          const incTime = parseMessageTimestampMs(inc);
+          if (mTime > 0 && incTime > 0 && Math.abs(mTime - incTime) <= 25000) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    });
+
     if (existingIndex >= 0) {
       const prev = result[existingIndex];
       result[existingIndex] = {
         ...prev,
         ...inc,
+        // Preservar el messageId canónico oficial del socket si inc lo trae
+        messageId: inc.messageId || prev.messageId,
+        id: inc.id || prev.id,
         timestampIso: inc.timestampIso || prev.timestampIso,
         bodyText: inc.bodyText || prev.bodyText,
         deliveryStatus: inc.deliveryStatus || prev.deliveryStatus,

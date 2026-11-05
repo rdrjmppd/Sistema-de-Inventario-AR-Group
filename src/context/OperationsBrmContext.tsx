@@ -647,7 +647,15 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!resp.ok) return;
       const data = await resp.json();
       const history: BrmBridgeQueuedMessage[] = Array.isArray(data?.messages) ? data.messages : [];
-      if (history.length === 0) return;
+      if (history.length === 0) {
+        if (brmSessionRef.current.state !== 'CONNECTED') {
+          setBrmMessages([]);
+          try {
+            localStorage.removeItem(STORAGE_KEYS.BRM_MESSAGES);
+          } catch {}
+        }
+        return;
+      }
 
       const ownPhone = brmSessionRef.current.numeroConectado;
       const mapped: BrmWhatsappMessage[] = [];
@@ -759,6 +767,19 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             } else if (data?.type === 'STATUS' && data.status) {
               setBrmSession((prev) => mergeBrmGatewayStatus(prev, data.status));
+              if (data.status.estado === 'DESCONECTADO' || data.status.state === 'DISCONNECTED') {
+                setBrmMessages([]);
+                setSyncedContacts([]);
+                try {
+                  localStorage.removeItem(STORAGE_KEYS.BRM_MESSAGES);
+                } catch {}
+              }
+            } else if (data?.type === 'SESSION_UNLINKED') {
+              setBrmMessages([]);
+              setSyncedContacts([]);
+              try {
+                localStorage.removeItem(STORAGE_KEYS.BRM_MESSAGES);
+              } catch {}
             }
           } catch {}
         };
@@ -1307,6 +1328,11 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       // Ignore network failure during local clean disconnect
     }
     setBrmSession((prev) => resetBrmWhatsappSessionCleanly(prev, nowStamp));
+    setBrmMessages([]);
+    setSyncedContacts([]);
+    try {
+      localStorage.removeItem(STORAGE_KEYS.BRM_MESSAGES);
+    } catch {}
     logAuditEvent(
       'BRM_WHATSAPP_SESSION_RESET',
       'WhatsApp BRM',
@@ -1379,9 +1405,28 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
             bodyText: params.bodyText,
             attachmentFileName: params.attachmentFileName,
           }),
-        }).catch(() => {
-          // Resiliencia: queda asentado localmente en bitácora auditable
-        });
+        })
+          .then(async (res) => {
+            if (!res.ok) return;
+            const data = await res.json().catch(() => null);
+            if (data?.messageId && data.messageId !== localRes.record.messageId) {
+              setBrmMessages((prev) =>
+                prev.map((m) =>
+                  m.messageId === localRes.record.messageId
+                    ? {
+                        ...m,
+                        messageId: data.messageId,
+                        id: `brm-wa-${data.messageId}`,
+                        deliveryStatus: 'ENTREGADO',
+                      }
+                    : m
+                )
+              );
+            }
+          })
+          .catch(() => {
+            // Resiliencia: queda asentado localmente en bitácora auditable
+          });
 
         if (
           params.openWaMeWindow &&
