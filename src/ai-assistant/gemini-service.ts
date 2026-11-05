@@ -627,40 +627,49 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     };
   }
 
-  // 12. Portal BRM de Proveedores & Enlace WhatsApp con Código QR ISO
+  // 12. Pasarela WhatsApp BRM Multi-Dispositivo (Baileys WebSocket, QR ISO, Audio y Plantillas)
   if (
     q.includes('whatsapp') ||
     q.includes('brm') ||
-    q.includes('qr') ||
+    q.includes('baileys') ||
     q.includes('vincular whatsapp') ||
-    q.includes('enviar comprobante')
+    q.includes('desvincular') ||
+    q.includes('plantilla') ||
+    q.includes('nota de voz') ||
+    q.includes('audio') ||
+    q.includes('eliminar chat') ||
+    q.includes('guardar como proveedor') ||
+    (q.includes('qr') && (q.includes('celular') || q.includes('telefono') || q.includes('teléfono') || q.includes('linea') || q.includes('línea') || q.includes('proveedor')))
   ) {
     return {
-      answer: `Hola ${userName}. El módulo **"Proveedores & BRM"** integra comunicación bidireccional mediante WhatsApp Web con Código QR ISO y candado anti-envíos accidentales:
+      answer: `Hola ${userName}. El centro de mensajería **"Pasarela WhatsApp BRM"** (sección **"Proveedores & BRM"** en el menú lateral o \`/whatsapp-brm\`) sincroniza la plataforma con el WhatsApp de tu smartphone mediante WebSocket y motor Baileys:
 
 **Guía Paso a Paso para Enlazar WhatsApp y Enviar Documentos:**
-1. Ingresa a **"Proveedores & BRM"** en el menú lateral.
-2. En la barra superior, haz clic en el botón **"Vincular WhatsApp"**.
-3. El sistema generará un **Código QR dinámico auténtico (ISO/IEC 18004)** en un canvas 2D idéntico a WhatsApp Web.
-4. Abre WhatsApp en el celular corporativo, ve a *Dispositivos vinculados > Vincular un dispositivo* y escanea el código en pantalla. El sistema cambiará a estado verde "Conectado".
-5. Para consultar o chatear con un proveedor, selecciónalo en el directorio y se abrirá su ventana de chat en tiempo real.
-6. **Prevención de Envíos Involuntarios**: Cuando generes una Retención SENIAT o una Orden de Compra y pulses **"Exportar a BRM WhatsApp"**, el sistema no despachará el archivo en automático; te transferirá al chat con el documento PDF pre-cargado.
-7. Revisa el documento y pulsa conscientemente el botón verde **"Confirmar y Enviar Comprobante por WhatsApp"** para completar el envío.`,
+1. Ingresa a **"Pasarela WhatsApp BRM"** (o **"Proveedores & BRM"**) en el menú lateral.
+2. **Vincular Dispositivo**: Si la línea está desconectada, haz clic en el botón **"Vincular WhatsApp"** (o **"Vincular WhatsApp BRM"**). Se generará el Código QR dinámico auténtico (ISO/IEC 18004). En tu smartphone, entra a *WhatsApp > Dispositivos vinculados > Vincular un dispositivo* y escanea el código en pantalla antes de que venza el temporizador de 60 segundos.
+3. **Conexión Activa y Streaming**: Al emparejar, el estado cambia a **"Línea Conectada"** con indicador verde. Los mensajes entrantes y salientes se transmiten bidireccionalmente en tiempo real mediante SSE y WebSocket con deduplicación estricta por \`message_id\`.
+4. **Histórico y Notas de Voz**: Selecciona cualquier contacto en la lista izquierda con scroll infinito. Si el mensaje incluye un audio (.ogg/.mp3), haz clic en el botón de reproducción del **Reproductor de Audio HTML5 Integrado** con barra de avance y control de volumen.
+5. **Guardar Contacto en ERP**: Si el remitente proviene de la libreta del smartphone pero aún no está en la base de datos, pulsa el botón **"+ Guardar como Proveedor"** en la cabecera superior del chat para registrarlo inmediatamente.
+6. **Plantillas Personalizadas y Envío Confiable**: En la barra inferior, navega horizontalmente por el carrusel de plantillas rápidas (Pago Procesado, Retención SENIAT, etc.) o pulsa el icono de engranaje / **"+ Nueva Plantilla"** para crear, editar o eliminar plantillas dinámicas con variables como {{proveedor}}, {{monto}} y {{referencia}}. Para retenciones o pedidos, pulsa **"Exportar a BRM WhatsApp"** y confirma el envío pulsando conscientemente el botón verde **"Confirmar y Enviar Comprobante por WhatsApp"** (candado anti-despacho involuntario).
+7. **Eliminar Chat Definitivo**: En la cabecera del chat activo, pulsa el botón rojo **"Eliminar Chat"** y confirma en el diálogo; el historial se purga permanentemente del servidor sin afectar los chats del smartphone.
+8. **Desvinculación Atómica**: Para desconectar la línea, pulsa **"Desvincular Línea"** y confirma. El socket se cierra de forma segura (\`safeDestroyBaileysSocket\`), se purgan las credenciales y la pantalla conmuta de inmediato a la pantalla de inactividad sin mostrar números ni conversaciones.`,
       suggestedPrompts: [
         '¿Cómo emito un comprobante de retención SENIAT?',
+        '¿Cómo funciona la conciliación bancaria bimonetaria?',
         '¿Cómo funciona el control de gastos OPEX?',
-        '¿Cómo funciona la validación visual Split-Screen OCR?',
       ],
     };
   }
 
   // 13. Retenciones Fiscales SENIAT (IVA 75%/100% e ISLR)
   if (
-    q.includes('retencion') ||
-    q.includes('retención') ||
-    q.includes('seniat') ||
-    q.includes('txt') ||
-    q.includes('islr')
+    !q.includes('impresora') &&
+    !q.includes('libro de ventas') &&
+    (q.includes('retencion') ||
+      q.includes('retención') ||
+      q.includes('seniat') ||
+      q.includes('txt') ||
+      q.includes('islr'))
   ) {
     return {
       answer: `Hola ${userName}. La gestión de **Retenciones Fiscales SENIAT** calcula y emite los comprobantes oficiales de IVA (75% o 100%) e ISLR con correlativo fiscal y formato TXT:
@@ -809,13 +818,17 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
 
   // 18. Documentos PDF / Excel / Branding
   if (
-    q.includes('pdf') ||
-    q.includes('excel') ||
-    q.includes('informe') ||
-    q.includes('reporte') ||
-    q.includes('branding') ||
-    q.includes('logo') ||
-    q.includes('membrete')
+    !q.includes('impresora') &&
+    !q.includes('reporte z') &&
+    !q.includes('reporte x') &&
+    !q.includes('fiscal') &&
+    (q.includes('pdf') ||
+      q.includes('excel') ||
+      q.includes('informe') ||
+      q.includes('reporte') ||
+      q.includes('branding') ||
+      q.includes('logo') ||
+      q.includes('membrete'))
   ) {
     return {
       answer: `Hola ${userName}. Estándar documental y de gobernanza en **Chrystal® ERP**:
@@ -831,7 +844,120 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     };
   }
 
-  // 19. Comprobar si contiene términos operativos del ERP o si es fuera de alcance
+  // 19. Conciliación Bancaria Bimonetaria (USD/VES) e IGTF 3%
+  if (
+    q.includes('conciliacion') ||
+    q.includes('conciliación') ||
+    q.includes('extracto') ||
+    q.includes('igtf') ||
+    (q.includes('banco') && (q.includes('cuadre') || q.includes('cuenta') || q.includes('movimiento') || q.includes('saldo')))
+  ) {
+    return {
+      answer: `Hola ${userName}. El módulo **"Finanzas y Tesorería > Conciliación Bancaria"** contrasta los extractos bancarios oficiales contra las transacciones del sistema con exactitud decimal:
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Finanzas y Tesorería > Conciliación Bancaria"** en el menú lateral.
+2. Pulsa el botón **"Cargar Extracto Bancario"** y sube el archivo oficial (.xlsx, .csv o .txt) de Banesco, Banco de Venezuela, Mercantil, BNC, Bancamiga o banco internacional.
+3. El sistema cruza automáticamente fecha, número de referencia bancaria y monto contra los pagos registrados y pre-validados por OCR con aritmética Decimal.js (ROUND_HALF_UP).
+4. **Tratamiento del IGTF (3%)**: En los pagos a proveedores realizados en divisas en efectivo o transferencias del exterior, el sistema calcula y asienta automáticamente la retención del 3% de IGTF según providencia administrativa del SENIAT.
+5. Al verificar que no existen partidas desconciliadas o diferencias de céntimos, pulsa **"Cerrar Conciliación del Período"** para emitir el acta PDF oficial firmada.`,
+      suggestedPrompts: [
+        '¿Cómo funciona la pasarela WhatsApp BRM?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+        '¿Cómo se proyecta el flujo de caja bimonetario?',
+      ],
+    };
+  }
+
+  // 20. Control de Anaquel, Cuartos Fríos y Balanzas (Prefijos 20 y 21)
+  if (
+    q.includes('anaquel') ||
+    q.includes('balanza') ||
+    q.includes('balanzas') ||
+    q.includes('etiqueta 20') ||
+    q.includes('etiqueta 21') ||
+    q.includes('prefijo 20') ||
+    q.includes('prefijo 21') ||
+    q.includes('cuarto frio') ||
+    q.includes('cuartos frios') ||
+    q.includes('cuarto frío') ||
+    q.includes('cuartos fríos')
+  ) {
+    return {
+      answer: `Hola ${userName}. El control de reposición de anaquel y la lectura de balanzas electrónicas en **Chrystal® ERP** garantizan precisión de inventario en mostrador y peso:
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Inventario > Control de Anaquel y Reposición"**.
+2. Contrasta el stock disponible en anaquel visible frente al stock de seguridad en cuartos fríos o almacén principal. Si el nivel cae por debajo del mínimo, pulsa **"Generar Orden de Reposición a Anaquel"**.
+3. **Decodificación de Balanzas Electrónicas (Prefijos 20 y 21)**:
+   * Al escanear productos de peso variable (charcutería, quesos, carnicería, verduras pesadas):
+   * **Prefijo 20** (inicia con 20): Los dígitos intermedios representan el peso neto en gramos (ej. 20PPPPPQQQQQC donde PPPPP es SKU y QQQQQ es peso en gramos). El sistema descuenta directamente los kilos exactos.
+   * **Prefijo 21** (inicia con 21): Los dígitos intermedios codifican el importe monetario total a pagar en Bolívares o Dólares.
+   * No se requiere digitación manual de peso, eliminando mermas por error humano en cajas.`,
+      suggestedPrompts: [
+        '¿Cómo funciona el desposte de res?',
+        '¿Cómo funciona el rendimiento de pollo?',
+        '¿Cómo solicitar una baja de inventario?',
+      ],
+    };
+  }
+
+  // 21. Gobernanza de Seguridad y Tokens Dinámicos TOTP Offline (RFC 6238)
+  if (
+    q.includes('totp') ||
+    q.includes('token dinamico') ||
+    q.includes('token dinámico') ||
+    q.includes('authenticator') ||
+    q.includes('rfc 6238') ||
+    q.includes('doble factor') ||
+    q.includes('2fa')
+  ) {
+    return {
+      answer: `Hola ${userName}. La gobernanza con **Token Dinámico TOTP Offline (RFC 6238)** proporciona autorización criptográfica segura sin depender de internet ni de SMS:
+
+**Guía Paso a Paso:**
+1. Ve a **"Mi Perfil > Seguridad > Configurar Token Dinámico TOTP"**.
+2. Escanea el código QR criptográfico seguro con Google Authenticator, Microsoft Authenticator o FreeOTP.
+3. La aplicación móvil generará un código de 6 dígitos que rota cada 30 segundos sincronizado con la hora UTC.
+4. **Uso en Operaciones Críticas**: Al autorizar descargas de inventario por merma, eliminación definitiva de chats en WhatsApp BRM o cambios de configuración institucional, el sistema solicita ingresar el código de 6 dígitos.
+5. El motor offline valida el código con una ventana de tolerancia de ±30 segundos verificando la firma HMAC-SHA1 aunque el teléfono o la sede no tengan conexión a internet.`,
+      suggestedPrompts: [
+        '¿Cómo funciona la pasarela WhatsApp BRM?',
+        '¿Cómo solicito una baja de inventario con doble firma?',
+        '¿Cómo opera la gobernanza de sesiones de 60 minutos?',
+      ],
+    };
+  }
+
+  // 22. Conector de Impresoras Fiscales SENIAT (Providencia SNAT/2024/000102)
+  if (
+    q.includes('impresora fiscal') ||
+    q.includes('impresoras fiscales') ||
+    q.includes('reporte x') ||
+    q.includes('reporte z') ||
+    q.includes('libro de ventas') ||
+    q.includes('snat/2024/000102') ||
+    (q.includes('fiscal') && (q.includes('impres') || q.includes('ticket')))
+  ) {
+    return {
+      answer: `Hola ${userName}. El **Conector de Impresoras Fiscales SENIAT** cumple con la Providencia Administrativa SNAT/2024/000102 para cajas registradoras homologadas (BMC, Dascom, Bixolon, HKA):
+
+**Guía Paso a Paso:**
+1. Ingresa a **"Punto de Venta / Fiscal > Impresoras Fiscales SENIAT"**.
+2. Conecta la caja registradora asignada a través del puerto serie COM, USB o Red Local.
+3. **Facturación Fiscal**: Al cobrar una venta, el conector imprime la factura respetando las alícuotas Exento (0%), Reducido (8%), General (16%) y el recargo del 3% de IGTF en divisas.
+4. **Corte Parcial de Turno (Reporte X)**: Al cambiar de cajero o cuadrar caja parcial, pulsa **"Generar Reporte X Fiscal"**.
+5. **Cierre Diario Definitivo (Reporte Z)**: Al culminar el horario de la tienda, pulsa **"Emitir Reporte Z Fiscal"**. El monto total se graba de forma inalterable en la memoria fiscal del equipo.
+6. **Libro de Ventas Oficial**: En la sección de libros fiscales, haz clic en **"Descargar Libro de Ventas SENIAT (.xlsx)"** para obtener el reporte contable oficial en Excel con todas las columnas exigidas por la ley.`,
+      suggestedPrompts: [
+        '¿Cómo emito un comprobante de retención SENIAT?',
+        '¿Cómo conciliar el extracto bancario con el sistema?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+      ],
+    };
+  }
+
+  // 23. Comprobar si contiene términos operativos del ERP o si es fuera de alcance
   const erpKeywords = [
     'inventario',
     'producto',
@@ -876,6 +1002,20 @@ Cada sede controla de forma independiente sus existencias por SKU (código únic
     'whatsapp',
     'brm',
     'qr',
+    'baileys',
+    'audio',
+    'plantilla',
+    'extracto',
+    'conciliacion',
+    'conciliación',
+    'igtf',
+    'anaquel',
+    'balanza',
+    'balanzas',
+    'totp',
+    'token',
+    'impresora',
+    'fiscal',
     'retencion',
     'retención',
     'seniat',

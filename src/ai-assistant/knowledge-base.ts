@@ -412,6 +412,121 @@ export const ERP_KNOWLEDGE_BASE: KnowledgeTopic[] = [
     juniorExplanation:
       'Por seguridad, si te levantas de la computadora y la dejas sola por casi una hora, a los 58 minutos el sistema te pregunta si todavía estás ahí. Si no respondes en 2 minutos, la pantalla se bloquea y se cierra tu cuenta para que nadie toque tu trabajo. Si estabas llenando un formulario de gastos, el sistema te guarda el borrador para que cuando vuelvas a entrar no hayas perdido nada.',
   },
+  {
+    id: 'pasarela-whatsapp-brm-multidevice',
+    title: 'Pasarela WhatsApp BRM Multi-Dispositivo (Baileys WebSocket, QR ISO/IEC 18004 y Chat Bidireccional)',
+    category: 'OPERACIONES',
+    summary:
+      'Centro de mensajería comercial y cobranzas sincronizado con WhatsApp Smartphone mediante Baileys WebSocket multisesión, QR ISO/IEC 18004, streaming bidireccional en tiempo real, reproductor de notas de voz, resolución de contactos de libreta, eliminación definitiva de chats, administrador de plantillas con scroll horizontal, deduplicación de envíos y purga atómica al desvincular.',
+    stepByStep: [
+      '1. Ir a "Pasarela WhatsApp BRM" (o "/whatsapp-brm") en el menú lateral.',
+      '2. Vincular Dispositivo: Si la línea está desconectada, hacer clic en "Vincular WhatsApp". Aparece el código QR ISO/IEC 18004 (versión 2 a 4 con corrección de error Nivel M) con temporizador regresivo de 60 segundos. En el smartphone, abrir WhatsApp > Dispositivos vinculados > Vincular un dispositivo y escanear el QR en pantalla.',
+      '3. Conexión Activa y Streaming en Tiempo Real: Una vez emparejado, el estado cambia a "Línea Conectada" con indicador verde pulsante. Los mensajes entrantes y salientes se transmiten bidireccionalmente por SSE y WebSocket con deduplicación por message_id.',
+      '4. Histórico y Reproductor de Notas de Voz: Seleccionar cualquier contacto en la lista izquierda con scroll infinito y lazy loading. Si el mensaje contiene un audio (.ogg/.mp3), usar el reproductor HTML5 integrado con barra de progreso, tiempo transcurrido y control de volumen.',
+      '5. Resolución de Contactos y Guardar como Proveedor: Si el número proviene de la libreta del teléfono pero no está registrado en el ERP, aparece el botón "+ Guardar como Proveedor" en la cabecera del chat para registrar automáticamente su ficha comercial.',
+      '6. Gestión de Plantillas Personalizadas: En la barra inferior, explorar el carrusel horizontal de plantillas prediseñadas (Pago Procesado, Retención SENIAT, Ventana de Descarga, etc.). Pulsar el icono de engranaje o "+ Nueva Plantilla" para crear, editar o eliminar plantillas personalizadas con variables dinámicas como {{proveedor}}, {{monto}}, {{referencia}}.',
+      '7. Eliminación Definitiva de Chats: En la cabecera del chat activo, hacer clic en el botón rojo "Eliminar Chat" y confirmar en el modal de advertencia. El historial se purga permanentemente del servidor y de la memoria sin afectar los chats del smartphone.',
+      '8. Desvinculación Atómica y Pantalla de Inactividad: Al hacer clic en "Desvincular Línea" y confirmar, el socket WebSocket se destruye limpiamente (safeDestroyBaileysSocket), se purga la sesión y la pantalla conmuta de inmediato al estado inactivo sin mostrar chats ni números.',
+    ],
+    rules: [
+      'Idempotencia estricta: mensajes salientes deduplicados por firma semántica (to + texto + ventana de 4 segundos) y message_id.',
+      'Al desvincular el dispositivo, ningún chat o dato confidencial puede quedar visible en pantalla.',
+      'Formato telefónico normalizado E.164 (+58...) con resolución limpia de sufijos @s.whatsapp.net y @lid.',
+      'Rendimiento visual optimizado a 60 FPS sin bloqueos en cursor ni interfaz.',
+    ],
+    requiredRole: 'ANALISTA / SUPERVISOR / GERENTE',
+    juniorExplanation:
+      'Es como tener el WhatsApp de la empresa pegado adentro del sistema. Escaneas el código QR con el teléfono y listo: ves los mensajes de los proveedores, escuchas sus notas de voz, les mandas plantillas de pago con un clic y si te escriben por el celular o por la computadora, todo se actualiza al mismo tiempo sin trabarse.',
+  },
+  {
+    id: 'conciliacion-bancaria-bimonetaria',
+    title: 'Conciliación Bancaria Bimonetaria (USD/VES) e IGTF 3%',
+    category: 'FINANZAS',
+    summary:
+      'Módulo de cuadre y conciliación bancaria que cruza los extractos bancarios oficiales en Bolívares o Dólares contra las facturas de proveedores, pagos móviles y comprobantes auditados por OCR, aplicando el impuesto IGTF del 3% en pagos en divisas.',
+    stepByStep: [
+      '1. Ir a "Finanzas y Tesorería > Conciliación Bancaria".',
+      '2. Cargar Extracto Bancario: Subir el archivo de movimientos bancarios (.xlsx, .csv o .txt oficial) emitido por Banesco, Banco de Venezuela, Mercantil, BNC, Bancamiga o banco internacional.',
+      '3. Cuadre Automático: El sistema cruza automáticamente fecha, número de referencia bancaria y monto contra los pagos registrados en la plataforma y pre-validados por OCR.',
+      '4. Identificación de Discrepancias: Las partidas no conciliadas quedan señaladas como "No Registradas en Sistema" o "Pendientes en Banco".',
+      '5. Tratamiento del IGTF (3%): Si el pago a proveedores se ejecuta en divisas en efectivo o transferencias extranjeras, el sistema liquida y retiene la alícuota del 3% de IGTF según providencia administrativa del SENIAT.',
+      '6. Cierre y Acta de Conciliación: Al cuadrar el saldo del extracto bancario con el libro mayor contable, pulsar "Cerrar Conciliación del Período" para generar el informe PDF firmado.',
+    ],
+    rules: [
+      'Tolerancia cero a diferencias de céntimos: todo cuadre utiliza Decimal.js con ROUND_HALF_UP.',
+      'Referencia bancaria única: prohibido conciliar dos veces la misma transacción bancaria.',
+    ],
+    requiredRole: 'ANALISTA FINANCIERO / TESORERO / GERENTE',
+    juniorExplanation:
+      'Es comparar la cuenta de banco real con los recibos guardados en el sistema para que no sobre ni falte un solo céntimo. Si pagamos algo en dólares en efectivo, el sistema calcula el 3% de impuesto IGTF que exige la ley.',
+  },
+  {
+    id: 'control-anaquel-balanzas-20-21',
+    title: 'Control de Anaquel, Cuartos Fríos y Códigos de Barra para Balanzas (Prefijos 20 y 21)',
+    category: 'OPERACIONES',
+    summary:
+      'Gestión de existencias en anaquel frente a cuartos fríos y almacenes centrales, con soporte nativo de códigos de barras EAN-13 generados por balanzas electrónicas de charcutería, carnicería y fruver que codifican peso y precio.',
+    stepByStep: [
+      '1. Ir a "Inventario > Control de Anaquel y Reposición".',
+      '2. Evaluar el stock en piso de venta versus el stock de seguridad en cuartos fríos o depósito principal.',
+      '3. Generar "Orden de Reposición a Anaquel" cuando el nivel en mostrador caiga por debajo del mínimo visual.',
+      '4. Lectura de Balanzas Electrónicas (Prefijos 20 y 21): Al pasar por caja o auditoría un producto de peso variable (queso, jamón, carne, frutas), el escáner lee el código EAN-13 de 13 dígitos.',
+      '5. Si inicia con "20", los dígitos intermedios codifican el peso neto en gramos (ej. 20PPPPPQQQQQC donde PPPPP es SKU y QQQQQ es peso en gramos).',
+      '6. Si inicia con "21", los dígitos intermedios codifican el importe monetario total a cobrar en Bolívares o Dólares.',
+      '7. El punto de venta o control de inventario decodifica instantáneamente la cantidad real en kilogramos y actualiza el kardex sin intervención manual.',
+    ],
+    rules: [
+      'Prefijo 20: reservado para códigos de peso neto en balanza.',
+      'Prefijo 21: reservado para códigos de precio monetario en balanza.',
+      'Las mermas en frío se registran con causa oficial MERMA_CADENA_FRIO.',
+    ],
+    requiredRole: 'OPERADOR / PASILLERO / SUPERVISOR / CAJERO',
+    juniorExplanation:
+      'Controla que nunca se vacíen las repisas de la tienda y traduce las etiquetas que imprimen las balanzas de la charcutería y carnicería. Cuando la etiqueta empieza por 20 o 21, el sistema sabe exactamente cuántos gramos de queso o carne van en la bandeja sin tener que pesarlo otra vez.',
+  },
+  {
+    id: 'gobernanza-totp-offline',
+    title: 'Gobernanza de Seguridad y Tokens Dinámicos TOTP Offline (RFC 6238)',
+    category: 'GOBIERNO',
+    summary:
+      'Mecanismo de doble factor de autenticación y autorización criptográfica fuera de línea mediante algoritmos RFC 6238 con ventana de tolerancia de ±30 segundos para autorizaciones críticas sin depender de conexión a internet o SMS.',
+    stepByStep: [
+      '1. Activación de Token: El gerente o usuario autorizado ingresa a "Mi Perfil > Seguridad > Configurar Token Dinámico TOTP".',
+      '2. Escaneo de Llave Secreta: El sistema muestra un código QR criptográfico seguro que se escanea en Google Authenticator, Microsoft Authenticator o FreeOTP.',
+      '3. Ventana de 30 Segundos: La aplicación de autenticación genera un código de 6 dígitos que cambia cada 30 segundos usando la hora UTC sincronizada.',
+      '4. Uso en Operaciones Críticas: Al autorizar descargas de inventario, bajas por merma, eliminación de chats o cambios de tasa manuales, el sistema solicita ingresar el token TOTP activo.',
+      '5. Validación Desconectada: El servidor o motor offline valida el código con tolerancia de ±1 paso (±30 segundos) verificando la firma HMAC-SHA1 sin requerir que el teléfono tenga cobertura de datos o señal celular.',
+    ],
+    rules: [
+      'El código TOTP dura 30 segundos y es de un solo uso dentro de su ciclo.',
+      'Protección ante desfase de reloj con ventana de tolerancia de un intervalo hacia atrás y uno hacia adelante.',
+    ],
+    requiredRole: 'GERENTE / SUPERADMIN / AUDITOR',
+    juniorExplanation:
+      'Es como la clave dinámica del banco que cambia cada 30 segundos en tu celular. Aunque no haya internet ni señal de teléfono en el depósito, el sistema sabe si el código es correcto y permite aprobar operaciones delicadas de forma 100% segura.',
+  },
+  {
+    id: 'conector-impresoras-fiscales-seniat',
+    title: 'Conector de Impresoras Fiscales SENIAT y Providencia SNAT/2024/000102',
+    category: 'GOBIERNO',
+    summary:
+      'Integración y gobernanza con impresoras fiscales homologadas por el SENIAT (BMC, Dascom, Bixolon, HKA) para emisión de facturas fiscales, notas de crédito, reportes X y Z diarios y generación del Libro de Ventas en formato oficial .xlsx.',
+    stepByStep: [
+      '1. Ir a "Punto de Venta / Fiscal > Impresoras Fiscales SENIAT".',
+      '2. Seleccionar la caja registradora o puerto COM / USB / Red asignado al equipo fiscal.',
+      '3. Emisión de Factura Fiscal: Al cerrar una venta en caja, el conector envía los comandos de impresión en formato fiscal estándar respetando las alícuotas del 0%, 8%, 16% e IGTF 3%.',
+      '4. Reporte X de Turno: Al cambio de cajero, pulsar "Generar Reporte X Fiscal" para corte parcial sin cerrar la memoria fiscal.',
+      '5. Reporte Z Diario: Al finalizar la jornada comercial de la tienda, ejecutar "Emitir Reporte Z Fiscal". Este comando graba el total de ventas en la memoria fiscal inalterable del equipo y genera el comprobante físico.',
+      '6. Exportación de Libro de Ventas: En "Libros Fiscales", hacer clic en "Descargar Libro de Ventas SENIAT (.xlsx)". El archivo se genera con el formato legal de columnas requerido por la providencia SNAT/2024/000102.',
+    ],
+    rules: [
+      'Todo Reporte Z emitido es definitivo y no puede revertirse en el equipo fiscal.',
+      'El Libro de Ventas debe cuadrar exactamente con los Reportes Z acumulados del mes.',
+    ],
+    requiredRole: 'CAJERO / SUPERVISOR / CONTADOR FISCAL',
+    juniorExplanation:
+      'Se conecta con las impresoras especiales que exige el SENIAT en las cajas. Cuando la cajera cobra, la máquina imprime el ticket fiscal legal; al terminar el día imprime el Reporte Z con todo lo vendido y el sistema descarga el Libro de Ventas en Excel listo para los contadores.',
+  },
 ];
 
 export const JUNIOR_GLOSSARY: Record<string, string> = {
@@ -446,4 +561,13 @@ export const JUNIOR_GLOSSARY: Record<string, string> = {
   BOM: 'lista de ingredientes y cantidades necesarias para preparar una receta o producto final en panadería o charcutería.',
   'Retención SENIAT': 'porcentaje de impuesto (IVA o ISLR) que la empresa le retiene al proveedor en la factura para enterarlo directamente al fisco.',
   'Gobernanza de Sesiones': 'regla de seguridad que cierra la sesión si la computadora se queda sola por más de una hora para que nadie use tu cuenta.',
+  Baileys: 'tecnología que conecta el WhatsApp del teléfono con el sistema web a través de un socket directo sin cobrar por mensaje.',
+  'E.164': 'formato telefónico internacional estándar que empieza con el signo más y el código de país (ej. +584141234567).',
+  SSE: 'canal de transmisión en tiempo real (Server-Sent Events) para que los mensajes nuevos lleguen a la pantalla al instante sin tener que refrescar.',
+  TOTP: 'clave dinámica de 6 dígitos que cambia cada 30 segundos en el celular para aprobar operaciones de máxima seguridad sin internet.',
+  'Código de Barras 20/21': 'etiquetas especiales de balanza donde el 20 indica los gramos que pesa la bandeja y el 21 indica el precio total a cobrar.',
+  'Conciliación Bancaria': 'comparación exacta entre el dinero que dice el banco que tenemos y las facturas o pagos que están en el sistema.',
+  IGTF: 'Impuesto a las Grandes Transacciones Financieras del 3% que cobra el SENIAT cuando se paga en dólares o monedas extranjeras en efectivo.',
+  'Plantilla de WhatsApp': 'mensajes prediseñados y ordenados con botones rápidos para mandar recibos de pago o citas a los proveedores sin tener que escribir todo de nuevo.',
+  'Desvinculación Atómica': 'desconectar el WhatsApp borrando la sesión de golpe y limpiando la pantalla para que nadie vea datos privados de la empresa.',
 };

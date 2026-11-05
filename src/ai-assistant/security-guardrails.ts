@@ -110,6 +110,8 @@ export function evaluateSecurityGuardrails(
   return { isBlocked: false };
 }
 
-export function buildOutOfScopeResponse(_query: string, _userName: string): string {
-  return `Esa consulta no forma parte de la información operativa de Chrystal® ERP (Chrystal® Enterprise Food Retail ERP) y no dispongo de una fuente confirmable para responderte. Te sugiero consultar el departamento o fuente externa correspondiente. Dentro del sistema puedo orientarte en existencias de productos, tasa oficial BCV, solicitud de bajas y registro de mercancía.`;
+export function buildOutOfScopeResponse(query: string, userName?: string): string {
+  const greeting = userName ? `Hola ${userName}. ` : 'Hola. ';
+  const cleanQuery = query && query.trim() ? ` sobre "${query.trim()}"` : '';
+  return `${greeting}Comprendo tu inquietud${cleanQuery}. Sin embargo, esa consulta no forma parte de la información operativa de Chrystal® ERP (Chrystal® Enterprise Food Retail ERP) y no dispongo de una fuente confirmable para darte una cifra exacta o respuesta oficial. Con mucho gusto, dentro del sistema sí puedo orientarte en existencias de productos, tasa oficial BCV activa, pasarela WhatsApp BRM, conciliación bancaria bimonetaria, solicitud de bajas con doble firma o control de gastos OPEX. ¿Deseas que revisemos alguno de estos puntos?`;
 }
