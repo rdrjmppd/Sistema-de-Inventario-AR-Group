@@ -211,6 +211,7 @@ export function appendIdempotentBrmMessage(params: {
     waMeDeepLink: waMeLink,
     createdBy: params.createdBy,
     timestampVet: params.timestampVet,
+    timestampIso: new Date().toISOString(),
   };
 
   return {
@@ -612,6 +613,33 @@ function formatIsoToVet(iso?: string): string {
 }
 
 /**
+ * Convierte de manera determinista la marca de tiempo de un mensaje a milisegundos Unix absolutos (getTime).
+ * Soporta formato ISO 8601 (timestampIso) y formato venezolano (timestampVet: DD/MM/YYYY HH:mm:ss).
+ */
+export function parseMessageTimestampMs(
+  msg?: { timestampIso?: string; timestampVet?: string } | null
+): number {
+  if (!msg) return 0;
+  if (msg.timestampIso) {
+    const ms = new Date(msg.timestampIso).getTime();
+    if (!Number.isNaN(ms) && ms > 0) return ms;
+  }
+  const vetStr = String(msg.timestampVet || '').trim();
+  if (!vetStr) return 0;
+  if (vetStr.includes('T') || vetStr.endsWith('Z')) {
+    const ms = new Date(vetStr).getTime();
+    if (!Number.isNaN(ms) && ms > 0) return ms;
+  }
+  const [dPart, tPart] = vetStr.split(' ');
+  if (!dPart) return 0;
+  const [day, month, year] = dPart.split('/').map(Number);
+  if (!day || !month || !year) return 0;
+  const [hour = 0, min = 0, sec = 0] = (tPart || '').split(':').map(Number);
+  const parsed = new Date(year, month - 1, day, hour, min, sec).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
  * Convierte un mensaje real de la pasarela Baileys en un registro BRM auditable, resolviendo
  * la contraparte canónica (direccion SALIENTE → destinatario; ENTRANTE → remitente) y vinculándolo
  * al proveedor homologado por E.164. Devuelve null si la contraparte es un @lid corrupto.
@@ -691,6 +719,7 @@ export function mapBridgeMessageToBrmMessage(params: {
     transportUsed: 'QR_SOCKET_BRIDGE',
     createdBy: isOutbound ? 'Dispositivo vinculado (WhatsApp móvil)' : contactName || 'Proveedor (WhatsApp)',
     timestampVet: formatIsoToVet(queued.timestamp),
+    timestampIso: queued.timestamp || new Date().toISOString(),
     tipoMensaje: tipo,
     mediaUrl: queued.mediaUrl,
     mediaMimeType: queued.mediaMimeType,
@@ -722,6 +751,7 @@ export function updateOrAppendBrmMessages(
       result[existingIndex] = {
         ...prev,
         ...inc,
+        timestampIso: inc.timestampIso || prev.timestampIso,
         bodyText: inc.bodyText || prev.bodyText,
         deliveryStatus: inc.deliveryStatus || prev.deliveryStatus,
         isEdited: inc.isEdited ?? prev.isEdited,

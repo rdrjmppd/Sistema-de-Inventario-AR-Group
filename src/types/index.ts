@@ -1214,6 +1214,8 @@ export interface BrmWhatsappMessage {
   waMeDeepLink?: string;
   createdBy: string;
   timestampVet: string;
+  /** Marca de tiempo ISO estándar (UTC) para ordenación cronológica exacta */
+  timestampIso?: string;
   /** Multimedia real recibida/enviada por la pasarela Baileys */
   tipoMensaje?: BrmMessageMediaType;
   mediaUrl?: string;

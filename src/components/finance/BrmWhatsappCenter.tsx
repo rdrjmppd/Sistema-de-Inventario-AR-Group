@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   AlertTriangle,
+  ChevronDown,
   Building2,
   Calendar,
   Check,
@@ -35,7 +36,7 @@ import { NavigationTab, StorageZone, Supplier } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
-import { normalizePhoneE164 } from '../../lib/brm-whatsapp';
+import { normalizePhoneE164, parseMessageTimestampMs } from '../../lib/brm-whatsapp';
 import { WhatsAppAudioMessagePlayer } from './WhatsAppAudioMessagePlayer';
 
 export interface BrmWhatsappCenterProps {
@@ -119,8 +120,10 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
   const [gateQty, setGateQty] = useState('20');
 
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
 
   // Edición de mensajes en caliente (ProtocolMessage / Baileys)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -215,15 +218,43 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     return list.sort((a, b) => {
       const aNorm = normalizePhoneE164(a.whatsappE164 || a.phone || '');
       const bNorm = normalizePhoneE164(b.whatsappE164 || b.phone || '');
-      const aLast = brmMessages
-        .filter((m) => m.supplierId === a.id || (aNorm && m.phoneE164 === aNorm))
-        .slice(-1)[0];
-      const bLast = brmMessages
-        .filter((m) => m.supplierId === b.id || (bNorm && m.phoneE164 === bNorm))
-        .slice(-1)[0];
-      const aTime = aLast ? aLast.timestampVet || '' : '';
-      const bTime = bLast ? bLast.timestampVet || '' : '';
-      return bTime.localeCompare(aTime);
+      const aDigits = (aNorm || a.phone || '').replace(/\D/g, '');
+      const bDigits = (bNorm || b.phone || '').replace(/\D/g, '');
+      const aLast10 = aDigits.slice(-10);
+      const bLast10 = bDigits.slice(-10);
+
+      const aMsgs = brmMessages.filter((m) => {
+        if (m.supplierId && m.supplierId === a.id) return true;
+        if (m.phoneE164) {
+          if (aNorm && m.phoneE164 === aNorm) return true;
+          const mDigits = m.phoneE164.replace(/\D/g, '');
+          if (aLast10 && mDigits && (mDigits === aDigits || mDigits.endsWith(aLast10) || aDigits.endsWith(mDigits.slice(-10)))) return true;
+        }
+        return false;
+      });
+
+      const bMsgs = brmMessages.filter((m) => {
+        if (m.supplierId && m.supplierId === b.id) return true;
+        if (m.phoneE164) {
+          if (bNorm && m.phoneE164 === bNorm) return true;
+          const mDigits = m.phoneE164.replace(/\D/g, '');
+          if (bLast10 && mDigits && (mDigits === bDigits || mDigits.endsWith(bLast10) || bDigits.endsWith(mDigits.slice(-10)))) return true;
+        }
+        return false;
+      });
+
+      const aLatestMs = aMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
+      const bLatestMs = bMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
+
+      // Contactos con mensajes más recientes suben inmediatamente al tope (WhatsApp Real-Time Bubble Sort)
+      if (aLatestMs > 0 && bLatestMs > 0) {
+        return bLatestMs - aLatestMs;
+      }
+      if (aLatestMs > 0 && bLatestMs === 0) return -1;
+      if (bLatestMs > 0 && aLatestMs === 0) return 1;
+
+      // Contactos sin mensajes se ordenan alfabéticamente
+      return a.name.localeCompare(b.name);
     });
   }, [suppliers, brmMessages]);
 
@@ -269,15 +300,36 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
         }
         return false;
       })
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => {
+        const timeDiff = parseMessageTimestampMs(a) - parseMessageTimestampMs(b);
+        if (timeDiff !== 0) return timeDiff;
+        return a.id.localeCompare(b.id);
+      });
   }, [brmMessages, activeSupplier]);
 
-  // Auto-scroll al final del chat al llegar nuevos mensajes
-  useEffect(() => {
-    if (chatScrollRef.current) {
+  // Función garantizada para bajar al mensaje más reciente
+  const scrollToBottom = (smooth = false) => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
+    } else if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [activeSupplierMessages, activeSupplier?.id]);
+  };
+
+  // Auto-scroll al final del chat al llegar nuevos mensajes o al cambiar de contacto
+  useEffect(() => {
+    scrollToBottom(false);
+    const timer = setTimeout(() => scrollToBottom(true), 60);
+    return () => clearTimeout(timer);
+  }, [activeSupplierMessages.length, activeSupplier?.id]);
+
+  // Detector de posición de scroll para el botón flotante "Bajar al último mensaje"
+  const handleChatScroll = () => {
+    if (!chatScrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatScrollRef.current;
+    const isFarFromBottom = scrollHeight - (scrollTop + clientHeight) > 140;
+    setShowScrollBottomBtn(isFarFromBottom);
+  };
 
   const supplierOrders = useMemo(
     () => purchaseOrders.filter((o) => o.supplierId === activeSupplier?.id),
@@ -880,11 +932,11 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
       {/* PESTAÑA 1: CLON DE WHATSAPP WEB CON VENTANA DE CONTACTOS Y CHAT EN VIVO    */}
       {/* ========================================================================= */}
       {activeTab === 'CHAT_WEB' && activeSupplier && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-[650px] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 h-[600px] sm:h-[650px] lg:h-[calc(100vh-270px)] lg:min-h-[560px] lg:max-h-[820px] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
           {/* Panel Izquierdo: Directorio y Contactos Activos de Proveedores */}
-          <div className="lg:col-span-4 bg-slate-950 border-r border-slate-800 flex flex-col h-full">
+          <div className="lg:col-span-4 bg-slate-950 border-r border-slate-800 flex flex-col h-full min-h-0">
             {/* Buscador de Contactos */}
-            <div className="p-3 border-b border-slate-800 space-y-2">
+            <div className="p-3 border-b border-slate-800 space-y-2 shrink-0">
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3.5" />
                 <input
@@ -901,8 +953,8 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               </div>
             </div>
 
-            {/* Lista de Contactos con Scroll */}
-            <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60">
+            {/* Lista de Contactos con Scroll Ergonómico y Visible */}
+            <div className="flex-1 overflow-y-auto min-h-0 divide-y divide-slate-800/60 custom-scrollbar">
               {filteredSuppliers.length === 0 ? (
                 <div className="p-6 text-center text-slate-500 text-xs">
                   No se encontraron proveedores que coincidan con la búsqueda.
@@ -974,7 +1026,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
           </div>
 
           {/* Panel Central/Derecho: Espacio del Chat e Histórico de Conversación */}
-          <div className="lg:col-span-8 flex flex-col h-full bg-slate-950/40">
+          <div className="lg:col-span-8 flex flex-col h-full min-h-0 bg-slate-950/40 relative">
             {/* Cabecera del Chat Activo */}
             <div className="p-3.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3">
@@ -1089,10 +1141,11 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               </div>
             )}
 
-            {/* Espacio del Histórico de Conversación con Burbujas */}
+            {/* Espacio del Histórico de Conversación con Burbujas y Scrollbar Visible */}
             <div
               ref={chatScrollRef}
-              className="flex-1 p-4 overflow-y-auto space-y-3 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]"
+              onScroll={handleChatScroll}
+              className="flex-1 min-h-0 p-4 overflow-y-auto space-y-3 custom-scrollbar bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]"
             >
               {activeSupplierMessages.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center p-8 text-slate-500">
@@ -1264,7 +1317,21 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                   );
                 })
               )}
+              <div ref={messagesEndRef} className="h-0.5 w-full pointer-events-none" />
             </div>
+
+            {/* Botón Flotante para Bajar al Mensaje Más Reciente */}
+            {showScrollBottomBtn && (
+              <button
+                type="button"
+                onClick={() => scrollToBottom(true)}
+                className="absolute bottom-24 right-6 px-3 py-2 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xl border border-emerald-400/50 flex items-center gap-1.5 text-xs font-bold transition z-30 cursor-pointer animate-bounce"
+                title="Bajar al mensaje más reciente"
+              >
+                <ChevronDown className="w-4 h-4" />
+                <span className="hidden sm:inline text-[11px]">Bajar al último mensaje</span>
+              </button>
+            )}
 
             {/* Plantillas Rápidas de Mensajes */}
             <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 flex items-center gap-1.5 overflow-x-auto text-xs shrink-0">

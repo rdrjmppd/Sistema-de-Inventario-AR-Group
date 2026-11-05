@@ -104,6 +104,7 @@ import {
   ExpenseMonthlyArqueoReport,
   AuditActionType,
   Supplier,
+  BrmWhatsappMessage,
 } from '../types';
 import {
   evaluateExpenseApprovalRequirement,
@@ -243,6 +244,7 @@ import {
   isCorruptedOrRawLid,
   mapBridgeMessageToBrmMessage,
   updateOrAppendBrmMessages,
+  parseMessageTimestampMs,
 } from './brm-whatsapp';
 import {
   encryptSessionData,
@@ -6964,6 +6966,194 @@ test('83. Certificación de Persistencia y Reanudación Sin Caídas (Zero-Drop R
   // Al consultar estado tras desvinculación explícita, se reporta DESCONECTADO
   const postPurgeStatus = getWhatsAppLineStatusHandler(testLineId);
   assert.strictEqual(postPurgeStatus.estado, 'DESCONECTADO');
+});
+
+test('84. Certificación de Ordenación Cronológica de Mensajes y Burbujeo Dinámico de Chats BRM (parseMessageTimestampMs & Real-Time Bubble Sort)', () => {
+  // 1. Verificación del Parser Cronológico: Resuelve la inversión léxica DD/MM vs Noviembre
+  const octDateVet = '22/10/2026 18:46:25';
+  const novDateVet = '05/11/2026 00:20:15';
+
+  // En comparación lexicográfica pura de strings, '22' > '05' (comportamiento defectuoso anterior)
+  assert.ok(octDateVet.localeCompare(novDateVet) > 0, 'Verificación del fallo previo de string comparison');
+
+  // Con parseMessageTimestampMs, Noviembre 05 es estrictamente posterior a Octubre 22
+  const octMs = parseMessageTimestampMs({ timestampVet: octDateVet });
+  const novMs = parseMessageTimestampMs({ timestampVet: novDateVet });
+
+  assert.ok(novMs > octMs, 'Noviembre 5 debe ser temporalmente mayor a Octubre 22');
+  assert.strictEqual(new Date(novMs).getMonth(), 10, 'Mes de Noviembre debe ser índice 10');
+  assert.strictEqual(new Date(octMs).getMonth(), 9, 'Mes de Octubre debe ser índice 9');
+
+  // Soporte de ISO 8601 con prioridad
+  const isoMs = parseMessageTimestampMs({
+    timestampIso: '2026-11-05T04:20:15.000Z',
+    timestampVet: octDateVet,
+  });
+  assert.strictEqual(isoMs, new Date('2026-11-05T04:20:15.000Z').getTime());
+
+  // 2. Ordenación Cronológica del Chat: Los mensajes más antiguos van arriba y los recientes abajo
+  const unsortedChatMessages: Array<BrmWhatsappMessage> = [
+    {
+      id: 'brm-wa-ZZZ_RANDOM_UUID',
+      messageId: 'ZZZ_RANDOM_UUID',
+      supplierId: 'sup-01',
+      supplierName: 'Ángel Rojas',
+      supplierRif: 'WhatsApp Directo',
+      phoneE164: '+584144604661',
+      direction: 'INBOUND_FROM_SUPPLIER',
+      category: 'MENSAJE_OPERATIVO_BRM',
+      bodyText: 'Primer mensaje de prueba',
+      deliveryStatus: 'LEIDO',
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Ángel Rojas',
+      timestampVet: '22/10/2026 18:46:25',
+    },
+    {
+      id: 'brm-wa-AAA_RANDOM_UUID',
+      messageId: 'AAA_RANDOM_UUID',
+      supplierId: 'sup-01',
+      supplierName: 'Ángel Rojas',
+      supplierRif: 'WhatsApp Directo',
+      phoneE164: '+584144604661',
+      direction: 'INBOUND_FROM_SUPPLIER',
+      category: 'MENSAJE_OPERATIVO_BRM',
+      bodyText: 'Mensaje reciente de hoy',
+      deliveryStatus: 'LEIDO',
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Ángel Rojas',
+      timestampVet: '05/11/2026 00:20:15',
+    },
+    {
+      id: 'brm-wa-MMM_RANDOM_UUID',
+      messageId: 'MMM_RANDOM_UUID',
+      supplierId: 'sup-01',
+      supplierName: 'Ángel Rojas',
+      supplierRif: 'WhatsApp Directo',
+      phoneE164: '+584144604661',
+      direction: 'OUTBOUND_TO_SUPPLIER',
+      category: 'MENSAJE_OPERATIVO_BRM',
+      bodyText: 'Mensaje intermedio',
+      deliveryStatus: 'ENTREGADO',
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Tú',
+      timestampVet: '22/10/2026 23:21:36',
+    },
+  ];
+
+  // Si se ordenara por a.id.localeCompare(b.id) (bug previo), AAA quedaría primero
+  const badSorted = [...unsortedChatMessages].sort((a, b) => a.id.localeCompare(b.id));
+  assert.strictEqual(badSorted[0].id, 'brm-wa-AAA_RANDOM_UUID');
+
+  // Con ordenación cronológica corregida, los mensajes fluyen naturalmente en el tiempo
+  const correctlySorted = [...unsortedChatMessages].sort(
+    (a, b) => parseMessageTimestampMs(a) - parseMessageTimestampMs(b)
+  );
+  assert.strictEqual(correctlySorted[0].bodyText, 'Primer mensaje de prueba', 'El más antiguo queda arriba');
+  assert.strictEqual(correctlySorted[1].bodyText, 'Mensaje intermedio', 'El intermedio en el centro');
+  assert.strictEqual(correctlySorted[2].bodyText, 'Mensaje reciente de hoy', 'El más reciente queda abajo para auto-scroll');
+
+  // 3. Burbujeo Dinámico de Contactos en Tiempo Real (Real-Time Bubble Sort)
+  const contactsList: Supplier[] = [
+    {
+      id: 'sup-cargill',
+      name: 'Cargill de Venezuela',
+      rif: 'J-00041283-9',
+      category: 'Granos y Harinas',
+      contactName: 'Ventas Cargill',
+      phone: '+582418889900',
+      whatsappE164: '+582418889900',
+      email: 'ventas@cargill.com',
+      creditDays: 30,
+      paymentTerms: 'Crédito',
+      balanceUsd: 1200,
+    },
+    {
+      id: 'sup-plumrose',
+      name: 'Plumrose Latinoamericana',
+      rif: 'J-00012345-6',
+      category: 'Embutidos y Carnes',
+      contactName: 'Ventas Plumrose',
+      phone: '+582417778899',
+      whatsappE164: '+582417778899',
+      email: 'ventas@plumrose.com',
+      creditDays: 15,
+      paymentTerms: 'Crédito',
+      balanceUsd: 450,
+    },
+    {
+      id: 'wa-+584144604661',
+      name: 'Ángel Rojas',
+      rif: 'WhatsApp Directo',
+      category: 'Contacto WhatsApp Móvil',
+      contactName: 'Ángel Rojas',
+      phone: '+584144604661',
+      whatsappE164: '+584144604661',
+      email: '',
+      creditDays: 0,
+      paymentTerms: 'Contado',
+      balanceUsd: 0,
+    },
+  ];
+
+  const simulatedMessages: BrmWhatsappMessage[] = [
+    {
+      id: 'msg-cargill-1',
+      messageId: 'mid-cargill-1',
+      supplierId: 'sup-cargill',
+      supplierName: 'Cargill de Venezuela',
+      supplierRif: 'J-00041283-9',
+      phoneE164: '+582418889900',
+      direction: 'INBOUND_FROM_SUPPLIER',
+      category: 'MENSAJE_OPERATIVO_BRM',
+      bodyText: 'Mensaje antiguo de Cargill',
+      deliveryStatus: 'LEIDO',
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Cargill',
+      timestampVet: '22/10/2026 10:00:00',
+    },
+    {
+      id: 'msg-rojas-new',
+      messageId: 'mid-rojas-new',
+      supplierId: 'wa-+584144604661',
+      supplierName: 'Ángel Rojas',
+      supplierRif: 'WhatsApp Directo',
+      phoneE164: '+584144604661',
+      direction: 'INBOUND_FROM_SUPPLIER',
+      category: 'MENSAJE_OPERATIVO_BRM',
+      bodyText: 'Hola, prueba en tiempo real',
+      deliveryStatus: 'LEIDO',
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Ángel Rojas',
+      timestampVet: '05/11/2026 00:20:15',
+    },
+  ];
+
+  // Algoritmo de ordenación de contactos implementado en BrmWhatsappCenter
+  const sortedContacts = [...contactsList].sort((a, b) => {
+    const aNorm = a.whatsappE164 || a.phone || '';
+    const bNorm = b.whatsappE164 || b.phone || '';
+
+    const aMsgs = simulatedMessages.filter((m) => m.supplierId === a.id || m.phoneE164 === aNorm);
+    const bMsgs = simulatedMessages.filter((m) => m.supplierId === b.id || m.phoneE164 === bNorm);
+
+    const aLatestMs = aMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
+    const bLatestMs = bMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
+
+    if (aLatestMs > 0 && bLatestMs > 0) {
+      return bLatestMs - aLatestMs;
+    }
+    if (aLatestMs > 0 && bLatestMs === 0) return -1;
+    if (bLatestMs > 0 && aLatestMs === 0) return 1;
+
+    return a.name.localeCompare(b.name);
+  });
+
+  // Ángel Rojas tiene el mensaje más reciente (Nov 05) -> DEBE QUEDAR EN LA POSICIÓN 0
+  assert.strictEqual(sortedContacts[0].name, 'Ángel Rojas', 'El contacto con mensaje reciente sube a la posición 0 sin necesidad de buscarlo');
+  // Cargill tiene mensaje más antiguo (Oct 22) -> Posición 1
+  assert.strictEqual(sortedContacts[1].name, 'Cargill de Venezuela', 'El contacto con mensaje previo queda en posición 1');
+  // Plumrose no tiene mensajes -> Posición 2 (alfabético al fondo)
+  assert.strictEqual(sortedContacts[2].name, 'Plumrose Latinoamericana', 'Contactos sin mensajes van al fondo');
 });
 
 
