@@ -545,7 +545,21 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => saveJsonSafe(STORAGE_KEYS.COLD_LOGS, coldChainLogs), [coldChainLogs]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.RECIPES, productionRecipes), [productionRecipes]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.PROD_ORDERS, productionOrders), [productionOrders]);
-  useEffect(() => saveJsonSafe(STORAGE_KEYS.BRM_MESSAGES, brmMessages), [brmMessages]);
+  // Persistencia reactiva debounced para mensajes BRM (protección del hilo de UI y cuota de localStorage)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const timer = setTimeout(() => {
+      // Filtrar o podar payloads base64 masivos para no saturar los 5MB de localStorage
+      const sanitized = brmMessages.map((m) => {
+        if (m.mediaUrl && m.mediaUrl.length > 2048) {
+          return { ...m, mediaUrl: undefined };
+        }
+        return m;
+      });
+      saveJsonSafe(STORAGE_KEYS.BRM_MESSAGES, sanitized);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [brmMessages]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.BRM_PREINVOICES, brmPreInvoices), [brmPreInvoices]);
   useEffect(() => saveJsonSafe(STORAGE_KEYS.BANK_LINES, bankStatementLines), [bankStatementLines]);
   useEffect(
@@ -685,7 +699,16 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!resp.ok) return;
       const data = await resp.json();
       if (data?.success && Array.isArray(data.contacts)) {
-        setSyncedContacts(data.contacts);
+        setSyncedContacts((prev) => {
+          if (prev.length === data.contacts.length) {
+            const isIdentical = prev.every((p, i) => {
+              const d = data.contacts[i];
+              return p.phone === d.phone && p.name === d.name && p.lid === d.lid;
+            });
+            if (isIdentical) return prev;
+          }
+          return data.contacts;
+        });
       }
     } catch {
       // Silencioso ante desconexión o modo offline
@@ -822,7 +845,9 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     tick();
     const isPairing =
       brmSession.state === 'QR_READY' || brmSession.state === 'GENERATING_QR';
-    const intervalMs = isPairing ? 2000 : brmSession.state === 'CONNECTED' ? 2000 : 8000;
+    // Cuando está CONECTADO, SSE es el canal primario en tiempo real (<5ms); el polling pasa a ser un latido preventivo cada 15s.
+    // Esto previene saturación del event loop y bloqueos del ratón/cursor en la interfaz.
+    const intervalMs = isPairing ? 2500 : brmSession.state === 'CONNECTED' ? 15000 : 10000;
     const timer = setInterval(tick, intervalMs);
     return () => {
       cancelled = true;

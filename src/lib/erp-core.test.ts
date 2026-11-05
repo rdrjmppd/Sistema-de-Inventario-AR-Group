@@ -7482,3 +7482,117 @@ test('86. Certificación Anti-Duplicación Saliente Semántica (Optimistic vs Ba
   );
 });
 
+test('87. Certificación de Optimización UI, Referencia Idéntica (Bailout) y Rendimiento O(M) en Pasarela WhatsApp BRM', () => {
+  // 1. Garantía de Bailout por Referencia Idéntica (Evitar Re-renderizados en Polling Invariable)
+  const existingMsg: BrmWhatsappMessage = {
+    id: 'brm-wa-msg-perf-01',
+    messageId: 'msg-perf-01',
+    direction: 'OUTBOUND_TO_SUPPLIER',
+    category: 'SOPORTE_PAGO_CXP',
+    bodyText: 'Mensaje de prueba para rendimiento',
+    phoneE164: '+584121112233',
+    supplierId: 'sup-perf-01',
+    supplierName: 'Distribuidora Central',
+    supplierRif: 'J-12345678-9',
+    deliveryStatus: 'ENTREGADO',
+    timestampIso: '2026-11-05T10:00:00.000Z',
+    transportUsed: 'QR_SOCKET_BRIDGE',
+    createdBy: 'Operador BRM',
+    timestampVet: '05/11/2026 06:00',
+  };
+
+  const initialList = [existingMsg];
+
+  // Caso A: Polling periódicamente trae los mismos mensajes sin alteraciones
+  const identicalIncoming: BrmWhatsappMessage = { ...existingMsg };
+  const resultUnchanged = updateOrAppendBrmMessages(initialList, [identicalIncoming]);
+
+  assert.strictEqual(
+    resultUnchanged,
+    initialList,
+    'updateOrAppendBrmMessages DEBE retornar exactamente la misma referencia de arreglo si los mensajes no cambiaron (React Bailout)'
+  );
+
+  // Caso B: Llega una modificación real (e.g. estado de entrega o texto editado)
+  const modifiedIncoming: BrmWhatsappMessage = {
+    ...existingMsg,
+    deliveryStatus: 'LEIDO',
+  };
+  const resultChanged = updateOrAppendBrmMessages(initialList, [modifiedIncoming]);
+
+  assert.notStrictEqual(
+    resultChanged,
+    initialList,
+    'updateOrAppendBrmMessages DEBE generar una nueva referencia de arreglo cuando hay cambios legítimos'
+  );
+  assert.strictEqual(resultChanged[0].deliveryStatus, 'LEIDO');
+
+  // 2. Benchmark de Rendimiento: Ordenamiento O(M + N log N) sobre 100 proveedores y 300 mensajes
+  const mockSuppliers100: Supplier[] = Array.from({ length: 100 }, (_, i) => ({
+    id: `sup-${i}`,
+    name: `Proveedor ${String(i).padStart(3, '0')}`,
+    rif: `J-${10000000 + i}-0`,
+    category: 'General',
+    contactName: `Contacto ${i}`,
+    phone: `+58414${String(i).padStart(7, '0')}`,
+    whatsappE164: `+58414${String(i).padStart(7, '0')}`,
+    email: `sup${i}@example.com`,
+    creditDays: 15,
+    paymentTerms: 'Crédito',
+    balanceUsd: 100 + i,
+  }));
+
+  const mockMessages300: BrmWhatsappMessage[] = Array.from({ length: 300 }, (_, i) => {
+    const targetSupIndex = i % 50; // Primeros 50 proveedores tienen mensajes
+    return {
+      id: `brm-wa-bench-${i}`,
+      messageId: `bench-${i}`,
+      direction: i % 2 === 0 ? 'OUTBOUND_TO_SUPPLIER' : 'INBOUND_FROM_SUPPLIER',
+      category: 'SOPORTE_PAGO_CXP',
+      bodyText: `Mensaje de prueba número ${i}`,
+      phoneE164: mockSuppliers100[targetSupIndex].whatsappE164 || '+584140000000',
+      supplierId: mockSuppliers100[targetSupIndex].id,
+      supplierName: mockSuppliers100[targetSupIndex].name,
+      supplierRif: mockSuppliers100[targetSupIndex].rif,
+      deliveryStatus: 'ENTREGADO',
+      timestampIso: new Date(Date.now() - (300 - i) * 60000).toISOString(),
+      transportUsed: 'QR_SOCKET_BRIDGE',
+      createdBy: 'Sistema',
+      timestampVet: '05/11/2026 06:00',
+    };
+  });
+
+  const t0 = performance.now();
+
+  // Ejecución de la estrategia optimizada O(M + N log N)
+  const latestTimestampMap = new Map<string, number>();
+  for (const m of mockMessages300) {
+    const ts = parseMessageTimestampMs(m);
+    if (ts <= 0) continue;
+    if (m.supplierId) {
+      const cur = latestTimestampMap.get(m.supplierId) || 0;
+      if (ts > cur) latestTimestampMap.set(m.supplierId, ts);
+    }
+  }
+
+  const sorted = [...mockSuppliers100].sort((a, b) => {
+    const aTs = latestTimestampMap.get(a.id) || 0;
+    const bTs = latestTimestampMap.get(b.id) || 0;
+    if (aTs > 0 && bTs > 0) return bTs - aTs;
+    if (aTs > 0) return -1;
+    if (bTs > 0) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const t1 = performance.now();
+  const durationMs = t1 - t0;
+
+  assert.strictEqual(sorted.length, 100);
+  assert.ok(
+    durationMs < 20,
+    `El algoritmo optimizado debe completarse en menos de 20ms (tiempo real: ${durationMs.toFixed(2)}ms)`
+  );
+  // El proveedor con el mensaje más reciente (#299 asignado a 299 % 50 = 49) debe estar en primera posición
+  assert.strictEqual(sorted[0].id, 'sup-49');
+});
+

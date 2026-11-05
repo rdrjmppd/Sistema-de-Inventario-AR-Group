@@ -36,7 +36,7 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import { NavigationTab, StorageZone, Supplier } from '../../types';
+import { NavigationTab, StorageZone, Supplier, BrmWhatsappMessage } from '../../types';
 import { useFinance } from '../../context/FinanceContext';
 import { useInventory } from '../../context/InventoryContext';
 import { useOperationsBrm } from '../../context/OperationsBrmContext';
@@ -497,38 +497,56 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
       }
     }
 
+    // Pre-cálculo O(M) de marca de tiempo más reciente por proveedor/teléfono para optimizar el ordenamiento
+    // Reduce la complejidad de O(N log N * M) a O(N log N + M), garantizando respuesta instantánea del cursor sin caídas de frames.
+    const latestTimestampMap = new Map<string, number>();
+    for (const m of brmMessages) {
+      const ts = parseMessageTimestampMs(m);
+      if (ts <= 0) continue;
+      if (m.supplierId) {
+        const cur = latestTimestampMap.get(m.supplierId) || 0;
+        if (ts > cur) latestTimestampMap.set(m.supplierId, ts);
+      }
+      if (m.phoneE164) {
+        const norm = normalizePhoneE164(m.phoneE164) || m.phoneE164;
+        const curNorm = latestTimestampMap.get(norm) || 0;
+        if (ts > curNorm) latestTimestampMap.set(norm, ts);
+        const digits = norm.replace(/\D/g, '');
+        const curDigits = latestTimestampMap.get(digits) || 0;
+        if (ts > curDigits) latestTimestampMap.set(digits, ts);
+        const last10 = digits.slice(-10);
+        if (last10.length >= 7) {
+          const cur10 = latestTimestampMap.get(last10) || 0;
+          if (ts > cur10) latestTimestampMap.set(last10, ts);
+        }
+      }
+    }
+
+    const getSupplierLatestTs = (s: Supplier): number => {
+      let max = latestTimestampMap.get(s.id) || 0;
+      const sNorm = normalizePhoneE164(s.whatsappE164 || s.phone || '');
+      if (sNorm) {
+        const tsNorm = latestTimestampMap.get(sNorm) || 0;
+        if (tsNorm > max) max = tsNorm;
+      }
+      const sDigits = (sNorm || s.phone || '').replace(/\D/g, '');
+      if (sDigits) {
+        const tsDigits = latestTimestampMap.get(sDigits) || 0;
+        if (tsDigits > max) max = tsDigits;
+        const last10 = sDigits.slice(-10);
+        if (last10.length >= 7) {
+          const ts10 = latestTimestampMap.get(last10) || 0;
+          if (ts10 > max) max = ts10;
+        }
+      }
+      return max;
+    };
+
     return list.sort((a, b) => {
-      const aNorm = normalizePhoneE164(a.whatsappE164 || a.phone || '');
-      const bNorm = normalizePhoneE164(b.whatsappE164 || b.phone || '');
-      const aDigits = (aNorm || a.phone || '').replace(/\D/g, '');
-      const bDigits = (bNorm || b.phone || '').replace(/\D/g, '');
-      const aLast10 = aDigits.slice(-10);
-      const bLast10 = bDigits.slice(-10);
+      const aLatestMs = getSupplierLatestTs(a);
+      const bLatestMs = getSupplierLatestTs(b);
 
-      const aMsgs = brmMessages.filter((m) => {
-        if (m.supplierId && m.supplierId === a.id) return true;
-        if (m.phoneE164) {
-          if (aNorm && m.phoneE164 === aNorm) return true;
-          const mDigits = m.phoneE164.replace(/\D/g, '');
-          if (aLast10 && mDigits && (mDigits === aDigits || mDigits.endsWith(aLast10) || aDigits.endsWith(mDigits.slice(-10)))) return true;
-        }
-        return false;
-      });
-
-      const bMsgs = brmMessages.filter((m) => {
-        if (m.supplierId && m.supplierId === b.id) return true;
-        if (m.phoneE164) {
-          if (bNorm && m.phoneE164 === bNorm) return true;
-          const mDigits = m.phoneE164.replace(/\D/g, '');
-          if (bLast10 && mDigits && (mDigits === bDigits || mDigits.endsWith(bLast10) || bDigits.endsWith(mDigits.slice(-10)))) return true;
-        }
-        return false;
-      });
-
-      const aLatestMs = aMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
-      const bLatestMs = bMsgs.reduce((max, m) => Math.max(max, parseMessageTimestampMs(m)), 0);
-
-      // Contactos con mensajes más recientes suben inmediatamente al tope (WhatsApp Real-Time Bubble Sort)
+      // Contactos con mensajes más recientes suben inmediatamente al tope (WhatsApp Real-Time Bubble Sort O(1) lookups)
       if (aLatestMs > 0 && bLatestMs > 0) {
         return bLatestMs - aLatestMs;
       }
@@ -588,6 +606,30 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
         return a.id.localeCompare(b.id);
       });
   }, [brmMessages, activeSupplier, brmSession.state]);
+
+  // Mapa indexado O(1) de último mensaje por proveedor o teléfono para el renderizado ultra-rápido del directorio lateral
+  const lastMessagesMap = useMemo(() => {
+    const byId = new Map<string, BrmWhatsappMessage>();
+    const byPhone = new Map<string, BrmWhatsappMessage>();
+    const byLast10 = new Map<string, BrmWhatsappMessage>();
+
+    for (const msg of brmMessages) {
+      if (msg.supplierId) {
+        byId.set(msg.supplierId, msg);
+      }
+      if (msg.phoneE164) {
+        const norm = normalizePhoneE164(msg.phoneE164) || msg.phoneE164;
+        byPhone.set(norm, msg);
+        const digits = norm.replace(/\D/g, '');
+        const last10 = digits.slice(-10);
+        if (last10.length >= 7) {
+          byLast10.set(last10, msg);
+        }
+      }
+    }
+
+    return { byId, byPhone, byLast10 };
+  }, [brmMessages]);
 
   // Función garantizada para bajar al mensaje más reciente
   const scrollToBottom = (smooth = false) => {
@@ -1247,10 +1289,13 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                   const phoneNorm = normalizePhoneE164(supplier.whatsappE164 || supplier.phone);
                   const hasStaged = stagedRetentionDispatch?.supplierId === supplier.id;
 
-                  // Último mensaje registrado para este contacto
-                  const lastMsg = brmMessages
-                    .filter((m) => m.supplierId === supplier.id || (phoneNorm && m.phoneE164 === phoneNorm))
-                    .slice(-1)[0];
+                  // Búsqueda O(1) del último mensaje sin escanear todo el historial en cada tarjeta
+                  const phoneDigits = (phoneNorm || supplier.phone || '').replace(/\D/g, '');
+                  const phoneLast10 = phoneDigits.slice(-10);
+                  const lastMsg =
+                    lastMessagesMap.byId.get(supplier.id) ||
+                    (phoneNorm ? lastMessagesMap.byPhone.get(phoneNorm) : undefined) ||
+                    (phoneLast10.length >= 7 ? lastMessagesMap.byLast10.get(phoneLast10) : undefined);
 
                   return (
                     <button

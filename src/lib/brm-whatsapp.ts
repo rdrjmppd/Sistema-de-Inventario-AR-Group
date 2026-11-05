@@ -743,6 +743,7 @@ export function updateOrAppendBrmMessages(
 ): BrmWhatsappMessage[] {
   if (!incomingMessages || incomingMessages.length === 0) return existingMessages;
 
+  let hasChanged = false;
   const result = [...existingMessages];
   for (const inc of incomingMessages) {
     const existingIndex = result.findIndex((m) => {
@@ -782,23 +783,53 @@ export function updateOrAppendBrmMessages(
 
     if (existingIndex >= 0) {
       const prev = result[existingIndex];
-      result[existingIndex] = {
-        ...prev,
-        ...inc,
-        // Preservar el messageId canónico oficial del socket si inc lo trae
-        messageId: inc.messageId || prev.messageId,
-        id: inc.id || prev.id,
-        timestampIso: inc.timestampIso || prev.timestampIso,
-        bodyText: inc.bodyText || prev.bodyText,
-        deliveryStatus: inc.deliveryStatus || prev.deliveryStatus,
-        isEdited: inc.isEdited ?? prev.isEdited,
-        editedAtVet: inc.editedAtVet || prev.editedAtVet,
-        mediaUrl: inc.mediaUrl || prev.mediaUrl,
-        mediaMimeType: inc.mediaMimeType || prev.mediaMimeType,
-      };
+      const nextMessageId = inc.messageId || prev.messageId;
+      const nextId = inc.id || prev.id;
+      const nextTimestampIso = inc.timestampIso || prev.timestampIso;
+      const nextBodyText = inc.bodyText || prev.bodyText;
+      const nextDeliveryStatus = inc.deliveryStatus || prev.deliveryStatus;
+      const nextIsEdited = inc.isEdited ?? prev.isEdited;
+      const nextEditedAtVet = inc.editedAtVet || prev.editedAtVet;
+      const nextMediaUrl = inc.mediaUrl || prev.mediaUrl;
+      const nextMediaMimeType = inc.mediaMimeType || prev.mediaMimeType;
+
+      const isDifferent =
+        prev.messageId !== nextMessageId ||
+        prev.id !== nextId ||
+        prev.timestampIso !== nextTimestampIso ||
+        prev.bodyText !== nextBodyText ||
+        prev.deliveryStatus !== nextDeliveryStatus ||
+        prev.isEdited !== nextIsEdited ||
+        prev.editedAtVet !== nextEditedAtVet ||
+        prev.mediaUrl !== nextMediaUrl ||
+        prev.mediaMimeType !== nextMediaMimeType;
+
+      if (isDifferent) {
+        hasChanged = true;
+        result[existingIndex] = {
+          ...prev,
+          ...inc,
+          messageId: nextMessageId,
+          id: nextId,
+          timestampIso: nextTimestampIso,
+          bodyText: nextBodyText,
+          deliveryStatus: nextDeliveryStatus,
+          isEdited: nextIsEdited,
+          editedAtVet: nextEditedAtVet,
+          mediaUrl: nextMediaUrl,
+          mediaMimeType: nextMediaMimeType,
+        };
+      }
     } else {
+      hasChanged = true;
       result.push(inc);
     }
+  }
+
+  // Preservar la referencia idéntica si no hubo cambios de contenido ni mensajes nuevos
+  // Esto previene que React re-renderice la UI y garantiza 60 FPS sin bloqueos en el cursor
+  if (!hasChanged) {
+    return existingMessages;
   }
 
   return result;
