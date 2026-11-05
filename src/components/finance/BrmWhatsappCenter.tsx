@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import {
   AlertTriangle,
   ChevronDown,
@@ -18,17 +18,21 @@ import {
   Paperclip,
   Pencil,
   Phone,
+  Plus,
   PowerOff,
   QrCode,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
+  Settings,
   ShieldCheck,
   Smartphone,
   Sparkles,
   Trash2,
   Truck,
   User,
+  UserPlus,
   Wifi,
   X,
 } from 'lucide-react';
@@ -39,16 +43,70 @@ import { useOperationsBrm } from '../../context/OperationsBrmContext';
 import { normalizePhoneE164, parseMessageTimestampMs } from '../../lib/brm-whatsapp';
 import { WhatsAppAudioMessagePlayer } from './WhatsAppAudioMessagePlayer';
 
+export interface BrmWhatsappTemplate {
+  id: string;
+  title: string;
+  icon: string;
+  text: string;
+  isDefault?: boolean;
+}
+
+export const DEFAULT_BRM_TEMPLATES: BrmWhatsappTemplate[] = [
+  {
+    id: 'tpl-pago-procesado',
+    title: 'Pago Procesado',
+    icon: '💰',
+    text: 'Estimados {proveedor}, le confirmamos que su pago correspondiente a las facturas pendientes ha sido procesado exitosamente por Tesorería de AR Group 2026. Saldo actual: ${saldo}. Adjuntamos el soporte de pago.',
+    isDefault: true,
+  },
+  {
+    id: 'tpl-retenciones-seniat',
+    title: 'Retenciones SENIAT',
+    icon: '📋',
+    text: 'Estimados {proveedor} (RIF: {rif}), le remitimos formalmente los comprobantes oficiales de retención de IVA e ISLR emitidos por AR Group 2026. Agradecemos acusar recibo.',
+    isDefault: true,
+  },
+  {
+    id: 'tpl-ventana-descarga',
+    title: 'Ventana de Descarga',
+    icon: '🚚',
+    text: 'Estimados {proveedor}, solicitamos confirmación del despacho y datos del transportista para programar la ventana de descarga en el muelle de recepción de AR Group 2026.',
+    isDefault: true,
+  },
+  {
+    id: 'tpl-solicitud-cotizacion',
+    title: 'Solicitud Cotización',
+    icon: '📦',
+    text: 'Estimados {proveedor}, solicitamos cotización actualizada y disponibilidad de inventario para reposición de insumos de AR Group 2026. Agradecemos remitir lista de precios y condiciones.',
+    isDefault: true,
+  },
+  {
+    id: 'tpl-recepcion-conforme',
+    title: 'Recepción Conforme',
+    icon: '🧾',
+    text: 'Estimados {proveedor}, confirmamos la recepción física y verificación conforme de la mercancía en nuestro almacén. Su factura entra en ciclo de programación de pago.',
+    isDefault: true,
+  },
+  {
+    id: 'tpl-factura-discrepancia',
+    title: 'Discrepancia en Factura',
+    icon: '⚠️',
+    text: 'Estimados {proveedor}, le informamos que la factura remitida presenta una discrepancia con respecto a la orden de compra o recepción física. Solicitamos coordinar la corrección a la brevedad.',
+    isDefault: true,
+  },
+];
+
 export interface BrmWhatsappCenterProps {
   onNavigate?: (tab: NavigationTab) => void;
 }
 
 export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate }) => {
-  const { suppliers, invoices, retentionVouchers, updateSupplier } = useFinance();
+  const { suppliers, invoices, retentionVouchers, updateSupplier, addSupplier } = useFinance();
   const { purchaseOrders, products, locations, selectedLocationId } = useInventory();
   const {
     brmSession,
     brmMessages,
+    syncedContacts,
     brmPreInvoices,
     stagedRetentionDispatch,
     confirmStagedRetentionDispatch,
@@ -178,6 +236,196 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
     }
   }, [brmSession.state]);
 
+  // Gestor de Plantillas Rápidas Personalizadas de WhatsApp BRM
+  const [templates, setTemplates] = useState<BrmWhatsappTemplate[]>(() => {
+    if (typeof window === 'undefined') return DEFAULT_BRM_TEMPLATES;
+    try {
+      const stored = localStorage.getItem('brm_whatsapp_custom_templates_v1');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_BRM_TEMPLATES;
+  });
+
+  const saveTemplates = (newTemplates: BrmWhatsappTemplate[]) => {
+    setTemplates(newTemplates);
+    try {
+      localStorage.setItem('brm_whatsapp_custom_templates_v1', JSON.stringify(newTemplates));
+    } catch {}
+  };
+
+  const interpolateTemplate = (rawText: string, sup?: Supplier | null) => {
+    if (!sup) return rawText;
+    return rawText
+      .replace(/\{proveedor\}/gi, sup.name || 'Proveedor')
+      .replace(/\{rif\}/gi, sup.rif || 'Sin RIF')
+      .replace(/\{saldo\}/gi, Number(sup.balanceUsd || 0).toFixed(2))
+      .replace(/\{telefono\}/gi, sup.whatsappE164 || sup.phone || '')
+      .replace(/\{empresa\}/gi, 'AR Group 2026');
+  };
+
+  // Modal de Eliminación In-App de Conversación (Evita bloqueo de window.confirm en iframes/móviles)
+  const [showDeleteChatModal, setShowDeleteChatModal] = useState(false);
+  const [syncDeleteToDevice, setSyncDeleteToDevice] = useState(true);
+  const [isDeletingChat, setIsDeletingChat] = useState(false);
+
+  // Modal para Guardar Contacto de Smartphone como Proveedor Oficial
+  const [showSaveSupplierModal, setShowSaveSupplierModal] = useState(false);
+  const [saveSupplierForm, setSaveSupplierForm] = useState({
+    name: '',
+    rif: 'J-',
+    phone: '',
+    contactName: '',
+    category: 'Materia Prima',
+    paymentTerms: 'Contado',
+    creditDays: 0,
+  });
+
+  const openSaveSupplierModal = (sup: Supplier) => {
+    const defaultName = sup.name.startsWith('Contacto ') ? '' : sup.name;
+    setSaveSupplierForm({
+      name: defaultName,
+      rif: sup.rif === 'WhatsApp Directo' || sup.rif === 'Agenda Smartphone' ? 'J-' : sup.rif,
+      phone: sup.whatsappE164 || sup.phone || '',
+      contactName: sup.contactName && !sup.contactName.startsWith('+') ? sup.contactName : defaultName,
+      category: 'Materia Prima',
+      paymentTerms: 'Contado',
+      creditDays: 0,
+    });
+    setShowSaveSupplierModal(true);
+  };
+
+  const handleSaveSupplierSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!saveSupplierForm.name.trim()) {
+      setBanner({ type: 'err', text: 'Debe ingresar la Razón Social o Nombre del proveedor.' });
+      return;
+    }
+    const cleanPhone = normalizePhoneE164(saveSupplierForm.phone) || saveSupplierForm.phone;
+    const created = addSupplier({
+      name: saveSupplierForm.name.trim(),
+      rif: saveSupplierForm.rif.trim().toUpperCase(),
+      phone: cleanPhone,
+      whatsappE164: cleanPhone,
+      contactName: saveSupplierForm.contactName.trim() || saveSupplierForm.name.trim(),
+      category: saveSupplierForm.category,
+      email: '',
+      creditDays: Number(saveSupplierForm.creditDays) || 0,
+      paymentTerms: saveSupplierForm.paymentTerms,
+    });
+    setSelectedSupplierId(created.id);
+    setShowSaveSupplierModal(false);
+    setBanner({
+      type: 'ok',
+      text: `Proveedor "${created.name}" (${created.rif}) guardado exitosamente en el catálogo oficial.`,
+    });
+  };
+
+  // Modal para Gestión CRUD de Plantillas
+  const [showTemplateManagerModal, setShowTemplateManagerModal] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<BrmWhatsappTemplate | null>(null);
+  const [isCreatingNewTemplate, setIsCreatingNewTemplate] = useState(false);
+  const [templateForm, setTemplateForm] = useState({
+    title: '',
+    icon: '💬',
+    text: '',
+  });
+
+  const startCreateTemplate = () => {
+    setEditingTemplate(null);
+    setTemplateForm({ title: '', icon: '💬', text: '' });
+    setIsCreatingNewTemplate(true);
+  };
+
+  const startEditTemplate = (tpl: BrmWhatsappTemplate) => {
+    setEditingTemplate(tpl);
+    setTemplateForm({ title: tpl.title, icon: tpl.icon, text: tpl.text });
+    setIsCreatingNewTemplate(false);
+  };
+
+  const handleSaveTemplate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!templateForm.title.trim() || !templateForm.text.trim()) {
+      setBanner({ type: 'err', text: 'Debe especificar título y texto de la plantilla.' });
+      return;
+    }
+    if (editingTemplate) {
+      const updated = templates.map((t) =>
+        t.id === editingTemplate.id
+          ? { ...t, title: templateForm.title.trim(), icon: templateForm.icon.trim() || '💬', text: templateForm.text.trim() }
+          : t
+      );
+      saveTemplates(updated);
+      setEditingTemplate(null);
+      setBanner({ type: 'ok', text: `Plantilla "${templateForm.title}" actualizada con éxito.` });
+    } else {
+      const newTpl: BrmWhatsappTemplate = {
+        id: `tpl-custom-${Date.now()}`,
+        title: templateForm.title.trim(),
+        icon: templateForm.icon.trim() || '💬',
+        text: templateForm.text.trim(),
+        isDefault: false,
+      };
+      saveTemplates([...templates, newTpl]);
+      setIsCreatingNewTemplate(false);
+      setBanner({ type: 'ok', text: `Nueva plantilla "${newTpl.title}" creada con éxito.` });
+    }
+  };
+
+  const handleDeleteTemplate = (id: string) => {
+    const filtered = templates.filter((t) => t.id !== id);
+    saveTemplates(filtered);
+    if (editingTemplate?.id === id) setEditingTemplate(null);
+    setBanner({ type: 'ok', text: 'Plantilla eliminada correctamente.' });
+  };
+
+  const handleResetTemplates = () => {
+    saveTemplates(DEFAULT_BRM_TEMPLATES);
+    setEditingTemplate(null);
+    setIsCreatingNewTemplate(false);
+    setBanner({ type: 'ok', text: 'Plantillas restauradas a sus valores predeterminados de fábrica.' });
+  };
+
+  // Helper para resolver el nombre de un contacto desde la agenda del smartphone (syncedContacts)
+  const resolveContactName = useCallback(
+    (phoneOrRaw: string, fallbackName?: string): string => {
+      const digits = String(phoneOrRaw || '').replace(/\D/g, '');
+      const last10 = digits.slice(-10);
+      const matched = syncedContacts.find((c) => {
+        const cDigits = c.phone.replace(/\D/g, '');
+        return (
+          cDigits === digits ||
+          (last10.length >= 7 && cDigits.endsWith(last10)) ||
+          (last10.length >= 7 && digits.endsWith(cDigits.slice(-10)))
+        );
+      });
+      if (matched?.name && matched.name !== phoneOrRaw) {
+        return matched.name;
+      }
+      return fallbackName || phoneOrRaw;
+    },
+    [syncedContacts]
+  );
+
+  const confirmDeleteChat = async () => {
+    if (!activeSupplier) return;
+    const phone = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone || '');
+    if (!phone) {
+      setBanner({ type: 'err', text: 'El contacto no posee un número de WhatsApp E.164 válido.' });
+      return;
+    }
+    setIsDeletingChat(true);
+    const res = await deleteBrmSupplierChat(phone, syncDeleteToDevice);
+    setIsDeletingChat(false);
+    setShowDeleteChatModal(false);
+    setBanner({
+      type: 'ok',
+      text: `Chat con ${activeSupplier.name} eliminado correctamente (${res.removedCount} mensajes removidos).`,
+    });
+  };
+
   const allSuppliersAndChats = useMemo(() => {
     const list: Supplier[] = [...suppliers];
     const existingPhones = new Set(
@@ -198,12 +446,14 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
       });
 
       if (!matchesSupplier && !list.some((s) => s.id === `wa-${norm}`)) {
+        const fallback = msg.supplierName && !msg.supplierName.startsWith('+') && !msg.supplierName.startsWith('Contacto +') ? msg.supplierName : msg.senderName;
+        const resolvedName = resolveContactName(norm, fallback) || `Contacto ${norm}`;
         list.push({
           id: `wa-${norm}`,
-          name: msg.supplierName || msg.senderName || `Contacto ${norm}`,
+          name: resolvedName,
           rif: msg.supplierRif || 'WhatsApp Directo',
           category: 'Contacto WhatsApp Móvil',
-          contactName: msg.senderName || 'Contacto WhatsApp',
+          contactName: resolvedName,
           phone: norm,
           whatsappE164: norm,
           email: '',
@@ -212,6 +462,34 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
           balanceUsd: 0,
         });
         existingPhones.add(norm);
+      }
+    }
+
+    // Incorporar contactos sincronizados de la libreta del smartphone si aún no están en la lista
+    for (const sc of syncedContacts) {
+      if (!sc.phone) continue;
+      const scNorm = normalizePhoneE164(sc.phone) || sc.phone;
+      const scDigits = scNorm.replace(/\D/g, '');
+      const scLast10 = scDigits.slice(-10);
+      const alreadyInList = list.some((s) => {
+        const sDigits = (s.whatsappE164 || s.phone || '').replace(/\D/g, '');
+        return sDigits === scDigits || (scLast10.length >= 7 && sDigits.endsWith(scLast10));
+      });
+      if (!alreadyInList && sc.name) {
+        list.push({
+          id: `wa-${scNorm}`,
+          name: sc.name,
+          rif: 'Agenda Smartphone',
+          category: 'Contacto WhatsApp Móvil',
+          contactName: sc.name,
+          phone: scNorm,
+          whatsappE164: scNorm,
+          email: '',
+          creditDays: 0,
+          paymentTerms: 'Contado',
+          balanceUsd: 0,
+        });
+        existingPhones.add(scNorm);
       }
     }
 
@@ -256,7 +534,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
       // Contactos sin mensajes se ordenan alfabéticamente
       return a.name.localeCompare(b.name);
     });
-  }, [suppliers, brmMessages]);
+  }, [suppliers, brmMessages, syncedContacts, resolveContactName]);
 
   const activeSupplier = useMemo(
     () => allSuppliersAndChats.find((s) => s.id === selectedSupplierId) || allSuppliersAndChats[0],
@@ -1066,6 +1344,19 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                     Abrir wa.me
                   </a>
                 )}
+                {/* Botón para guardar como proveedor oficial si es un contacto móvil / no registrado */}
+                {(activeSupplier.id.startsWith('wa-') || activeSupplier.category === 'Contacto WhatsApp Móvil') && (
+                  <button
+                    type="button"
+                    onClick={() => openSaveSupplierModal(activeSupplier)}
+                    className="min-h-[44px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm shadow-emerald-950/40"
+                    title="Registrar este contacto en el catálogo oficial de proveedores de AR Group"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span className="hidden md:inline">Guardar como Proveedor</span>
+                    <span className="md:hidden">Guardar</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setActiveTab('SUPPLIERS_360')}
@@ -1076,17 +1367,7 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                 </button>
                 <button
                   type="button"
-                  onClick={async () => {
-                    const phone = normalizePhoneE164(activeSupplier.whatsappE164 || activeSupplier.phone || '');
-                    if (!phone) {
-                      setBanner({ type: 'err', text: 'El proveedor no posee un número de WhatsApp E.164 válido.' });
-                      return;
-                    }
-                    if (window.confirm(`¿Confirmas eliminar el historial de conversación con ${activeSupplier.name}?`)) {
-                      const res = await deleteBrmSupplierChat(phone, true);
-                      setBanner({ type: 'ok', text: `Chat con ${activeSupplier.name} eliminado (${res.removedCount} mensajes).` });
-                    }
-                  }}
+                  onClick={() => setShowDeleteChatModal(true)}
                   className="min-h-[44px] px-3 rounded-xl bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 hover:border-rose-500/40 border border-slate-700 text-slate-400 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                   title="Eliminar historial de conversación"
                 >
@@ -1333,43 +1614,37 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
               </button>
             )}
 
-            {/* Plantillas Rápidas de Mensajes */}
-            <div className="px-3 py-2 bg-slate-900/60 border-t border-slate-800 flex items-center gap-1.5 overflow-x-auto text-xs shrink-0">
-              <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0">
+            {/* Plantillas Rápidas de Mensajes con Desplazamiento Lateral Personalizable */}
+            <div className="px-3 py-2 bg-slate-900/80 border-t border-slate-800 flex items-center gap-2 overflow-x-auto text-xs shrink-0 custom-scrollbar">
+              <span className="text-[10px] font-bold text-slate-400 uppercase shrink-0 flex items-center gap-1">
                 Plantillas:
               </span>
+              {templates.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() =>
+                    handleInsertTemplate(interpolateTemplate(tpl.text, activeSupplier))
+                  }
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 hover:text-emerald-300 border border-slate-700/60 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition flex items-center gap-1.5 shrink-0"
+                  title={tpl.text}
+                >
+                  <span>{tpl.icon}</span>
+                  <span className="font-medium">{tpl.title}</span>
+                </button>
+              ))}
               <button
                 type="button"
-                onClick={() =>
-                  handleInsertTemplate(
-                    `Estimados ${activeSupplier.name}, le confirmamos que su pago de factura ha sido procesado exitosamente por Tesorería.`
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
+                onClick={() => {
+                  setEditingTemplate(null);
+                  setIsCreatingNewTemplate(false);
+                  setShowTemplateManagerModal(true);
+                }}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700 hover:text-amber-300 border border-amber-500/30 text-amber-400 text-[11px] whitespace-nowrap cursor-pointer transition flex items-center gap-1 shrink-0 ml-auto"
+                title="Configurar, editar o agregar nuevas plantillas personalizadas"
               >
-                💰 Pago Procesado
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  handleInsertTemplate(
-                    `Estimados ${activeSupplier.name}, le remitimos comprobantes oficiales de retención SENIAT (IVA/ISLR) correspondientes a su facturación.`
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
-              >
-                📋 Retenciones SENIAT
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  handleInsertTemplate(
-                    `Estimados ${activeSupplier.name}, solicitamos confirmación de despacho para mercancía en ventana de muelle de recepción.`
-                  )
-                }
-                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] whitespace-nowrap cursor-pointer transition"
-              >
-                🚚 Ventana de Descarga
+                <Settings className="w-3 h-3" />
+                <span>Gestionar</span>
               </button>
             </div>
 
@@ -2024,6 +2299,471 @@ export const BrmWhatsappCenter: React.FC<BrmWhatsappCenterProps> = ({ onNavigate
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1: Guardar Contacto de Smartphone como Proveedor Oficial */}
+      {showSaveSupplierModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                  <UserPlus className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Guardar como Proveedor Oficial</h3>
+                  <p className="text-[11px] text-slate-400">Registrar este contacto en el catálogo de proveedores AR Group</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSaveSupplierModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveSupplierSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  Razón Social / Nombre Comercial *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={saveSupplierForm.name}
+                  onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, name: e.target.value })}
+                  placeholder="Ej: Inversiones Polar del Llano, C.A."
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs focus:border-emerald-500 outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    RIF Fiscal *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={saveSupplierForm.rif}
+                    onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, rif: e.target.value.toUpperCase() })}
+                    placeholder="J-12345678-9"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs font-mono uppercase focus:border-emerald-500 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Teléfono / WhatsApp *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={saveSupplierForm.phone}
+                    onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, phone: e.target.value })}
+                    placeholder="+584141234567"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs font-mono focus:border-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Persona de Contacto
+                  </label>
+                  <input
+                    type="text"
+                    value={saveSupplierForm.contactName}
+                    onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, contactName: e.target.value })}
+                    placeholder="Nombre del asesor de ventas"
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs focus:border-emerald-500 outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Categoría de Proveedor
+                  </label>
+                  <select
+                    value={saveSupplierForm.category}
+                    onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, category: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs focus:border-emerald-500 outline-none"
+                  >
+                    <option value="Materia Prima">Materia Prima</option>
+                    <option value="Empaques y Embalajes">Empaques y Embalajes</option>
+                    <option value="Fruver / Campo">Fruver / Campo</option>
+                    <option value="Carnes y Embutidos">Carnes y Embutidos</option>
+                    <option value="Lácteos y Derivados">Lácteos y Derivados</option>
+                    <option value="Transporte y Fletes">Transporte y Fletes</option>
+                    <option value="Servicios Operativos">Servicios Operativos</option>
+                    <option value="Suministros Generales">Suministros Generales</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Condiciones de Pago
+                  </label>
+                  <select
+                    value={saveSupplierForm.paymentTerms}
+                    onChange={(e) => {
+                      const terms = e.target.value;
+                      const days = terms === 'Crédito 15 días' ? 15 : terms === 'Crédito 30 días' ? 30 : terms === 'Crédito 7 días' ? 7 : 0;
+                      setSaveSupplierForm({ ...saveSupplierForm, paymentTerms: terms, creditDays: days });
+                    }}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs focus:border-emerald-500 outline-none"
+                  >
+                    <option value="Contado">Contado</option>
+                    <option value="Crédito 7 días">Crédito 7 días</option>
+                    <option value="Crédito 15 días">Crédito 15 días</option>
+                    <option value="Crédito 30 días">Crédito 30 días</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Días de Crédito
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="180"
+                    value={saveSupplierForm.creditDays}
+                    onChange={(e) => setSaveSupplierForm({ ...saveSupplierForm, creditDays: Number(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-white text-xs font-mono focus:border-emerald-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowSaveSupplierModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-emerald-950/40 cursor-pointer"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Guardar Proveedor Oficial</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Confirmación In-App de Eliminación de Conversación */}
+      {showDeleteChatModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-rose-500/40 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-rose-950/30">
+              <div className="flex items-center gap-2 text-rose-400">
+                <Trash2 className="w-5 h-5" />
+                <h3 className="text-sm font-bold text-white">Eliminar Historial de Chat</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDeleteChatModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                ¿Confirmas eliminar todo el historial de conversación con{' '}
+                <strong className="text-white">{activeSupplier.name}</strong> (
+                <span className="font-mono text-emerald-400">{activeSupplier.whatsappE164 || activeSupplier.phone}</span>)?
+              </p>
+
+              <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <div className="flex items-center gap-1 text-amber-400 font-semibold">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Aviso de Persistencia:</span>
+                </div>
+                <p>
+                  Los mensajes se eliminarán tanto de la vista activa de la aplicación como del almacén duradero persistente en disco.
+                </p>
+              </div>
+
+              <label className="flex items-start gap-2.5 p-2.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={syncDeleteToDevice}
+                  onChange={(e) => setSyncDeleteToDevice(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-emerald-600 focus:ring-0 mt-0.5"
+                />
+                <div className="text-xs">
+                  <span className="font-semibold text-slate-200">Sincronizar borrado con WhatsApp en el smartphone</span>
+                  <p className="text-[10px] text-slate-400">
+                    Envía el comando de borrado de chat al socket de Baileys para reflejarlo en la app del teléfono.
+                  </p>
+                </div>
+              </label>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isDeletingChat}
+                  onClick={() => setShowDeleteChatModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingChat}
+                  onClick={confirmDeleteChat}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-rose-950/40 disabled:opacity-50 cursor-pointer"
+                >
+                  {isDeletingChat ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Eliminando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Sí, Eliminar Chat</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: Gestor CRUD de Plantillas Personalizadas */}
+      {showTemplateManagerModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60 shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                  <Settings className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Gestor de Plantillas WhatsApp BRM</h3>
+                  <p className="text-[11px] text-slate-400">Personaliza las respuestas rápidas y variables automáticas</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTemplateManagerModal(false);
+                  setIsCreatingNewTemplate(false);
+                  setEditingTemplate(null);
+                }}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 overflow-y-auto space-y-4 custom-scrollbar flex-1 min-h-0">
+              {/* Información de Variables Dinámicas */}
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs space-y-1.5">
+                <span className="font-bold text-amber-400 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Variables Dinámicas Compatibles:
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  Inserta estas etiquetas en el texto de la plantilla. Se reemplazarán automáticamente con los datos del proveedor seleccionado:
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {['{proveedor}', '{rif}', '{saldo}', '{telefono}', '{empresa}'].map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => {
+                        if (isCreatingNewTemplate || editingTemplate) {
+                          setTemplateForm((prev) => ({ ...prev, text: prev.text ? `${prev.text} ${v}` : v }));
+                        }
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-emerald-400 font-mono text-[11px] border border-slate-700/60 transition cursor-pointer"
+                      title="Haz clic para insertar esta variable en el texto"
+                    >
+                      + {v}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Formulario de Creación / Edición */}
+              {(isCreatingNewTemplate || editingTemplate) ? (
+                <form onSubmit={handleSaveTemplate} className="p-4 rounded-xl bg-slate-950 border border-emerald-500/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                      {editingTemplate ? <Pencil className="w-3.5 h-3.5 text-amber-400" /> : <Plus className="w-3.5 h-3.5 text-emerald-400" />}
+                      {editingTemplate ? `Editar Plantilla: "${editingTemplate.title}"` : 'Crear Nueva Plantilla'}
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCreatingNewTemplate(false);
+                        setEditingTemplate(null);
+                      }}
+                      className="text-slate-400 hover:text-white text-xs cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2">
+                    <div className="col-span-1">
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">Ícono / Emoji</label>
+                      <input
+                        type="text"
+                        value={templateForm.icon}
+                        onChange={(e) => setTemplateForm({ ...templateForm, icon: e.target.value })}
+                        placeholder="💬"
+                        maxLength={4}
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-center text-sm outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">Título de la Plantilla *</label>
+                      <input
+                        type="text"
+                        required
+                        value={templateForm.title}
+                        onChange={(e) => setTemplateForm({ ...templateForm, title: e.target.value })}
+                        placeholder="Ej: Saludo Institucional"
+                        className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Texto del Mensaje *</label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={templateForm.text}
+                      onChange={(e) => setTemplateForm({ ...templateForm, text: e.target.value })}
+                      placeholder="Estimados {proveedor}, le saludamos de {empresa}..."
+                      className="w-full px-2.5 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs outline-none focus:border-emerald-500 leading-relaxed"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCreatingNewTemplate(false);
+                        setEditingTemplate(null);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 shadow-md shadow-emerald-950/30 cursor-pointer"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>{editingTemplate ? 'Actualizar Plantilla' : 'Guardar Plantilla'}</span>
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-300">
+                    Plantillas Activas ({templates.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={startCreateTemplate}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 shadow-md shadow-emerald-950/30 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Nueva Plantilla</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Lista de Plantillas */}
+              <div className="space-y-2">
+                {templates.map((tpl) => (
+                  <div
+                    key={tpl.id}
+                    className="p-3 rounded-xl bg-slate-950 border border-slate-800/80 hover:border-slate-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition"
+                  >
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <span className="text-xl p-1.5 rounded-lg bg-slate-900 shrink-0">{tpl.icon}</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h5 className="font-bold text-white text-xs">{tpl.title}</h5>
+                          {tpl.isDefault && (
+                            <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[10px]">
+                              Predeterminada
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">
+                          {tpl.text}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => startEditTemplate(tpl)}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
+                        title="Editar esta plantilla"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTemplate(tpl.id)}
+                        className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 transition cursor-pointer"
+                        title="Eliminar esta plantilla"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-3.5 border-t border-slate-800 bg-slate-950/60 flex items-center justify-between shrink-0">
+              <button
+                type="button"
+                onClick={handleResetTemplates}
+                className="px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                title="Restablecer todas las plantillas predeterminadas de fábrica"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Restaurar Predeterminadas</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowTemplateManagerModal(false);
+                  setIsCreatingNewTemplate(false);
+                  setEditingTemplate(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition cursor-pointer"
+              >
+                Listo
+              </button>
+            </div>
           </div>
         </div>
       )}

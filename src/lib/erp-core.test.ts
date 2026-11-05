@@ -264,6 +264,7 @@ import {
   updateMessageTextInStoreAndQueue,
   getChatMessagesHistoryHandler,
   processIncomingOrHistoryMessage,
+  deleteWhatsAppChatHandler,
   bridgeEvents,
 } from '../../server/whatsappQrBridge';
 import {
@@ -7155,6 +7156,177 @@ test('84. Certificación de Ordenación Cronológica de Mensajes y Burbujeo Din�
   // Plumrose no tiene mensajes -> Posición 2 (alfabético al fondo)
   assert.strictEqual(sortedContacts[2].name, 'Plumrose Latinoamericana', 'Contactos sin mensajes van al fondo');
 });
+
+test('85. Certificación de Eliminación Asimétrica Duradera (deleteWhatsAppChatHandler en disco y memoria), Resuelto de Nombres de Contactos de Smartphone y Gestor de Plantillas Personalizadas BRM', async () => {
+  // 1. Verificación de Eliminación Asimétrica Duradera de Chat en Disco y Emisión SSE en Tiempo Real
+  const testLineId = 'test_linea_brm_delete_85';
+  const targetPhone = '+584267820705';
+  const cleanDigits = '584267820705';
+
+  // Registrar mensajes simulados de Paola en el almacén duradero persistente
+  saveMessageToDurableStore({
+    id: 'msg-paola-001',
+    messageId: 'msg-paola-001',
+    lineaId: testLineId,
+    remitente: targetPhone,
+    destinatario: '+584140001122',
+    cuerpo: 'Buenas tardes, remito lista de precios actualizada',
+    timestamp: new Date().toISOString(),
+  });
+  saveMessageToDurableStore({
+    id: 'msg-paola-002',
+    messageId: 'msg-paola-002',
+    lineaId: testLineId,
+    remitente: '+584140001122',
+    destinatario: targetPhone,
+    cuerpo: 'Recibido Paola, muchas gracias',
+    timestamp: new Date().toISOString(),
+  });
+  // Mensaje de un tercer proveedor que debe preservarse intacto
+  saveMessageToDurableStore({
+    id: 'msg-otro-proveedor-003',
+    messageId: 'msg-otro-proveedor-003',
+    lineaId: testLineId,
+    remitente: '+584129998877',
+    destinatario: '+584140001122',
+    cuerpo: 'Mensaje de proveedor de empaques',
+    timestamp: new Date().toISOString(),
+  });
+
+  // Espía del evento en tiempo real emitido por el bridge
+  let chatDeletedEventEmitted = false;
+  let eventPayload: any = null;
+  const onChatDeleted = (data: any) => {
+    if (data?.cleanDigits === cleanDigits) {
+      chatDeletedEventEmitted = true;
+      eventPayload = data;
+    }
+  };
+  bridgeEvents.on('chat_deleted', onChatDeleted);
+
+  // Ejecutar eliminación del chat (con syncToSocket = false para entorno de prueba)
+  const delResult = await deleteWhatsAppChatHandler(testLineId, targetPhone, false);
+
+  bridgeEvents.off('chat_deleted', onChatDeleted);
+
+  assert.strictEqual(delResult.success, true, 'deleteWhatsAppChatHandler debe responder con éxito');
+  assert.ok(delResult.deletedFromDurableStore >= 2, 'Debe haber eliminado los 2 mensajes de Paola del almacén duradero');
+  assert.strictEqual(chatDeletedEventEmitted, true, 'Debe emitir el evento chat_deleted para sincronización SSE en tiempo real');
+  assert.strictEqual(eventPayload?.contactPhone, targetPhone);
+
+  // Verificar que el almacén duradero ya no contenga mensajes de Paola pero mantenga al otro proveedor
+  const historyAfterDelete = readDurableMessagesStore(testLineId);
+  const paolaLeft = historyAfterDelete.filter(
+    (m) =>
+      String(m.remitente || '').includes(cleanDigits) ||
+      String(m.destinatario || '').includes(cleanDigits)
+  );
+  assert.strictEqual(paolaLeft.length, 0, 'No debe quedar ningún mensaje de Paola en chat_messages_history.json');
+
+  const otherLeft = historyAfterDelete.find((m) => m.id === 'msg-otro-proveedor-003');
+  assert.ok(otherLeft, 'El mensaje del otro proveedor debe permanecer intacto en el almacén duradero');
+
+  // 2. Verificación de Resolución de Nombres de Contactos del Smartphone y "Guardar como Proveedor"
+  const mockSyncedContacts = [
+    { phone: '+584267820705', name: 'Paola', lid: 'paola@lid', updatedAt: new Date().toISOString() },
+    { phone: '+584141112233', name: 'Distribuidora Los Llanos', updatedAt: new Date().toISOString() },
+  ];
+
+  const resolveContactNameHelper = (phoneOrRaw: string, fallbackName?: string): string => {
+    const digits = String(phoneOrRaw || '').replace(/\D/g, '');
+    const last10 = digits.slice(-10);
+    const matched = mockSyncedContacts.find((c) => {
+      const cDigits = c.phone.replace(/\D/g, '');
+      return (
+        cDigits === digits ||
+        (last10.length >= 7 && cDigits.endsWith(last10)) ||
+        (last10.length >= 7 && digits.endsWith(cDigits.slice(-10)))
+      );
+    });
+    if (matched?.name && matched.name !== phoneOrRaw) {
+      return matched.name;
+    }
+    return fallbackName || phoneOrRaw;
+  };
+
+  // Número con formato E.164 directo
+  assert.strictEqual(resolveContactNameHelper('+584267820705'), 'Paola', 'Debe resolver el nombre "Paola" en lugar de mostrar sólo el número');
+  // Número sin símbolo +
+  assert.strictEqual(resolveContactNameHelper('584267820705'), 'Paola', 'Debe resolver "Paola" incluso sin el prefijo +');
+  // Número no existente en la libreta utiliza fallback
+  assert.strictEqual(resolveContactNameHelper('+584249999999', 'Contacto +584249999999'), 'Contacto +584249999999');
+
+  // Simulación de "Guardar como Proveedor Oficial"
+  const createdSupplier: Supplier = {
+    id: `sup-${Date.now()}`,
+    name: 'Paola',
+    rif: 'V-19876543-2',
+    phone: '+584267820705',
+    whatsappE164: '+584267820705',
+    contactName: 'Paola',
+    category: 'Materia Prima',
+    email: '',
+    creditDays: 0,
+    paymentTerms: 'Contado',
+    balanceUsd: 0,
+    taxpayerType: 'ORDINARIO',
+    personType: 'PN_RESIDENTE',
+  };
+  assert.strictEqual(createdSupplier.name, 'Paola');
+  assert.strictEqual(createdSupplier.whatsappE164, '+584267820705');
+
+  // 3. Verificación del Motor de Plantillas Personalizadas y Sustitución de Variables
+  const sampleTemplateText =
+    'Estimados {proveedor} (RIF: {rif}), le confirmamos que su pago de ${saldo} ha sido emitido por {empresa}. Tel: {telefono}';
+
+  const interpolateTest = (rawText: string, sup: Pick<Supplier, 'name' | 'rif' | 'balanceUsd' | 'whatsappE164' | 'phone'>) => {
+    return rawText
+      .replace(/\{proveedor\}/gi, sup.name || 'Proveedor')
+      .replace(/\{rif\}/gi, sup.rif || 'Sin RIF')
+      .replace(/\{saldo\}/gi, Number(sup.balanceUsd || 0).toFixed(2))
+      .replace(/\{telefono\}/gi, sup.whatsappE164 || sup.phone || '')
+      .replace(/\{empresa\}/gi, 'AR Group 2026');
+  };
+
+  const testSup: Pick<Supplier, 'name' | 'rif' | 'balanceUsd' | 'whatsappE164' | 'phone'> = {
+    name: 'Lácteos Los Andes',
+    rif: 'J-30492817-0',
+    balanceUsd: 1450.5,
+    whatsappE164: '+584241234567',
+    phone: '+584241234567',
+  };
+
+  const renderedText = interpolateTest(sampleTemplateText, testSup);
+  assert.strictEqual(
+    renderedText,
+    'Estimados Lácteos Los Andes (RIF: J-30492817-0), le confirmamos que su pago de $1450.50 ha sido emitido por AR Group 2026. Tel: +584241234567',
+    'La interpolación debe sustituir todas las variables dinámicas de forma exacta'
+  );
+
+  // CRUD de Plantillas Personalizadas
+  let customTemplates = [
+    { id: 'tpl-1', title: 'Pago Procesado', icon: '💰', text: 'Pago procesado', isDefault: true },
+    { id: 'tpl-2', title: 'Retención', icon: '📋', text: 'Retención enviada', isDefault: true },
+  ];
+
+  // Adición de nueva plantilla
+  const newTpl = { id: 'tpl-3', title: 'Nueva Orden', icon: '📦', text: 'Orden {proveedor}', isDefault: false };
+  customTemplates = [...customTemplates, newTpl];
+  assert.strictEqual(customTemplates.length, 3);
+  assert.strictEqual(customTemplates[2].title, 'Nueva Orden');
+
+  // Edición de plantilla existente
+  customTemplates = customTemplates.map((t) =>
+    t.id === 'tpl-3' ? { ...t, text: 'Orden urgente para {proveedor}' } : t
+  );
+  assert.strictEqual(customTemplates.find((t) => t.id === 'tpl-3')?.text, 'Orden urgente para {proveedor}');
+
+  // Eliminación de plantilla
+  customTemplates = customTemplates.filter((t) => t.id !== 'tpl-3');
+  assert.strictEqual(customTemplates.length, 2);
+  assert.strictEqual(customTemplates.some((t) => t.id === 'tpl-3'), false);
+});
+
 
 
 

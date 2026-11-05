@@ -1951,6 +1951,7 @@ async function deleteWhatsAppChatHandler(lineaId = DEFAULT_BRM_LINEA_ID, contact
     return { success: false, error: "N\xFAmero de proveedor inv\xE1lido para eliminar chat" };
   }
   let deletedFromLocalQueue = 0;
+  let deletedFromDurableStore = 0;
   let syncedWithWhatsAppDevice = false;
   try {
     if (fs.existsSync(PENDING_MESSAGES_QUEUE_FILE)) {
@@ -1962,7 +1963,7 @@ async function deleteWhatsAppChatHandler(lineaId = DEFAULT_BRM_LINEA_ID, contact
           if (m.lineaId && m.lineaId !== lineaId) return true;
           const remDigits = String(m.remitente || "").replace(/\D/g, "");
           const destDigits = String(m.destinatario || "").replace(/\D/g, "");
-          const match = remDigits === cleanDigits || destDigits === cleanDigits || remDigits.endsWith(cleanDigits) || destDigits.endsWith(cleanDigits);
+          const match = remDigits === cleanDigits || destDigits === cleanDigits || remDigits.endsWith(cleanDigits) || destDigits.endsWith(cleanDigits) || cleanDigits.length >= 10 && (remDigits.endsWith(cleanDigits.slice(-10)) || destDigits.endsWith(cleanDigits.slice(-10)));
           if (match) deletedFromLocalQueue++;
           return !match;
         });
@@ -1975,6 +1976,40 @@ async function deleteWhatsAppChatHandler(lineaId = DEFAULT_BRM_LINEA_ID, contact
     }
   } catch (err) {
     console.warn("[WhatsApp BRM Bridge] Aviso limpiando cola local en delete-chat:", err);
+  }
+  try {
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, "utf-8")
+      );
+      if (Array.isArray(store)) {
+        const filtered = store.filter((m) => {
+          if (m.lineaId && m.lineaId !== lineaId) return true;
+          const remDigits = String(m.remitente || "").replace(/\D/g, "");
+          const destDigits = String(m.destinatario || "").replace(/\D/g, "");
+          const match = remDigits === cleanDigits || destDigits === cleanDigits || remDigits.endsWith(cleanDigits) || destDigits.endsWith(cleanDigits) || cleanDigits.length >= 10 && (remDigits.endsWith(cleanDigits.slice(-10)) || destDigits.endsWith(cleanDigits.slice(-10)));
+          if (match) deletedFromDurableStore++;
+          return !match;
+        });
+        fs.writeFileSync(
+          DURABLE_MESSAGES_STORE_FILE,
+          JSON.stringify(filtered, null, 2),
+          "utf-8"
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Aviso limpiando almac\xE9n duradero en delete-chat:", err);
+  }
+  try {
+    bridgeEvents.emit("chat_deleted", {
+      lineaId,
+      contactPhone: `+${cleanDigits}`,
+      cleanDigits,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  } catch (err) {
+    console.warn("[WhatsApp BRM Bridge] Aviso emitiendo evento chat_deleted:", err);
   }
   if (syncToSocket) {
     const sock = activeSockets.get(lineaId);
@@ -2011,6 +2046,8 @@ async function deleteWhatsAppChatHandler(lineaId = DEFAULT_BRM_LINEA_ID, contact
     lineaId,
     contactPhone: `+${cleanDigits}`,
     deletedFromLocalQueue,
+    deletedFromDurableStore,
+    totalDeleted: deletedFromLocalQueue + deletedFromDurableStore,
     syncedWithWhatsAppDevice
   };
 }
@@ -2945,9 +2982,16 @@ ${query}` : String(query);
 
 `);
     };
+    const onChatDeleted = (data) => {
+      if (!data || data.lineaId && data.lineaId !== lineaId) return;
+      res.write(`data: ${JSON.stringify({ type: "CHAT_DELETED", data })}
+
+`);
+    };
     bridgeEvents.on("message", onMessage);
     bridgeEvents.on("message_edit", onEdit);
     bridgeEvents.on("status", onStatus);
+    bridgeEvents.on("chat_deleted", onChatDeleted);
     const pingInterval = setInterval(() => {
       res.write(": ping\n\n");
     }, 15e3);
@@ -2956,6 +3000,7 @@ ${query}` : String(query);
       bridgeEvents.off("message", onMessage);
       bridgeEvents.off("message_edit", onEdit);
       bridgeEvents.off("status", onStatus);
+      bridgeEvents.off("chat_deleted", onChatDeleted);
     });
   };
   app.get("/api/brm/whatsapp/events", handleWhatsappEvents);

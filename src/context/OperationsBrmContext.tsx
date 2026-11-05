@@ -102,7 +102,14 @@ function saveJsonSafe<T>(key: string, value: T): void {
   }
 }
 
-interface OperationsBrmContextType {
+export interface SyncedBrmContact {
+  phone: string;
+  name: string;
+  lid?: string;
+  updatedAt?: string;
+}
+
+export interface OperationsBrmContextType {
   // Configuración TOTP & Balanzas
   totpConfig: TotpSecurityConfig;
   updateTotpConfig: (updates: Partial<TotpSecurityConfig>) => void;
@@ -164,6 +171,8 @@ interface OperationsBrmContextType {
   // 4. Módulo BRM WhatsApp Proveedores (Modo Híbrido Triple — Puro Apure ERP)
   brmSession: BrmWhatsappSessionStatus;
   brmMessages: BrmWhatsappMessage[];
+  syncedContacts: SyncedBrmContact[];
+  fetchSyncedContacts: () => Promise<void>;
   brmPreInvoices: BrmSupplierPreInvoice[];
   stagedRetentionDispatch: StagedBrmRetentionDispatch | null;
   stageRetentionVoucherForBrm: (voucher: TaxRetentionVoucher) => { success: boolean; staged?: StagedBrmRetentionDispatch; error?: string };
@@ -370,6 +379,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
   const [brmMessages, setBrmMessages] = useState<BrmWhatsappMessage[]>(() =>
     loadJsonSafe<BrmWhatsappMessage[]>(STORAGE_KEYS.BRM_MESSAGES, [])
   );
+
+  const [syncedContacts, setSyncedContacts] = useState<SyncedBrmContact[]>([]);
 
   const [brmPreInvoices, setBrmPreInvoices] = useState<BrmSupplierPreInvoice[]>(() =>
     loadJsonSafe<BrmSupplierPreInvoice[]>(STORAGE_KEYS.BRM_PREINVOICES, [])
@@ -657,16 +668,34 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
+  const fetchSyncedContacts = useCallback(async () => {
+    try {
+      const resp = await fetch(
+        `/api/whatsapp/contacts?lineaId=${encodeURIComponent(BRM_WHATSAPP_LINEA_ID)}`,
+        { cache: 'no-store' }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data?.success && Array.isArray(data.contacts)) {
+        setSyncedContacts(data.contacts);
+      }
+    } catch {
+      // Silencioso ante desconexión o modo offline
+    }
+  }, []);
+
   const refreshBrmGatewayNow = useCallback(async () => {
     await fetchBrmGatewayStatus();
     await syncBrmBridgeOfflineQueue();
     await fetchBrmMessagesHistory();
-  }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory]);
+    await fetchSyncedContacts();
+  }, [fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory, fetchSyncedContacts]);
 
-  // Carga inicial inmediata del historial duradero al montar el contexto
+  // Carga inicial inmediata del historial duradero y contactos al montar el contexto
   useEffect(() => {
     fetchBrmMessagesHistory().catch(() => {});
-  }, [fetchBrmMessagesHistory]);
+    fetchSyncedContacts().catch(() => {});
+  }, [fetchBrmMessagesHistory, fetchSyncedContacts]);
 
   // Transmisión en tiempo real vía Server-Sent Events (SSE) para recepción instantánea de mensajes y ediciones
   useEffect(() => {
@@ -713,6 +742,21 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
                   )
                 );
               }
+            } else if (data?.type === 'CHAT_DELETED' && data.data) {
+              const cleanDigits = String(data.data.cleanDigits || data.data.contactPhone || '').replace(/\D/g, '');
+              if (cleanDigits) {
+                setBrmMessages((prev) =>
+                  prev.filter((m) => {
+                    const mDigits = m.phoneE164.replace(/\D/g, '');
+                    const match =
+                      mDigits === cleanDigits ||
+                      mDigits.endsWith(cleanDigits) ||
+                      cleanDigits.endsWith(mDigits) ||
+                      (cleanDigits.length >= 10 && (mDigits.endsWith(cleanDigits.slice(-10)) || cleanDigits.endsWith(mDigits.slice(-10))));
+                    return !match;
+                  })
+                );
+              }
             } else if (data?.type === 'STATUS' && data.status) {
               setBrmSession((prev) => mergeBrmGatewayStatus(prev, data.status));
             }
@@ -751,6 +795,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       if (brmSessionRef.current.state === 'CONNECTED') {
         syncBrmBridgeOfflineQueue().catch(() => {});
         fetchBrmMessagesHistory().catch(() => {});
+        fetchSyncedContacts().catch(() => {});
       }
     };
     tick();
@@ -762,7 +807,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [brmSession.state, fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory]);
+  }, [brmSession.state, fetchBrmGatewayStatus, syncBrmBridgeOfflineQueue, fetchBrmMessagesHistory, fetchSyncedContacts]);
 
   const setDefaultScaleMode = useCallback((mode: ScaleBarcodeMode) => {
     setDefaultScaleModeState(mode);
@@ -1552,7 +1597,11 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       setBrmMessages((prev) => {
         const filtered = prev.filter((m) => {
           const mDigits = m.phoneE164.replace(/\D/g, '');
-          const match = mDigits === cleanDigits || mDigits.endsWith(cleanDigits) || cleanDigits.endsWith(mDigits);
+          const match =
+            mDigits === cleanDigits ||
+            mDigits.endsWith(cleanDigits) ||
+            cleanDigits.endsWith(mDigits) ||
+            (cleanDigits.length >= 10 && (mDigits.endsWith(cleanDigits.slice(-10)) || cleanDigits.endsWith(mDigits.slice(-10))));
           if (match) removed++;
           return !match;
         });
@@ -1560,7 +1609,7 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
       });
 
       try {
-        await fetch('/api/whatsapp/delete-chat', {
+        const resp = await fetch('/api/whatsapp/delete-chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1569,6 +1618,10 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
             syncToSocket: syncToDevice,
           }),
         });
+        const resData = await resp.json().catch(() => null);
+        if (resData?.totalDeleted) {
+          removed = Math.max(removed, resData.totalDeleted);
+        }
       } catch {
         // Continuar si la red falla
       }
@@ -2297,6 +2350,8 @@ export const OperationsBrmProvider: React.FC<{ children: React.ReactNode }> = ({
         computeQuincenaDemandForecast,
         brmSession,
         brmMessages,
+        syncedContacts,
+        fetchSyncedContacts,
         brmPreInvoices,
         stagedRetentionDispatch,
         stageRetentionVoucherForBrm,

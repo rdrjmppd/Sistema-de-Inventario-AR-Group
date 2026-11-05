@@ -2333,6 +2333,7 @@ export async function deleteWhatsAppChatHandler(
   }
 
   let deletedFromLocalQueue = 0;
+  let deletedFromDurableStore = 0;
   let syncedWithWhatsAppDevice = false;
 
   // 1. Limpiar de la cola local de mensajes pendientes
@@ -2350,7 +2351,8 @@ export async function deleteWhatsAppChatHandler(
             remDigits === cleanDigits ||
             destDigits === cleanDigits ||
             remDigits.endsWith(cleanDigits) ||
-            destDigits.endsWith(cleanDigits);
+            destDigits.endsWith(cleanDigits) ||
+            (cleanDigits.length >= 10 && (remDigits.endsWith(cleanDigits.slice(-10)) || destDigits.endsWith(cleanDigits.slice(-10))));
           if (match) deletedFromLocalQueue++;
           return !match;
         });
@@ -2365,7 +2367,50 @@ export async function deleteWhatsAppChatHandler(
     console.warn('[WhatsApp BRM Bridge] Aviso limpiando cola local en delete-chat:', err);
   }
 
-  // 2. Sincronizar con el socket si fue iniciado desde la app y la sesión está activa
+  // 2. Limpiar del almacén duradero persistente (chat_messages_history.json)
+  try {
+    if (fs.existsSync(DURABLE_MESSAGES_STORE_FILE)) {
+      const store: QueuedBridgeMessage[] = JSON.parse(
+        fs.readFileSync(DURABLE_MESSAGES_STORE_FILE, 'utf-8')
+      );
+      if (Array.isArray(store)) {
+        const filtered = store.filter((m) => {
+          if (m.lineaId && m.lineaId !== lineaId) return true;
+          const remDigits = String(m.remitente || '').replace(/\D/g, '');
+          const destDigits = String(m.destinatario || '').replace(/\D/g, '');
+          const match =
+            remDigits === cleanDigits ||
+            destDigits === cleanDigits ||
+            remDigits.endsWith(cleanDigits) ||
+            destDigits.endsWith(cleanDigits) ||
+            (cleanDigits.length >= 10 && (remDigits.endsWith(cleanDigits.slice(-10)) || destDigits.endsWith(cleanDigits.slice(-10))));
+          if (match) deletedFromDurableStore++;
+          return !match;
+        });
+        fs.writeFileSync(
+          DURABLE_MESSAGES_STORE_FILE,
+          JSON.stringify(filtered, null, 2),
+          'utf-8'
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[WhatsApp BRM Bridge] Aviso limpiando almacén duradero en delete-chat:', err);
+  }
+
+  // 3. Emitir evento de eliminación en tiempo real para todos los clientes SSE conectados
+  try {
+    bridgeEvents.emit('chat_deleted', {
+      lineaId,
+      contactPhone: `+${cleanDigits}`,
+      cleanDigits,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.warn('[WhatsApp BRM Bridge] Aviso emitiendo evento chat_deleted:', err);
+  }
+
+  // 4. Sincronizar con el socket si fue iniciado desde la app y la sesión está activa
   if (syncToSocket) {
     const sock = activeSockets.get(lineaId);
     const status = getWhatsAppLineStatusHandler(lineaId);
@@ -2402,6 +2447,8 @@ export async function deleteWhatsAppChatHandler(
     lineaId,
     contactPhone: `+${cleanDigits}`,
     deletedFromLocalQueue,
+    deletedFromDurableStore,
+    totalDeleted: deletedFromLocalQueue + deletedFromDurableStore,
     syncedWithWhatsAppDevice,
   };
 }

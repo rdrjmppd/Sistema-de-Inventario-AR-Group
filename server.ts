@@ -1169,9 +1169,15 @@ async function startServer() {
       res.write(`data: ${JSON.stringify({ type: 'STATUS', status })}\n\n`);
     };
 
+    const onChatDeleted = (data: any) => {
+      if (!data || (data.lineaId && data.lineaId !== lineaId)) return;
+      res.write(`data: ${JSON.stringify({ type: 'CHAT_DELETED', data })}\n\n`);
+    };
+
     bridgeEvents.on('message', onMessage);
     bridgeEvents.on('message_edit', onEdit);
     bridgeEvents.on('status', onStatus);
+    bridgeEvents.on('chat_deleted', onChatDeleted);
 
     const pingInterval = setInterval(() => {
       res.write(': ping\n\n');
@@ -1182,6 +1188,7 @@ async function startServer() {
       bridgeEvents.off('message', onMessage);
       bridgeEvents.off('message_edit', onEdit);
       bridgeEvents.off('status', onStatus);
+      bridgeEvents.off('chat_deleted', onChatDeleted);
     });
   };
   app.get('/api/brm/whatsapp/events', handleWhatsappEvents);
