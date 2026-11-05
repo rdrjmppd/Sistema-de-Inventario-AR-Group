@@ -37,47 +37,13 @@ import { FruverYieldView } from './components/operations/FruverYieldView';
 import { SessionTimeoutWarningModal } from './components/common/SessionTimeoutWarningModal';
 import { BRAND_ASSETS, BRAND_NAME, BRAND_LEGAL_NAME, BRAND_RIF } from './lib/brand-assets';
 
-const ShelfStockManager = React.lazy(() =>
-  import('./components/inventory/ShelfStockManager').then((m) => ({
-    default: m.default || m.ShelfStockManager,
-  }))
-);
-
-const RetentionsCenter = React.lazy(() =>
-  import('./components/finance/RetentionsCenter').then((m) => ({
-    default: m.default || m.RetentionsCenter,
-  }))
-);
-
-const FefoColdChainCenter = React.lazy(() =>
-  import('./components/operations/FefoColdChainCenter').then((m) => ({
-    default: m.default || m.FefoColdChainCenter,
-  }))
-);
-
-const ProductionRecipesView = React.lazy(() =>
-  import('./components/operations/ProductionRecipesView').then((m) => ({
-    default: m.default || m.ProductionRecipesView,
-  }))
-);
-
-const BrmWhatsappCenter = React.lazy(() =>
-  import('./components/finance/BrmWhatsappCenter').then((m) => ({
-    default: m.default || m.BrmWhatsappCenter,
-  }))
-);
-
-const BankReconciliationCenter = React.lazy(() =>
-  import('./components/finance/BankReconciliationCenter').then((m) => ({
-    default: m.default || m.BankReconciliationCenter,
-  }))
-);
-
-const ExpensesCenter = React.lazy(() =>
-  import('./components/expenses/ExpensesCenter').then((m) => ({
-    default: m.default || m.ExpensesCenter,
-  }))
-);
+import { ShelfStockManager } from './components/inventory/ShelfStockManager';
+import { RetentionsCenter } from './components/finance/RetentionsCenter';
+import { FefoColdChainCenter } from './components/operations/FefoColdChainCenter';
+import { ProductionRecipesView } from './components/operations/ProductionRecipesView';
+import { BrmWhatsappCenter } from './components/finance/BrmWhatsappCenter';
+import { BankReconciliationCenter } from './components/finance/BankReconciliationCenter';
+import { ExpensesCenter } from './components/expenses/ExpensesCenter';
 
 const LoginView: React.FC = () => {
   const { login, logoutReason, clearLogoutReason } = useAuth();

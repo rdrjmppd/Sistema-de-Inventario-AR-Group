@@ -96,8 +96,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Bypass obligatorio para endpoints de servidor e IA
-  if (url.pathname.startsWith('/api/')) {
+  // Bypass obligatorio para endpoints de servidor, IA y módulos en vivo de Vite
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.startsWith('/node_modules/')
+  ) {
     return;
   }
 
@@ -155,8 +160,14 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         })
         .catch(() => {
-          // Fallback silencioso si no hay conexión de red
-          return cachedResponse;
+          // Fallback seguro si no hay conexión de red (evita resolver undefined en respondWith)
+          return (
+            cachedResponse ||
+            new Response('Recurso estático sin conexión — Chrystal® ERP', {
+              status: 503,
+              headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            })
+          );
         });
 
       return cachedResponse || fetchPromise;
