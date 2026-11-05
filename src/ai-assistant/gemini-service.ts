@@ -8,6 +8,7 @@ import {
   AssistantQueryRequest,
   AssistantQueryResponse,
   LiveErpOperationalContext,
+  ChatMessage,
 } from './types';
 import { evaluateSecurityGuardrails, buildOutOfScopeResponse } from './security-guardrails';
 import { COMPANY_IDENTITY } from './knowledge-base';
@@ -17,6 +18,435 @@ import { COMPANY_IDENTITY } from './knowledge-base';
  * such as everyday health/diet, home cooking, cinema/music, video games, casual sports,
  * non-corporate downloads, astrology, personal life, or household DIY.
  */
+
+/**
+ * Detects whether a query is a conversational follow-up, coreference/anaphora,
+ * clarification, simplification request, or location inquiry.
+ */
+export function isFollowUpOrMetaQuery(query: string): boolean {
+  const q = query.toLowerCase().trim();
+
+  // 1. Explicit simplification / pedagogical requests (always meta/follow-up)
+  const simplificationPatterns = [
+    /otra\s+manera/,
+    /otra\s+forma/,
+    /de\s+otra/,
+    /m[aá]s\s+(sencillo|simple|f[aá]cil|claro|corto|resumido|r[aá]pido|detallado|despacio)/,
+    /simplif[ií]ca(lo|r)?/,
+    /no\s+(entend[ií]|comprendo|me\s+qued[oó]\s+claro|capt[eé]|le\s+llego)/,
+    /aclar(ar|a)(lo|me)?/,
+    /resum(ir|e)(lo|me)?/,
+    /en\s+pocas\s+palabras/,
+    /dame\s+un\s+ejemplo/,
+    /un\s+ejemplo\s+pr[aá]ctico/,
+    /expl[ií]ca(me|lo)?\s+de\s+nuevo/,
+    /puedes\s+repetir/,
+    /repite\s+eso/,
+    /me\s+lo\s+puedes\s+explicar/,
+    /puedes\s+explicar(lo)?/,
+  ];
+
+  if (simplificationPatterns.some((p) => p.test(q))) {
+    return true;
+  }
+
+  // 2. Anaphoric / Coreference patterns (referring to "ese botón", "eso", "el pin", etc.)
+  const anaphoricPatterns = [
+    /d[oó]nde\s+(est[aá]|queda|consigo|ubico|hago\s+clic|encuentro)\s+(ese|esa|el|la|dicho|dicha)?\s*(bot[oó]n|opci[oó]n|m[oó]dulo|men[uú]|secci[oó]n|campo|pantalla|formulario|pesta[ñn]a)/,
+    /d[oó]nde\s+(est[aá]|queda|hago\s+clic|hago\s+click)\s*(en\s+pantalla)?$/,
+    /d[oó]nde\s+(est[aá]|queda)\s+ese\s+bot[oó]n/,
+    /y\s+si\s+no\s+(tengo|est[aá]|hay|cuenta)/,
+    /qui[eé]n\s+(lo\s+)?(aprueba|autoriza|firma)/,
+    /a\s+qui[eé]n\s+(le\s+pido|consulto|recurro)/,
+    /cu[aá]l\s+es\s+el\s+siguiente\s+paso/,
+    /qu[eé]\s+hago\s+despu[eé]s/,
+    /y\s+despu[eé]s\s+qu[eé]/,
+    /eso\s+(afecta|descuenta|genera|modifica|altera|resta|suma)/,
+    /c[oó]mo\s+hago\s+eso/,
+    /por\s+qu[eé]\s+se\s+hace\s+as[ií]/,
+    /qu[eé]\s+significa\s+eso/,
+    /c[oó]mo\s+funciona\s+(eso|dicha\s+opci[oó]n|dicho\s+bot[oó]n|la\s+desvinculaci[oó]n)/,
+    /desvinculaci[oó]n/,
+  ];
+
+  return anaphoricPatterns.some((p) => p.test(q));
+}
+
+export type ErpTopic =
+  | 'BAJAS_DESCARGAS'
+  | 'BCV_TASA'
+  | 'POLLO_YIELD'
+  | 'CERDO_YIELD'
+  | 'RES_YIELD'
+  | 'FRUVER'
+  | 'WHATSAPP_BRM'
+  | 'GASTOS_OPEX'
+  | 'CONCILIACION_BANCARIA'
+  | 'RECETAS_BOM'
+  | 'TOTP_OFFLINE'
+  | 'IMPRESORAS_FISCALES'
+  | 'QUIEBRE_STOCK'
+  | 'VALORIZACION_INVENTARIO'
+  | 'KARDEX_FEFO'
+  | 'SPLIT_SCREEN_OCR'
+  | 'FORENSE_OCR'
+  | 'ALTA_SKU'
+  | 'VENTAS_POS'
+  | 'GENERAL_SUPERMERCADO';
+
+/**
+ * Traverses previous conversation history from most recent to oldest
+ * to identify the active ERP domain topic.
+ */
+export function detectActiveTopicFromHistory(history?: ChatMessage[]): ErpTopic {
+  if (!history || history.length === 0) return 'GENERAL_SUPERMERCADO';
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const text = (history[i].text || '').toLowerCase();
+
+    if (text.includes('pollo') && (text.includes('desposte') || text.includes('pechuga') || text.includes('rendimiento') || text.includes('corte'))) {
+      return 'POLLO_YIELD';
+    }
+    if ((text.includes('cerdo') || text.includes('cochino') || text.includes('pernil') || text.includes('chuleta')) && (text.includes('desglose') || text.includes('rendimiento') || text.includes('canal'))) {
+      return 'CERDO_YIELD';
+    }
+    if ((text.includes('res') || text.includes('vacuno') || text.includes('solomo') || text.includes('desposte')) && (text.includes('cuarto') || text.includes('rendimiento') || text.includes('canal') || text.includes('cárnic') || text.includes('carnic'))) {
+      return 'RES_YIELD';
+    }
+    if (text.includes('fruver') || text.includes('agrícola') || text.includes('agricola') || text.includes('hortaliza') || text.includes('verdura')) {
+      return 'FRUVER';
+    }
+    if (text.includes('whatsapp') || text.includes('baileys') || text.includes('brm') || text.includes('qr') || text.includes('pasarela') || text.includes('desvincular')) {
+      return 'WHATSAPP_BRM';
+    }
+    if (text.includes('baja') || text.includes('descarga') || text.includes('descarte') || text.includes('merma') || text.includes('avería') || text.includes('averia') || text.includes('vencid') || text.includes('desincorporación') || text.includes('desincorporacion')) {
+      return 'BAJAS_DESCARGAS';
+    }
+    if (text.includes('tasa') || text.includes('bcv') || text.includes('17:00') || text.includes('dólar') || text.includes('dolar') || text.includes('cambio')) {
+      return 'BCV_TASA';
+    }
+    if (text.includes('opex') || text.includes('gasto operativo') || text.includes('servicio público') || text.includes('flete')) {
+      return 'GASTOS_OPEX';
+    }
+    if (text.includes('conciliación') || text.includes('conciliacion') || text.includes('extracto') || text.includes('bancari')) {
+      return 'CONCILIACION_BANCARIA';
+    }
+    if (text.includes('receta') || text.includes('bom') || text.includes('panadería') || text.includes('panaderia') || text.includes('horneo')) {
+      return 'RECETAS_BOM';
+    }
+    if (text.includes('totp') || text.includes('token') || text.includes('offline') || text.includes('rfc 6238') || text.includes('6 dígitos')) {
+      return 'TOTP_OFFLINE';
+    }
+    if (text.includes('impresora fiscal') || text.includes('cierre z') || text.includes('reporte x') || text.includes('seniat') || text.includes('snat')) {
+      return 'IMPRESORAS_FISCALES';
+    }
+    if (text.includes('quiebre') || text.includes('stockout') || text.includes('reorden') || text.includes('crítico') || text.includes('critico') || text.includes('agotado')) {
+      return 'QUIEBRE_STOCK';
+    }
+    if (text.includes('valorización') || text.includes('valorizacion') || text.includes('costo total') || text.includes('patrimonio')) {
+      return 'VALORIZACION_INVENTARIO';
+    }
+    if (text.includes('kardex') || text.includes('fefo') || text.includes('lote') || text.includes('vencimiento')) {
+      return 'KARDEX_FEFO';
+    }
+    if (text.includes('split-screen') || text.includes('pre-asiento') || text.includes('factura')) {
+      return 'SPLIT_SCREEN_OCR';
+    }
+    if (text.includes('forense') || text.includes('pago móvil') || text.includes('pago movil') || text.includes('auténtico') || text.includes('autentico') || text.includes('fraude')) {
+      return 'FORENSE_OCR';
+    }
+    if (text.includes('alta de sku') || text.includes('nuevo producto') || text.includes('registrar producto')) {
+      return 'ALTA_SKU';
+    }
+    if (text.includes('ventas pos') || text.includes('ingesta') || text.includes('cierre pos')) {
+      return 'VENTAS_POS';
+    }
+  }
+
+  return 'GENERAL_SUPERMERCADO';
+}
+
+/**
+ * Builds a pedagogical, empathetic, and simplified response for follow-ups,
+ * coreferences, UI navigation questions, or authorization inquiries.
+ */
+export function buildPedagogicalFollowUpResponse(
+  query: string,
+  topic: ErpTopic,
+  userName: string,
+  liveContext: LiveErpOperationalContext
+): { answer: string; suggestedPrompts: string[] } {
+  const q = query.toLowerCase();
+
+  const isLocationQuery =
+    q.includes('donde') ||
+    q.includes('dónde') ||
+    q.includes('boton') ||
+    q.includes('botón') ||
+    q.includes('hago clic') ||
+    q.includes('opcion') ||
+    q.includes('opción') ||
+    q.includes('pantalla') ||
+    q.includes('ubico');
+
+  const isAuthOrPinQuery =
+    q.includes('pin') ||
+    q.includes('autoriz') ||
+    q.includes('aprueba') ||
+    q.includes('gerente') ||
+    q.includes('permiso') ||
+    q.includes('no tengo');
+
+  const isImpactQuery =
+    q.includes('afecta') ||
+    q.includes('kardex') ||
+    q.includes('descuenta') ||
+    q.includes('resta') ||
+    q.includes('asiento');
+
+  switch (topic) {
+    case 'BAJAS_DESCARGAS': {
+      if (isLocationQuery) {
+        return {
+          answer: `Para ubicar la opción en pantalla, ${userName}:
+
+1. En el **menú lateral izquierdo** de Chrystal ERP, haz clic en la sección **"Inventario"**.
+2. Selecciona la pestaña **"Bajas y Mermas"** (o "Solicitud de Bajas").
+3. En la esquina superior derecha verás un botón azul brillante que dice **"+ Nueva Solicitud de Baja"**.
+4. Al hacer clic allí se abrirá el formulario para elegir el SKU, la cantidad de unidades dañadas y el motivo.`,
+          suggestedPrompts: [
+            '¿Y si no tengo PIN de Gerencia?',
+            '¿Eso afecta el kardex de inmediato?',
+            '¿Cómo descargo mermas en carnicería o fruver?',
+          ],
+        };
+      }
+
+      if (isAuthOrPinQuery) {
+        return {
+          answer: `Si eres Operador y no tienes PIN de Gerencia, ${userName}:
+
+¡No te preocupes! El sistema está diseñado con una regla de doble firma pensada exactamente para eso:
+* **Tu rol como Operador**: Registras la solicitud con los paquetes dañados y la causa. La solicitud queda guardada en estado **"Pendiente de Aprobación"**.
+* **El rol del Gerente o Auditor**: Se acerca al área física de mermas, verifica el producto dañado y coloca su **PIN de 4 dígitos** en el sistema para autorizar la salida definitiva.
+* **Tú no necesitas tener PIN gerencial** para iniciar el trámite ni para apartar la mercancía dañada.`,
+          suggestedPrompts: [
+            '¿Dónde está exactamente ese botón en pantalla?',
+            '¿Eso afecta el kardex de inmediato?',
+            '¿Cómo solicito una baja de inventario?',
+          ],
+        };
+      }
+
+      if (isImpactQuery) {
+        return {
+          answer: `Respecto al impacto en el inventario y kardex, ${userName}:
+
+* **Al registrar la solicitud**: Las unidades dañadas se bloquean de inmediato para que nadie las venda por error en caja, pero **aún no se descuentan definitivamente** del patrimonio.
+* **Al autorizar el Gerente con su PIN**: Se genera el asiento automático en el **Kardex** con tipo \`SALIDA_POR_MERMA\`, se descuenta el stock del depósito correspondiente y el costo de compra se asigna a pérdidas operativas con total trazabilidad.`,
+          suggestedPrompts: [
+            '¿Dónde está el botón para registrar la baja?',
+            '¿Y si no tengo PIN de Gerencia?',
+            '¿Cómo consultar el historial de bajas?',
+          ],
+        };
+      }
+
+      return {
+        answer: `¡Por supuesto, ${userName}! Vamos a explicarlo de forma súper sencilla, directa y sin rodeos técnicos:
+
+Imagina que en el pasillo de abarrotes se rompieron o vencieron varios paquetes de arroz:
+
+1. **Tú como Operador**:
+   * Entras en el sistema y avisas: *"Se dañaron 5 paquetes de Arroz Primor"*.
+   * Llenas la solicitud indicando la causa (ej. empaque roto o fecha vencida) y haces clic en guardar.
+   * El sistema aparta de inmediato esos 5 paquetes en una lista especial para que nadie los intente vender ni los cuente como mercancía sana.
+
+2. **El Gerente o Auditor**:
+   * Se acerca físicamente al área de mermas, revisa los 5 paquetes dañados y coloca su **PIN secreto de 4 dígitos**.
+   * Al validar con su PIN, el sistema descuenta definitivamente los 5 paquetes del depósito y envía el costo a pérdidas autorizadas.
+
+**En resumen**: El operador reporta el daño físico y el gerente lo certifica con su PIN para evitar que se pierda mercancía sin control.`,
+        suggestedPrompts: [
+          '¿Dónde está exactamente ese botón en pantalla?',
+          '¿Y si no tengo PIN de Gerencia?',
+          '¿Eso afecta el kardex de inmediato?',
+        ],
+      };
+    }
+
+    case 'BCV_TASA': {
+      if (isLocationQuery) {
+        return {
+          answer: `Para ver la tasa oficial BCV en pantalla, ${userName}:
+
+1. En la **barra superior (header)** de Chrystal ERP siempre está visible el badge con la tasa activa (ej. \`BCV: ${liveContext.bcvState.activeRate.toFixed(4)} VES/USD\`).
+2. También puedes consultar los detalles completos en **"Configuración > Parámetros Financieros"** o en el panel de **"Finanzas > Control Cambiario"**.`,
+          suggestedPrompts: [
+            '¿Cómo funciona la regla de las 17:00 VET?',
+            '¿Cómo se calculan los precios de venta en bolívares?',
+          ],
+        };
+      }
+
+      return {
+        answer: `¡Claro, ${userName}! El dólar y los precios en Chrystal ERP funcionan con una regla muy clara y automática:
+
+1. **De 8:00 AM a 5:00 PM (17:00 VET)**: Todo en la tienda se cobra a la tasa del día publicada por el Banco Central de Venezuela.
+2. **A partir de las 5:00 PM (17:00 VET)**: El sistema cambia automáticamente a la tasa oficial del día siguiente hábil que el BCV publica al final de la tarde.
+3. **Siempre en Céntimos Exactos**: Si un producto cuesta $10 y la tasa es 65.40, el sistema multiplica exactamente usando redondeo bancario (\`ROUND_HALF_UP\`) para que en el ticket de caja nunca sobre ni falte un solo céntimo.`,
+        suggestedPrompts: [
+          '¿Cuál es la tasa oficial BCV hoy?',
+          '¿Dónde veo la tasa en pantalla?',
+          '¿Cómo afecta el PVP de los productos?',
+        ],
+      };
+    }
+
+    case 'POLLO_YIELD': {
+      return {
+        answer: `¡Con gusto, ${userName}! El desposte de pollo funciona de forma muy simple:
+
+Imagina que compras un lote de pollos enteros beneficiados a $2 por kilo:
+1. **Lo que entra**: El camión entrega el pollo completo en canal con piel, alas, pechuga y menudencias.
+2. **El corte**: El carnicero lo divide en piezas. La **pechuga** es la parte que se vende más cara y es la que debe absorber la mayor parte del costo para que el negocio gane. Las alitas, muslos y carcasas (hueso para sopa) se venden a precios más accesibles.
+3. **La calculadora**: Si necesitas vender 50 kg de milanesa el fin de semana, la calculadora te dice exactamente cuántos pollos enteros tienes que pedirle al proveedor para obtener esos 50 kg de pechuga.`,
+        suggestedPrompts: [
+          '¿Cómo funciona el desglose de cerdo?',
+          '¿Cómo funciona el desposte de res?',
+          '¿Dónde registro el desposte en el sistema?',
+        ],
+      };
+    }
+
+    case 'CERDO_YIELD': {
+      return {
+        answer: `¡Por supuesto, ${userName}! El desglose de cerdo es muy similar:
+
+1. **La media canal**: Llega el cerdo colgado en el camión refrigerado con su peso bruto.
+2. **Los cortes nobles**: Se separa el pernil, las chuletas y el lomo. Estos cortes finos absorben el costo principal del animal. Las costillitas, el tocino para chicharrón, la papada y las paticas complementan la venta.
+3. **Las mermas**: Lo que se pierde en grasa blanca no utilizable y aserrín de sierra eléctrica se descuenta automáticamente como merma técnica.`,
+        suggestedPrompts: [
+          '¿Cómo desgloso el pollo?',
+          '¿Cómo funciona el desposte de res?',
+          '¿Dónde registro los cortes de cerdo?',
+        ],
+      };
+    }
+
+    case 'RES_YIELD': {
+      return {
+        answer: `¡Claro, ${userName}! El desposte de res explicado de forma directa:
+
+1. **Entrada en cuartos**: Llega el cuarto delantero (solomo abierto, pecho, paleta) o cuarto trasero (solomo de cuerito, lomito, pulpa negra, chocozuela).
+2. **Deshuese y pulpeo**: El carnicero separa carne de primera, carne de segunda, hueso blanco y grasa de recorte.
+3. **Rendimiento**: El sistema calcula cuánto rinde cada kilo de carne limpia respecto al peso total de la canal, garantizando que el precio de venta al público en anaquel cubra el costo del animal.`,
+        suggestedPrompts: [
+          '¿Cómo desgloso el pollo?',
+          '¿Cómo funciona el rendimiento fruver?',
+          '¿Dónde registro el desposte de res?',
+        ],
+      };
+    }
+
+    case 'FRUVER': {
+      return {
+        answer: `¡Por supuesto, ${userName}! Las frutas y verduras pierden peso con el paso de las horas en los anaqueles por deshidratación y maduración:
+
+1. **Pérdida natural de peso**: Si compras 100 kg de tomate, después de 3 días en exhibición quedan 93 kg vendibles porque 7 kg se perdieron en agua y tomates magullados.
+2. **Fórmula de absorción**: El sistema no te deja perder dinero; ajusta el precio por kilo vendible para que esos 93 kg recuperen el costo de los 100 kg originales más tu margen comercial.`,
+        suggestedPrompts: [
+          '¿Cómo registro una merma de fruver?',
+          '¿Dónde está el módulo de rendimiento fruver?',
+        ],
+      };
+    }
+
+    case 'WHATSAPP_BRM': {
+      if (isLocationQuery) {
+        return {
+          answer: `Para acceder a la pasarela de WhatsApp, ${userName}:
+
+1. En el **menú lateral izquierdo**, ve a **"Proveedores / BRM"** o **"Mensajería WhatsApp"**.
+2. Si el teléfono no está conectado, verás el recuadro para **generar el código QR**.
+3. Al escanearlo, se desplegará el panel con la lista de contactos a la izquierda y el historial de chat con plantillas a la derecha.`,
+          suggestedPrompts: [
+            '¿Cómo funciona la desvinculación segura?',
+            '¿Cómo uso las plantillas de mensajes?',
+          ],
+        };
+      }
+
+      return {
+        answer: `¡Claro, ${userName}! La pasarela de WhatsApp conecta el smartphone del supermercado directamente con el sistema:
+
+1. **Escaneas el QR**: Conectas el WhatsApp de compras o ventas con la plataforma una sola vez mediante Baileys.
+2. **Ves los chats del proveedor**: Todos los mensajes entrantes de cotizaciones, despachos y comprobantes de pago aparecen en la pantalla en tiempo real con barra de desplazamiento lateral e histórico de mensajes.
+3. **Desvinculación segura**: Si desconectas o desvinculas el teléfono, la ventana se limpia y los chats se ocultan de inmediato para proteger la privacidad comercial hasta que se vuelva a conectar.`,
+        suggestedPrompts: [
+          '¿Dónde está la opción de WhatsApp en pantalla?',
+          '¿Cómo agrego una nueva plantilla de mensaje?',
+          '¿Qué pasa al desvincular el teléfono?',
+        ],
+      };
+    }
+
+    case 'GASTOS_OPEX': {
+      return {
+        answer: `¡Con gusto, ${userName}! Los gastos OPEX son todos los costos necesarios para que el supermercado funcione día a día:
+
+1. **Ejemplos**: La factura eléctrica de Corpoelec, el alquiler del local, las bolsas plásticas de empaque, el hielo y el combustible de los camiones de reparto.
+2. **Control en Chrystal ERP**: Se registran bajo centros de costos (ej. Cajas, Cavas, Almacén) en dólares y bolívares a tasa BCV para saber exactamente cuánto cuesta mantener abierta la tienda cada mes.`,
+        suggestedPrompts: [
+          '¿Dónde registro un nuevo gasto OPEX?',
+          '¿Cómo afecta el flujo de caja?',
+        ],
+      };
+    }
+
+    case 'TOTP_OFFLINE': {
+      return {
+        answer: `¡Por supuesto, ${userName}! El código TOTP es un token de seguridad de 6 números que cambia cada 30 segundos (como Google Authenticator):
+
+1. **Funciona sin Internet**: No depende de datos móviles ni de que la red de Cantv esté activa.
+2. **Uso en Tienda**: El gerente genera el código desde su teléfono o módulo seguro para autorizar aperturas de gaveta, descuentos especiales o bajas de inventario sin exponer su clave fija.`,
+        suggestedPrompts: [
+          '¿Cómo se genera el token TOTP?',
+          '¿Qué operaciones requieren código TOTP?',
+        ],
+      };
+    }
+
+    case 'IMPRESORAS_FISCALES': {
+      return {
+        answer: `¡Claro, ${userName}! Las impresoras fiscales conectadas al sistema emiten las facturas legales según la normativa del SENIAT:
+
+1. **Durante el día**: Cada venta genera un comprobante fiscal numerado correlativamente en la memoria de la máquina.
+2. **Reporte X**: Es un corte parcial a mitad de jornada para verificar cuánto dinero ha entrado a cajas sin cerrar el día.
+3. **Cierre Z**: Es el cierre fiscal definitivo al final del turno que graba los totales diarios en la memoria fiscal inalterable.`,
+        suggestedPrompts: [
+          '¿Cuál es la diferencia entre Reporte X y Cierre Z?',
+          '¿Qué hacer si la impresora fiscal se queda sin papel?',
+        ],
+      };
+    }
+
+    default: {
+      return {
+        answer: `¡Con gusto, ${userName}! Chrystal ERP es el sistema integral para gestionar las operaciones de **Hiperabasto Polar**: inventario por lotes y vencimiento (FEFO), compras a proveedores, rendimiento cárnico y fruver, tasa cambiaria oficial BCV con corte a las 17:00, y facturación fiscal.
+
+¿Sobre cuál de estas áreas te gustaría que conversemos de manera más simple y directa?`,
+        suggestedPrompts: [
+          '¿Cómo funciona la solicitud de bajas de inventario?',
+          '¿Cómo se calcula el desposte de pollo?',
+          '¿Cómo funciona la tasa oficial BCV?',
+          '¿Qué productos están en quiebre de stock?',
+        ],
+      };
+    }
+  }
+}
+
 export function isExternalOutOfScopeQuery(query: string): boolean {
   const q = query.toLowerCase().trim();
 
@@ -149,12 +579,19 @@ export function isExternalOutOfScopeQuery(query: string): boolean {
  */
 export function answerQueryWithHeuristicEngine(
   query: string,
-  liveContext: LiveErpOperationalContext
+  liveContext: LiveErpOperationalContext,
+  conversationHistory?: ChatMessage[]
 ): { answer: string; suggestedPrompts: string[] } {
   const q = query.toLowerCase().trim();
   const userName = liveContext.activeUser.displayName;
 
-  // 0. Filtro estricto para consultas cotidianas fuera de alcance (salud, recetas caseras, cine, juegos, etc.)
+  // 0. Trazabilidad conversacional y repreguntas (conectar los puntos y reformulación pedagógica)
+  if (isFollowUpOrMetaQuery(query)) {
+    const activeTopic = detectActiveTopicFromHistory(conversationHistory);
+    return buildPedagogicalFollowUpResponse(query, activeTopic, userName, liveContext);
+  }
+
+  // 0.5. Filtro estricto para consultas cotidianas fuera de alcance (salud, recetas caseras, cine, juegos, etc.)
   if (isExternalOutOfScopeQuery(query)) {
     return {
       answer: buildOutOfScopeResponse(query, userName),
@@ -1445,7 +1882,7 @@ export async function queryAssistant(
   }
 
   // Step 3: Deterministic Local Heuristic Fallback Engine
-  const heuristic = answerQueryWithHeuristicEngine(query, liveContext);
+  const heuristic = answerQueryWithHeuristicEngine(query, liveContext, request.conversationHistory);
   return {
     answer: heuristic.answer,
     isBlockedByRbac: false,

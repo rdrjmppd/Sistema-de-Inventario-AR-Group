@@ -262,6 +262,17 @@ Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le
 3. **S\xCDNTESIS INTELIGENTE Y ELEVADA**:
    - Eres un asistente ejecutivo de alto nivel, no un aut\xF3mata repetidor. Piensa antes de responder, resume lo esencial con elegancia y ofrece valor anal\xEDtico concreto.
 
+## 7. TRAZABILIDAD CONVERSACIONAL, COREFERENCIA Y REFORMULACI\xD3N PEDAG\xD3GICA (CONECTAR LOS PUNTOS)
+1. **MEMORIA MULTI-TURNO Y CONTINUIDAD DE DI\xC1LOGO**:
+   - Nunca analices un mensaje de usuario en aislamiento ciego cuando exista un historial de conversaci\xF3n previo.
+   - Si el usuario formula una repregunta o consulta de seguimiento (ej. "\xBFme lo puedes explicar de otra manera?", "\xBFpor qu\xE9?", "\xBFen qu\xE9 pantalla?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?", "\xBFsimplif\xEDcalo m\xE1s?", "\xBFy en bol\xEDvares?", "\xBFcu\xE1ntas quedan?"):
+     * Identifica de inmediato el tema, m\xF3dulo, SKU o procedimiento operativo que se ven\xEDa tratando en los mensajes anteriores.
+     * Resuelve las an\xE1foras y coreferencias impl\xEDcitas ("eso", "aquel bot\xF3n", "el pin", "esa tasa", "el solomo").
+2. **REFORMULACI\xD3N DIN\xC1MICA CUANDO PIDEN OTRA EXPLICACI\xD3N**:
+   - Si el usuario te pide: *"\xBFme lo puedes explicar de otra manera?"*, *"expl\xEDcamelo m\xE1s sencillo"*, *"no entend\xED"* o *"en resumen"*:
+     * **PROHIBICI\xD3N ESTRICTA**: Jam\xE1s repitas la respuesta anterior palabra por palabra, ni digas que "no tienes informaci\xF3n sobre c\xF3mo explicarlo de otra manera".
+     * **OBLIGACI\xD3N PEDAG\xD3GICA**: Desglosa el concepto usando una analog\xEDa cotidiana sencilla, un resumen en 2 o 3 pasos muy claros y lenguaje directo de conversaci\xF3n diaria, aclarando el rol del analista vs. el gerente.
+
 ${liveDataBlock}
 `;
 }
@@ -2757,22 +2768,21 @@ async function startServer() {
     );
     res.json({
       geminiConfigured: hasServerApiKey,
-      primaryModel: "gemini-2.5-pro",
-      fallbackModel: "gemini-2.5-flash",
+      activeModel: "gemini-3.8-flash",
+      primaryModel: "gemini-3.8-flash",
+      fallbackModel: "gemini-3.1-pro-preview",
       localEngineReady: true,
       copyright: "\xA9 2026 AR Group. Todos los derechos de desarrollo reservados."
     });
   });
   app.post("/api/assistant/chat", async (req, res) => {
     try {
-      const { query, conversationHistory = [], liveContext, clientApiKey } = req.body || {};
+      const { query, conversationHistory = [], liveContext } = req.body || {};
       if (!query || !liveContext) {
         res.status(400).json({ error: "Consulta o contexto operativo faltante." });
         return;
       }
-      const headerKey = req.headers["x-gemini-api-key"];
-      const explicitClientKey = typeof clientApiKey === "string" && clientApiKey.trim().length > 20 ? clientApiKey.trim() : void 0;
-      const apiKey = (headerKey && headerKey.trim().length > 20 ? headerKey.trim() : void 0) || explicitClientKey || process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.VITE_GEMINI_API_KEY;
       const canUseGemini = Boolean(apiKey && apiKey !== "MY_GEMINI_API_KEY" && apiKey.length > 20);
       if (canUseGemini) {
         try {
@@ -2789,31 +2799,30 @@ async function startServer() {
           const historyContext = recentHistory.map(
             (m) => `${m.sender === "user" ? liveContext?.activeUser?.displayName || "Usuario" : "PolarBot"}: ${m.text || ""}`
           ).join("\n\n");
-          const promptWithHistory = historyContext ? `Historial de conversaci\xF3n previa:
+          const promptWithHistory = historyContext ? `=== CONTEXTO DE CONVERSACI\xD3N PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===
 ${historyContext}
+
+=== REGLA DE TRAZABILIDAD: Si el usuario realiza una repregunta, an\xE1fora o pide aclaratoria/simplificaci\xF3n (ej: "\xBFme lo explicas de otra manera?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagog\xEDa ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto ni decir que careces de informaci\xF3n. ===
 
 Nueva consulta del usuario (${liveContext?.activeUser?.displayName || "Analista"}):
 ${query}` : String(query);
           let response;
-          let modelUsed = "gemini-2.5-pro";
+          let modelUsed = "gemini-3.8-flash";
           try {
             response = await ai.models.generateContent({
-              model: "gemini-2.5-pro",
+              model: "gemini-3.8-flash",
               contents: promptWithHistory,
               config: {
-                systemInstruction,
-                temperature: 0.2
+                systemInstruction
               }
             });
-          } catch (proError) {
-            console.warn("[PolarBot] Advertencia en gemini-2.5-pro, conmutando a gemini-2.5-flash:", proError?.message || proError);
-            modelUsed = "gemini-2.5-flash";
+          } catch {
+            modelUsed = "gemini-3.1-pro-preview";
             response = await ai.models.generateContent({
-              model: "gemini-2.5-flash",
+              model: "gemini-3.1-pro-preview",
               contents: promptWithHistory,
               config: {
-                systemInstruction,
-                temperature: 0.2
+                systemInstruction
               }
             });
           }
@@ -2834,8 +2843,7 @@ ${query}` : String(query);
             });
             return;
           }
-        } catch (geminiCatchErr) {
-          console.warn("[PolarBot] Fallo de llamada a Gemini API, activando fallback local:", geminiCatchErr?.message || geminiCatchErr);
+        } catch {
         }
       }
       res.status(204).end();

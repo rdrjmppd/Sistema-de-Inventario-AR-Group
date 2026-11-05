@@ -1,8 +1,14 @@
 /**
  * Service Worker Oficial — Hiper Abasto Polar — Chrystal® ERP
- * Versión de Caché: v2 (hiper-abasto-polar-erp-v2)
+ * Versión de Caché: v3 (hiper-abasto-polar-erp-v3)
  * 
- * Estrategia: Network-First con fallback a caché para App Shell y Branding.
+ * Estrategia de Carga Resiliente:
+ *  - Precaché de activos críticos en instalación (App Shell y Branding oficial).
+ *  - Stale-While-Revalidate para activos estáticos (JS, CSS, fuentes, imágenes, webmanifest).
+ *    Ofrece carga instantánea (0ms) en piso de retail con baja conectividad en Venezuela
+ *    mientras revalida en segundo plano de forma silenciosa.
+ *  - Network-First con fallback a `/index.html` para peticiones de navegación.
+ * 
  * Línea Roja de Exclusión Incondicional:
  *  - Firebase Firestore (firestore.googleapis.com)
  *  - Firebase Auth / IdentityToolkit (identitytoolkit.googleapis.com)
@@ -15,7 +21,7 @@
  * © 2026 AR Group. Todos los derechos de desarrollo reservados.
  */
 
-const CACHE_NAME = 'hiper-abasto-polar-erp-v2';
+const CACHE_NAME = 'hiper-abasto-polar-erp-v3';
 
 const PRECACHE_ASSETS = [
   '/',
@@ -45,7 +51,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activación: Purga limpia de cachés obsoletas (v1, etc.) y toma de control inmediato
+// Activación: Purga limpia de cachés obsoletas (hiper-abasto-polar-erp-v1, hiper-abasto-polar-erp-v2, etc.) y toma de control inmediato
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
@@ -64,7 +70,7 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Intercepción Fetch: Network-First con exclusión absoluta de Firestore y APIs en tiempo real
+// Intercepción Fetch: Stale-While-Revalidate para estáticos y Network-First para navegación
 self.addEventListener('fetch', (event) => {
   const { request } = event;
 
@@ -103,41 +109,57 @@ self.addEventListener('fetch', (event) => {
     }
   }
 
-  // Estrategia Network-First con fallback a caché para App Shell
-  event.respondWith(
-    fetch(request)
-      .then((networkResponse) => {
-        if (
-          networkResponse &&
-          networkResponse.status === 200 &&
-          (networkResponse.type === 'basic' || networkResponse.type === 'cors')
-        ) {
-          const responseClone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
-          });
-        }
-        return networkResponse;
-      })
-      .catch(async () => {
-        const cachedResponse = await caches.match(request);
-        if (cachedResponse) {
-          return cachedResponse;
-        }
-
-        // Si es navegación entre vistas, devolver el index.html en caché
-        if (request.mode === 'navigate') {
-          const fallbackHtml = await caches.match('/index.html');
-          if (fallbackHtml) {
-            return fallbackHtml;
+  // 1. Peticiones de Navegación (HTML Shell): Network-First con fallback inmediato a /index.html
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(request, responseClone);
+            });
           }
-        }
+          return networkResponse;
+        })
+        .catch(async () => {
+          const cachedNavigate = await caches.match(request);
+          if (cachedNavigate) return cachedNavigate;
+          const fallbackHtml = await caches.match('/index.html');
+          if (fallbackHtml) return fallbackHtml;
+          return new Response('Modo sin conexión activo — Chrystal® ERP', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          });
+        })
+    );
+    return;
+  }
 
-        // Respuesta degradada controlada sin excepciones no capturadas
-        return new Response('Modo sin conexión activo — Chrystal® ERP', {
-          status: 503,
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  // 2. Activos Estáticos e Interfaz Principal: Estrategia Stale-While-Revalidate
+  // Devuelve la copia en caché de inmediato (0ms de latencia) y actualiza en segundo plano.
+  event.respondWith(
+    caches.match(request).then((cachedResponse) => {
+      const fetchPromise = fetch(request)
+        .then((networkResponse) => {
+          if (
+            networkResponse &&
+            networkResponse.status === 200 &&
+            (networkResponse.type === 'basic' || networkResponse.type === 'cors')
+          ) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(request, responseClone);
+            });
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          // Fallback silencioso si no hay conexión de red
+          return cachedResponse;
         });
-      })
+
+      return cachedResponse || fetchPromise;
+    })
   );
 });

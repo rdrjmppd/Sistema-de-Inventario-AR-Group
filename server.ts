@@ -828,7 +828,7 @@ async function startServer() {
             .join('\n\n');
 
           const promptWithHistory = historyContext
-            ? `Historial de conversación previa:\n${historyContext}\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
+            ? `=== CONTEXTO DE CONVERSACIÓN PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===\n${historyContext}\n\n=== REGLA DE TRAZABILIDAD: Si el usuario realiza una repregunta, anáfora o pide aclaratoria/simplificación (ej: "¿me lo explicas de otra manera?", "¿dónde está ese botón?", "¿y si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagogía ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto ni decir que careces de información. ===\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
             : String(query);
 
           let response;

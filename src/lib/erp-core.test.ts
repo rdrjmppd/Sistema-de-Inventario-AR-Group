@@ -132,9 +132,13 @@ import {
   formatLiveContextForPrompt,
   answerQueryWithHeuristicEngine,
   isExternalOutOfScopeQuery,
+  isFollowUpOrMetaQuery,
+  detectActiveTopicFromHistory,
+  buildPedagogicalFollowUpResponse,
   queryAssistant,
   ERP_KNOWLEDGE_BASE,
   JUNIOR_GLOSSARY,
+  ChatMessage,
 } from '../ai-assistant';
 import {
   calculateMeatYieldBatch,
@@ -7857,4 +7861,173 @@ test('89. Certificación de Inteligencia Contextual PolarBot: Desambiguación Se
   assert.ok(responsePromise instanceof Promise);
 });
 
+test('90. Certificación de Trazabilidad Conversacional PolarBot, Reformulación Pedagógica, Service Worker Stale-While-Revalidate y WebManifest PWA', async () => {
+  // A. Preparar contexto de usuario y entorno operativo
+  const testContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-analista-test',
+      email: 'carlos@hiperabastopolar.com',
+      displayName: 'Carlos Analista',
+      role: UserRole.ANALISTA,
+      pin: '1234',
+      locationAccess: ['all'],
+      active: true,
+      createdAt: '2026-11-05',
+    },
+    products: [
+      {
+        id: 'prod-arroz-01',
+        sku: 'ARR-PRIM-001',
+        barcode: '7591001000101',
+        name: 'Arroz Blanco Primor Tradicional 1kg',
+        category: 'Víveres y Granos',
+        unit: 'UND',
+        costUsd: 1.1,
+        targetMarginPercent: 25,
+        priceUsd: 1.5,
+        ivaRate: 0,
+        stockByLocation: { 'loc-pzo-01': 120 },
+        minStockByLocation: { 'loc-pzo-01': 20 },
+        monthlyUnitsSold: 100,
+        abcClass: 'A',
+        supplierId: 'sup-01',
+        lastUpdatedVet: '2026-11-05T10:00:00-04:00',
+      },
+    ],
+    locations: [
+      {
+        id: 'loc-pzo-01',
+        code: 'PZO-01',
+        name: 'Depósito Central',
+        city: 'Puerto Ordaz',
+        type: 'DEPOSITO',
+        manager: 'Carlos Analista',
+        active: true,
+      },
+    ],
+    bcvState: {
+      spotRateToday: 50.0,
+      nextDayRateAfter5Pm: 50.5,
+      activeRate: 50.0,
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial Spot Regular',
+      caracasDateFormatted: '05/11/2026',
+      caracasTimeFormatted: '10:00:00 AM',
+    },
+    discards: [],
+  });
+
+  // 1. Trazabilidad Conversacional & Reformulación Pedagógica (Caso Real del Usuario)
+  // Turno 1: Usuario pregunta cómo realizar una descarga de inventario
+  const turn1User = '¿Cómo realizar una descarga de inventario?';
+  const turn1Bot = answerQueryWithHeuristicEngine(turn1User, testContext);
+  assert.ok(turn1Bot.answer.includes('mermas y descargas de inventario') || turn1Bot.answer.includes('descargas de inventario'));
+
+  const historyTurn1: ChatMessage[] = [
+    {
+      id: 'msg-1',
+      sender: 'user',
+      text: turn1User,
+      timestampVet: '10:00:00 AM',
+    },
+    {
+      id: 'msg-2',
+      sender: 'assistant',
+      text: turn1Bot.answer,
+      timestampVet: '10:00:02 AM',
+    },
+  ];
+
+  // Turno 2: Usuario realiza una repregunta contextual: "¿Me lo puedes explicar de otra manera?"
+  const turn2User = '¿Me lo puedes explicar de otra manera?';
+  
+  // 1.1. Verificación de clasificación: NUNCA debe marcarse como fuera de alcance (out-of-scope)
+  assert.strictEqual(isFollowUpOrMetaQuery(turn2User), true, 'Debe detectar repregunta/reclamación pedagógica');
+  assert.strictEqual(isExternalOutOfScopeQuery(turn2User), false, 'La repregunta NUNCA debe ser clasificada como out-of-scope');
+
+  // 1.2. Detección de tema activo desde el historial
+  const detectedTopic = detectActiveTopicFromHistory(historyTurn1);
+  assert.strictEqual(detectedTopic, 'BAJAS_DESCARGAS', 'Debe identificar el tema activo de bajas/descargas desde el historial');
+
+  // 1.3. Respuesta del Asistente conectando los puntos
+  const turn2Bot = answerQueryWithHeuristicEngine(turn2User, testContext, historyTurn1);
+  assert.strictEqual(turn2Bot.answer.includes('Comprendo tu inquietud pero'), false, 'NUNCA debe responder fuera de alcance');
+  assert.strictEqual(turn2Bot.answer.includes('no forma parte de la información operativa'), false, 'NUNCA debe decir que no tiene información');
+  assert.ok(turn2Bot.answer.includes('explicarlo de forma súper sencilla'), 'Debe ofrecer una explicación pedagógica');
+  assert.ok(turn2Bot.answer.includes('Tú como Operador'), 'Debe desglosar el rol del operador');
+  assert.ok(turn2Bot.answer.includes('El Gerente o Auditor'), 'Debe desglosar el rol del gerente');
+  assert.ok(turn2Bot.answer.includes('PIN secreto'), 'Debe explicar la validación con PIN');
+
+  // Turno 3: Coreferencia y Ubicación en Pantalla: "¿Dónde está ese botón?"
+  const historyTurn2: ChatMessage[] = [
+    ...historyTurn1,
+    { id: 'msg-3', sender: 'user', text: turn2User, timestampVet: '10:01:00 AM' },
+    { id: 'msg-4', sender: 'assistant', text: turn2Bot.answer, timestampVet: '10:01:02 AM' },
+  ];
+  const turn3User = '¿Dónde está ese botón?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn3User), true);
+  const turn3Bot = answerQueryWithHeuristicEngine(turn3User, testContext, historyTurn2);
+  assert.ok(turn3Bot.answer.includes('menú lateral izquierdo'));
+  assert.ok(turn3Bot.answer.includes('Inventario'));
+  assert.ok(turn3Bot.answer.includes('Bajas y Mermas'));
+  assert.ok(turn3Bot.answer.includes('+ Nueva Solicitud de Baja'));
+
+  // Turno 4: Pregunta de excepción de permisos: "¿Y si no tengo PIN?"
+  const turn4User = '¿Y si no tengo PIN?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn4User), true);
+  const turn4Bot = answerQueryWithHeuristicEngine(turn4User, testContext, historyTurn2);
+  assert.ok(turn4Bot.answer.includes('Pendiente de Aprobación'));
+  assert.ok(turn4Bot.answer.includes('Tú no necesitas tener PIN gerencial'));
+
+  // 2. Trazabilidad sobre otros temas operativos: Tasa BCV y WhatsApp BRM
+  const historyBcv: ChatMessage[] = [
+    { id: 'bcv-1', sender: 'user', text: '¿Cómo funciona la tasa BCV?', timestampVet: '10:05:00 AM' },
+    { id: 'bcv-2', sender: 'assistant', text: 'La tasa oficial del BCV es...', timestampVet: '10:05:02 AM' },
+  ];
+  assert.strictEqual(detectActiveTopicFromHistory(historyBcv), 'BCV_TASA');
+  const bcvFollowUp = answerQueryWithHeuristicEngine('¿Me lo explicas más sencillo?', testContext, historyBcv);
+  assert.ok(bcvFollowUp.answer.includes('17:00 VET'));
+  assert.ok(bcvFollowUp.answer.includes('ROUND_HALF_UP'));
+
+  const historyWa: ChatMessage[] = [
+    { id: 'wa-1', sender: 'user', text: '¿Cómo funciona la mensajería de WhatsApp con proveedores?', timestampVet: '10:10:00 AM' },
+    { id: 'wa-2', sender: 'assistant', text: 'Conectas con Baileys...', timestampVet: '10:10:02 AM' },
+  ];
+  assert.strictEqual(detectActiveTopicFromHistory(historyWa), 'WHATSAPP_BRM');
+  const waFollowUp = answerQueryWithHeuristicEngine('¿Cómo funciona la desvinculación?', testContext, historyWa);
+  assert.ok(waFollowUp.answer.includes('Desvinculación segura'));
+  assert.ok(waFollowUp.answer.includes('los chats se ocultan de inmediato'));
+
+  // 3. Certificación de Service Worker public/sw.js
+  const fs = await import('fs');
+  const path = await import('path');
+  const swPath = path.resolve('public/sw.js');
+  const swContent = fs.readFileSync(swPath, 'utf8');
+
+  assert.ok(swContent.includes('hiper-abasto-polar-erp-v3'), 'Service Worker debe ser versión v3');
+  assert.ok(swContent.includes("'/manifest.webmanifest'"), 'Debe incluir webmanifest en precache');
+  assert.ok(swContent.includes("'/assets/branding/hiper_abasto_polar_logo.jpg'"), 'Debe incluir logo en precache');
+  assert.ok(swContent.includes('caches.match(request)'), 'Debe implementar Stale-While-Revalidate con cache hit inmediato');
+  assert.ok(swContent.includes('cachedResponse || fetchPromise'), 'Debe devolver cache mientras actualiza en background');
+  assert.ok(swContent.includes("request.mode === 'navigate'"), 'Debe manejar navegación con Network-First');
+  assert.ok(swContent.includes("url.pathname.startsWith('/api/')"), 'Debe hacer bypass absoluto a rutas de API');
+
+  // 4. Certificación de PWA WebManifest
+  const manifestPath = path.resolve('public/manifest.webmanifest');
+  const manifestJsonPath = path.resolve('public/manifest.json');
+  const manifestWeb = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const manifestJson = JSON.parse(fs.readFileSync(manifestJsonPath, 'utf8'));
+
+  for (const m of [manifestWeb, manifestJson]) {
+    assert.strictEqual(m.name, 'Hiper Abasto Polar — Chrystal ERP');
+    assert.strictEqual(m.short_name, 'Hiper Abasto');
+    assert.strictEqual(m.theme_color, '#0F172A');
+    assert.strictEqual(m.background_color, '#0F172A');
+    assert.strictEqual(m.display, 'standalone');
+    assert.ok(Array.isArray(m.icons) && m.icons.length >= 2);
+    const purposes = m.icons.map((ic: { purpose?: string }) => ic.purpose).filter(Boolean);
+    assert.ok(purposes.some((p: string) => p.includes('any')));
+    assert.ok(purposes.some((p: string) => p.includes('maskable')));
+  }
+});
 
