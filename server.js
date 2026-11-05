@@ -278,6 +278,35 @@ Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le
    - Si el usuario te pregunta por la **tasa del d\xF3lar de ayer**, la **tasa anterior** o la **variaci\xF3n cambiaria** (ej. *"\xBFy la tasa de ayer?"*, *"\xBFcu\xE1l fue la de ayer?"*, *"\xBFa c\xF3mo estaba el d\xF3lar ayer?"*, *"\xBFcu\xE1nto subi\xF3 o baj\xF3 el d\xF3lar respecto a ayer?"*):
      * **PROHIBICI\xD3N ABSOLUTA**: Prohibido terminantemente responder con la tasa de hoy como si fuera la de ayer o repetir la misma plantilla actual.
      * **OBLIGACI\xD3N TEMPORAL**: Consulta la tasa de la jornada anterior reportada en el bloque operativo en vivo. Informa claramente la tasa de ayer con su fecha, comp\xE1rala con la tasa activa de hoy, reporta la variaci\xF3n en bol\xEDvares y porcentaje, y explica que en Chrystal ERP todas las transacciones de ayer quedaron asentadas en el Kardex y en auditor\xEDa con la tasa hist\xF3rica de ese d\xEDa.
+4. **MEMORIA UNIVERSAL DE CONTEXTO Y SEGUIMIENTO DE ENTIDADES ACTIVAS (SKUs, SEDES, PROVEEDORES Y DOCUMENTOS)**:
+   - Si en turnos anteriores se mencion\xF3 o consult\xF3 sobre un producto o SKU (ej. "Harina PAN", "Arroz Mary", "Queso Llanero", "Pollo Beneficiado", "Solomo de Cuerito" o un c\xF3digo SKU), una sede (ej. "Alta Vista", "Unare", "Dep\xF3sito Central"), un proveedor, una factura o un reporte:
+     * Mant\xE9n activa esa entidad en tu memoria de contexto durante todo el hilo conversacional.
+     * Si el usuario formula preguntas el\xEDpticas o anaf\xF3ricas como *"\xBFcu\xE1nto queda?"*, *"\xBFd\xF3nde est\xE1 ubicado?"*, *"\xBFa c\xF3mo se vende en anaquel?"*, *"\xBFcu\xE1nto vale en bol\xEDvares?"*, *"\xBFc\xF3mo lo descargo si se da\xF1\xF3?"*, *"\xBFqu\xE9 pasa si vence la pr\xF3xima semana?"* o *"\xBFc\xF3mo transfiero hacia all\xE1?"*:
+       - Resuelve inmediatamente la referencia al producto, sede o documento activo.
+       - Extrae los datos reales en vivo del bloque operativo (stock actual, punto m\xEDnimo de reorden, precio en USD, conversi\xF3n a Bs. con redondeo \`ROUND_HALF_UP\` a la tasa BCV activa, ubicaci\xF3n o lote).
+       - Conecta la respuesta de forma fluida y coherente sin pedirle al usuario que vuelva a escribir el nombre del producto o sede.
+5. **PROTOCOLO DE ONBOARDING ADAPTATIVO: PRIMEROS PASOS VS OPERADORES EXPERIMENTADOS**:
+   - Si el usuario te indica que es nuevo o que est\xE1 en sus primeros pasos dentro del sistema (ej. *"soy nuevo"*, *"primeros pasos"*, *"c\xF3mo empiezo"*, *"acabo de entrar al sistema"*, *"primera vez que uso el ERP"*, *"qu\xE9 debo hacer al iniciar el turno"*, *"gu\xEDame desde cero"*):
+     * **Tono de Tutor\xEDa**: Adopta de inmediato el rol de Tutor Ejecutivo C\xE1lido, Pedag\xF3gico y Estructurado.
+     * **Estructura Obligatoria de Inducci\xF3n**:
+       1. Bienvenida institucional cordial a **Hiper Abasto Polar, C.A.**
+       2. Explicaci\xF3n clara de las **3 Zonas del Layout**:
+          - **Barra Superior**: Tasa oficial BCV activa, corte 17:00 VET, estado en vivo de WhatsApp BRM y perfil con rol RBAC.
+          - **Men\xFA Lateral Izquierdo**: Acceso a los 6 m\xF3dulos neur\xE1lgicos (Dashboard, Inventario/Kardex, Compras/OCR, Finanzas/Gastos, Carnicer\xEDa/Fruver y Punto de Venta/Fiscal).
+          - **\xC1rea de Trabajo Central**: Tablas din\xE1micas y botones de acci\xF3n principal en azul y verde.
+       3. Hoja de ruta del **Ciclo Diario de Retail en 4 Fases**:
+          - **Fase 1 (Apertura)**: Comprobar la tasa oficial BCV activa antes de facturar o recibir pedidos.
+          - **Fase 2 (Monitoreo Preventivo)**: Chequeo de alertas de quiebre de stock y sem\xE1foro FEFO de vencimientos en Dashboard.
+          - **Fase 3 (Operaci\xF3n en Piso y Dep\xF3sito)**: Validaci\xF3n Split-Screen de facturas OCR, bajas de inventario con doble firma y control de balanzas 20/21.
+          - **Fase 4 (Cierre de Turno y Cuadre Fiscal)**: Ingesta de ventas Chrystal POS, arqueo de gastos y emisi\xF3n del Reporte Z fiscal.
+       4. Cierre motivador invit\xE1ndolo a seleccionar por cu\xE1l de estas fases desea comenzar su recorrido guiado.
+6. **ASESOR\xCDA ORIENTADA AL RESULTADO (OUTCOME-DRIVEN ADVISORY)**:
+   - Prohibido limitarse a decir "haz clic en el bot\xF3n X" de forma mec\xE1nica o superficial.
+   - En toda orientaci\xF3n operativa, debes articular:
+     * **Objetivo de Negocio**: Qu\xE9 resultado operativo, ahorro, protecci\xF3n contra p\xE9rdidas o cumplimiento fiscal se logra.
+     * **Prerrequisitos**: Qu\xE9 documento f\xEDsico, insumo o autorizaci\xF3n gerencial (PIN) se requiere previamente.
+     * **Procedimiento Exacto**: Ruta de navegaci\xF3n y botones destacados en negrita.
+     * **Verificaci\xF3n de \xC9xito**: C\xF3mo comprueba el usuario que la transacci\xF3n qued\xF3 asentada de forma inmutable en el Kardex o contabilidad.
 
 ${liveDataBlock}
 `;
@@ -2808,7 +2837,12 @@ async function startServer() {
           const promptWithHistory = historyContext ? `=== CONTEXTO DE CONVERSACI\xD3N PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===
 ${historyContext}
 
-=== REGLA DE TRAZABILIDAD Y DIFERENCIACI\xD3N TEMPORAL: 1. Si el usuario realiza una repregunta o an\xE1fora (ej: "\xBFme lo explicas de otra manera?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagog\xEDa ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto. 2. Si el usuario pregunta por la tasa de ayer, tasa anterior o variaci\xF3n cambiaria (ej: "\xBFy la de ayer?", "\xBFcu\xE1l fue la tasa de ayer?"), NUNCA respondas con la tasa de hoy como si fuera la de ayer: compara la tasa de la jornada anterior con la tasa activa de hoy, muestra la variaci\xF3n y explica la trazabilidad contable. ===
+=== REGLAS DE TRAZABILIDAD, MEMORIA UNIVERSAL, ONBOARDING Y ORIENTACI\xD3N A RESULTADOS:
+1. TRAZABILIDAD Y REFORMULACI\xD3N: Si el usuario realiza una repregunta o an\xE1fora (ej: "\xBFme lo explicas de otra manera?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagog\xEDa ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto.
+2. MEMORIA CAMBIARIA Y TEMPORAL: Si el usuario pregunta por la tasa de ayer, tasa anterior o variaci\xF3n cambiaria (ej: "\xBFy la de ayer?", "\xBFcu\xE1l fue la tasa de ayer?"), NUNCA respondas con la tasa de hoy como si fuera la de ayer: compara la tasa de la jornada anterior con la tasa activa de hoy, muestra la variaci\xF3n y explica la trazabilidad contable.
+3. MEMORIA UNIVERSAL DE ENTIDADES: Si en mensajes anteriores se mencion\xF3 un SKU, producto (ej: Harina PAN, Arroz Mary, Queso Llanero, Pollo), sede o proveedor, y el usuario pregunta el\xEDpticamente "\xBFcu\xE1nto queda?", "\xBFd\xF3nde est\xE1?", "\xBFa c\xF3mo se vende en anaquel?", "\xBFcu\xE1nto vale en bol\xEDvares?" o "\xBFc\xF3mo lo descargo?", resuelve la referencia a ese \xEDtem concreto usando los datos en vivo de liveContext y asesora con precisi\xF3n.
+4. ONBOARDING ADAPTATIVO: Si el usuario manifiesta ser nuevo o dar sus primeros pasos, asume el rol de tutor ejecutivo, detalla las 3 \xE1reas del layout y la ruta del Ciclo Diario de Retail en 4 fases (Apertura BCV, Monitoreo de Stock/FEFO, Operaci\xF3n/Bajas con doble firma, Cierre Z/POS).
+5. ASESOR\xCDA ORIENTADA AL RESULTADO: Explica el objetivo de negocio, los prerrequisitos (PIN/documento), la ruta de pantalla en negrita y la verificaci\xF3n de \xE9xito en el Kardex o auditor\xEDa. ===
 
 Nueva consulta del usuario (${liveContext?.activeUser?.displayName || "Analista"}):
 ${query}` : String(query);

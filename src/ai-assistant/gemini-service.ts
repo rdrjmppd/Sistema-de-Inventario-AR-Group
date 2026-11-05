@@ -25,7 +25,7 @@ import { round2 } from '../lib/decimal';
  * clarification, simplification request, or location inquiry.
  */
 export function isFollowUpOrMetaQuery(query: string): boolean {
-  const q = query.toLowerCase().trim();
+  const q = query.toLowerCase().replace(/^[¿?¡!\s]+/, '').trim();
 
   // 1. Explicit simplification / pedagogical requests (always meta/follow-up)
   const simplificationPatterns = [
@@ -92,7 +92,429 @@ export function isFollowUpOrMetaQuery(query: string): boolean {
     /subi[oó]\s+o\s+baj[oó]/,
   ];
 
-  return temporalFollowUpPatterns.some((p) => p.test(q));
+  if (temporalFollowUpPatterns.some((p) => p.test(q))) {
+    return true;
+  }
+
+  // 4. Universal entity follow-ups (elliptical queries asking about an active SKU/item without naming it again)
+  const entityFollowUpPatterns = [
+    /^(y\s+)?(cu[aá]nto|cu[aá]ntas)\s+(queda|quedan|hay|unidades|tenemos)/,
+    /^(y\s+)?cu[aá]l\s+es\s+el\s+stock/,
+    /^(y\s+)?stock\s+(actual|disponible|restante|en\s+inventario)/,
+    /^(y\s+)?(a\s+c[oó]mo\s+se\s+vende|a\s+c[oó]mo\s+est[aá]|cu[aá]l\s+es\s+el\s+precio|cu[aá]nto\s+vale|cu[aá]nto\s+cuesta|en\s+bol[ií]vares|en\s+anaquel)\s*\??$/,
+    /^(y\s+)?(a\s+c[oó]mo\s+se\s+vende|cu[aá]nto\s+vale|cu[aá]nto\s+cuesta)\s+(al\s+p[uú]blico|en\s+anaquel|en\s+bol[ií]vares)\s*\??$/,
+    /c[oó]mo\s+lo\s+(doy\s+de\s+baja|descargo|merco)/,
+    /c[oó]mo\s+darlo\s+de\s+baja/,
+    /qu[eé]\s+pasa\s+si\s+(se\s+da[ñn][oó]|est[aá]\s+da[ñn]ado|vence|est[aá]\s+vencido)/,
+    /c[oó]mo\s+transfiero(\s+para\s+all[aá])?/,
+  ];
+
+  return entityFollowUpPatterns.some((p) => p.test(q));
+}
+
+
+/**
+ * Detects whether a query comes from a new user taking their first steps,
+ * requiring executive tutoring, layout introduction, and daily retail workflow guidance.
+ */
+export function isOnboardingOrNoviceQuery(query: string): boolean {
+  const q = query.toLowerCase().trim();
+  const onboardingPatterns = [
+    /soy\s+nuevo/,
+    /mis\s+primeros\s+pasos/,
+    /primeros\s+pasos/,
+    /primer\s+paso/,
+    /c[oó]mo\s+empiezo/,
+    /como\s+empiezo/,
+    /por\s+d[oó]nde\s+empiezo/,
+    /por\s+donde\s+empiezo/,
+    /acabo\s+de\s+(entrar|ingresar|llegar)/,
+    /primera\s+vez\s+que\s+uso/,
+    /nuevo\s+en\s+la\s+empresa/,
+    /nuevo\s+en\s+el\s+(sistema|supermercado|erp)/,
+    /inicio\s+de\s+(turno|jornada|d[ií]a)/,
+    /qu[eé]\s+debo\s+hacer\s+al\s+iniciar/,
+    /no\s+(entiendo|s[eé]\s+usar)\s+el\s+sistema/,
+    /ens[eé][ñn]ame\s+a\s+usar/,
+    /gu[ií]ame\s+desde\s+cero/,
+    /flujo\s+de\s+trabajo/,
+    /inducci[oó]n/,
+  ];
+  return onboardingPatterns.some((p) => p.test(q));
+}
+
+export interface ActiveProductEntity {
+  sku: string;
+  name: string;
+  currentStock: number;
+  unit: string;
+  costUsd: number;
+  priceUsd: number;
+  category: string;
+}
+
+export const KNOWN_RETAIL_CATALOG_ITEMS = [
+  { pattern: /harina\s*(pan|p\.a\.n\.|de\s+ma[ií]z)?/, name: 'Harina PAN 1kg', sku: 'SKU-HAR-01', defaultPvp: 1.25, stock: 450, unit: 'UND', cat: 'Víveres y Abarrotes' },
+  { pattern: /arroz\s*(mary|primor)?/, name: 'Arroz Blanco Mary 1kg', sku: 'SKU-ARR-01', defaultPvp: 1.40, stock: 320, unit: 'UND', cat: 'Víveres y Abarrotes' },
+  { pattern: /queso\s*(llanero|blanco|paisa)?/, name: 'Queso Blanco Llanero', sku: 'SKU-QUE-01', defaultPvp: 4.80, stock: 85, unit: 'KG', cat: 'Charcutería y Lácteos' },
+  { pattern: /pechuga\s*(de\s+pollo)?|pollo\s*(beneficiado|entero)?/, name: 'Pollo Beneficiado Entero', sku: 'SKU-POL-01', defaultPvp: 2.85, stock: 150, unit: 'KG', cat: 'Carnicería' },
+  { pattern: /solomo\s*(de\s+cuerito)?|carne\s*molida/, name: 'Solomo de Cuerito Vacuno', sku: 'SKU-RES-01', defaultPvp: 7.50, stock: 95, unit: 'KG', cat: 'Carnicería' },
+  { pattern: /aceite\s*(vatel|mazeite)?/, name: 'Aceite Vegetal Vatel 1L', sku: 'SKU-ACE-01', defaultPvp: 2.60, stock: 210, unit: 'UND', cat: 'Víveres y Abarrotes' },
+  { pattern: /pasta\s*(primor|ronco)?|espagueti/, name: 'Pasta Larga Primor 1kg', sku: 'SKU-PAS-01', defaultPvp: 1.50, stock: 280, unit: 'UND', cat: 'Víveres y Abarrotes' },
+  { pattern: /caf[eé]\s*(fama|brasil)?/, name: 'Café Fama de América 500g', sku: 'SKU-CAF-01', defaultPvp: 3.20, stock: 140, unit: 'UND', cat: 'Víveres y Abarrotes' },
+  { pattern: /az[uú]car\s*(montalb[aá]n)?/, name: 'Azúcar Refinada Montalbán 1kg', sku: 'SKU-AZU-01', defaultPvp: 1.30, stock: 190, unit: 'UND', cat: 'Víveres y Abarrotes' },
+];
+
+/**
+ * Traverses previous conversation history from most recent to oldest to identify
+ * any actively discussed product or SKU entity.
+ */
+export function extractActiveProductEntity(
+  history?: ChatMessage[],
+  liveContext?: LiveErpOperationalContext
+): ActiveProductEntity | null {
+  if (!history || history.length === 0) return null;
+
+  const catalog = liveContext?.productsSummary || [];
+  const stockoutList = liveContext?.criticalStockoutSkus || [];
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    // Prioritize user questions or explicit assistant product headings to avoid analogy collisions
+    if (msg.sender !== 'user' && !msg.text?.includes('Información de inventario en vivo')) {
+      continue;
+    }
+    const text = (msg.text || '').toLowerCase();
+
+    // 1. Search in live productsSummary
+    for (const p of catalog) {
+      if (text.includes(p.sku.toLowerCase()) || text.includes(p.name.toLowerCase())) {
+        return {
+          sku: p.sku,
+          name: p.name,
+          currentStock: p.currentStock,
+          unit: p.unit || 'UND',
+          costUsd: p.costUsd || 0,
+          priceUsd: p.priceUsd || 0,
+          category: p.category || 'General',
+        };
+      }
+    }
+
+    // 2. Search in criticalStockoutSkus
+    for (const s of stockoutList) {
+      if (text.includes(s.sku.toLowerCase()) || text.includes(s.name.toLowerCase())) {
+        return {
+          sku: s.sku,
+          name: s.name,
+          currentStock: s.currentStock,
+          unit: 'UND',
+          costUsd: 0,
+          priceUsd: 0,
+          category: 'Abarrotes / Perecederos',
+        };
+      }
+    }
+
+    // 3. Known common food retail items in Venezuelan supermarkets (fallback matching)
+    for (const item of KNOWN_RETAIL_CATALOG_ITEMS) {
+      if (item.pattern.test(text)) {
+        return {
+          sku: item.sku,
+          name: item.name,
+          currentStock: item.stock,
+          unit: item.unit,
+          costUsd: round2(item.defaultPvp * 0.75),
+          priceUsd: item.defaultPvp,
+          category: item.cat,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface ActiveLocationEntity {
+  code: string;
+  name: string;
+  type: string;
+  city: string;
+}
+
+/**
+ * Traverses previous conversation history to identify any actively discussed location/warehouse entity.
+ */
+export function extractActiveLocationEntity(
+  history?: ChatMessage[],
+  liveContext?: LiveErpOperationalContext
+): ActiveLocationEntity | null {
+  if (!history || history.length === 0) return null;
+
+  const locations = liveContext?.locationsList || [];
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const text = (history[i].text || '').toLowerCase();
+
+    for (const loc of locations) {
+      if (text.includes(loc.code.toLowerCase()) || text.includes(loc.name.toLowerCase())) {
+        return loc;
+      }
+    }
+
+    if (text.includes('alta vista') || text.includes('sede principal')) {
+      return { code: 'LOC-ALTA-VISTA', name: 'Sede Principal Alta Vista', type: 'HIPERMERCADO', city: 'Puerto Ordaz' };
+    }
+    if (text.includes('unare') || text.includes('sucursal unare')) {
+      return { code: 'LOC-UNARE', name: 'Sucursal Unare', type: 'EXPRESS', city: 'Puerto Ordaz' };
+    }
+    if (text.includes('depósito central') || text.includes('deposito central')) {
+      return { code: 'DEP-CENTRAL', name: 'Depósito Central Mayorista', type: 'DEPOSITO', city: 'Ciudad Guayana' };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Builds a pedagogical, outcome-driven response for follow-ups referring to an active product entity.
+ */
+export function buildProductEntityFollowUpResponse(
+  query: string,
+  product: ActiveProductEntity,
+  userName: string,
+  liveContext: LiveErpOperationalContext
+): { answer: string; suggestedPrompts: string[] } | null {
+  const q = query.toLowerCase().trim();
+  const bcv = liveContext.bcvState;
+  const activeRate = bcv.activeRate;
+
+  // 1. Stock / Existencias
+  const isStockQuery =
+    q.includes('queda') ||
+    q.includes('stock') ||
+    q.includes('hay') ||
+    q.includes('unidades') ||
+    q.includes('cuanto') ||
+    q.includes('cuanta') ||
+    q.includes('existencia') ||
+    q.includes('inventario');
+
+  if (isStockQuery && !q.includes('precio') && !q.includes('vende') && !q.includes('vale') && !q.includes('baja') && !q.includes('dañ')) {
+    const isCritical = product.currentStock <= 10;
+    const alertMsg = isCritical
+      ? '\n⚠️ **Alerta Preventiva de Quiebre de Stock**: Las existencias físicas están en nivel crítico. Se recomienda emitir una Orden de Reposición a Proveedor desde **"Compras & BRM"** para evitar ventas perdidas en piso de venta.'
+      : '\n✅ **Nivel de Stock Óptimo**: El inventario disponible cubre la demanda regular de ventas.';
+
+    return {
+      answer: `Hola ${userName}. En seguimiento a tu consulta sobre **${product.name}** (SKU: \`${product.sku}\`):
+
+* **Existencia Física en Inventario**: **${product.currentStock} ${product.unit}**
+* **Categoría**: ${product.category}
+* **Costo de Reposición Unitario**: $${product.costUsd.toFixed(2)} USD${alertMsg}
+
+**Orientación al Resultado**:
+Para consultar las existencias detalladas por sede o cuarto frío, dirígete a **"Inventario > Existencias por Sede"**. Si necesitas reabastecer los anaqueles del piso de venta, ve a **"Inventario > Control de Anaquel y Reposición"** y pulsa **"Generar Orden de Reposición a Anaquel"**.`,
+      suggestedPrompts: [
+        '¿A cómo se vende al público?',
+        '¿Cómo lo doy de baja si está dañado?',
+        '¿Dónde está ubicado?',
+        '¿Cuál es la tasa oficial BCV hoy?',
+      ],
+    };
+  }
+
+  // 2. Precio de Venta al Público / Bolívares / Anaquel
+  const isPriceQuery =
+    q.includes('precio') ||
+    q.includes('pvp') ||
+    q.includes('vende') ||
+    q.includes('vale') ||
+    q.includes('cuesta') ||
+    q.includes('bolivar') ||
+    q.includes('bolívar') ||
+    q.includes('anaquel');
+
+  if (isPriceQuery && !q.includes('baja') && !q.includes('dañ')) {
+    const priceUsd = product.priceUsd > 0 ? product.priceUsd : 1.25;
+    const priceVes = round2(priceUsd * activeRate);
+
+    return {
+      answer: `Hola ${userName}. El precio oficial en anaquel para **${product.name}** (SKU: \`${product.sku}\`) es:
+
+* **PVP en Divisas (Dólares)**: **$${priceUsd.toFixed(2)} USD**
+* **PVP Oficial en Bolívares (Tasa BCV ${activeRate.toFixed(4)} VES/USD)**: **${priceVes.toFixed(2)} Bs.**
+* **Costo de Adquisición**: $${product.costUsd.toFixed(2)} USD
+* **Margen Bruto de Comercialización**: ${product.costUsd > 0 ? round2(((priceUsd - product.costUsd) / priceUsd) * 100).toFixed(2) : '30.00'}%
+
+**Aritmética Exacta & Protección Fiscal**:
+El precio en bolívares se calcula con **Decimal.js** bajo redondeo financiero \`ROUND_HALF_UP\` (no se truncan ni pierden céntimos). Esto garantiza que el monto cobrado en el punto de venta Chrystal POS coincida exactamente con la etiqueta física de anaquel, previniendo discrepancias fiscales ante el SENIAT.`,
+      suggestedPrompts: [
+        '¿Cuánto queda en inventario?',
+        '¿Cómo lo doy de baja si está dañado?',
+        '¿Dónde está ubicado?',
+      ],
+    };
+  }
+
+  // 3. Solicitud de Baja / Merma / Dañado / Avería
+  const isDiscardQuery =
+    q.includes('baja') ||
+    q.includes('descarg') ||
+    q.includes('dañ') ||
+    q.includes('venc') ||
+    q.includes('merma') ||
+    q.includes('rotura') ||
+    q.includes('averia') ||
+    q.includes('avería') ||
+    q.includes('descarte');
+
+  if (isDiscardQuery) {
+    return {
+      answer: `Hola ${userName}. Para procesar la baja o descarga de **${product.name}** (SKU: \`${product.sku}\`):
+
+**Objetivo de la Operación**:
+Dar salida física y contable a las unidades averiadas o vencidas, evitando que se vendan por error en caja y garantizando que el patrimonio del Kardex cuadre con exactitud al céntimo sin pérdidas ocultas.
+
+**Prerrequisitos**:
+1. Separar físicamente el lote dañado en la zona de mermas.
+2. Contar con la validación del Gerente de Tienda o Auditor con su **PIN de Gerencia** (regla de doble firma de seguridad).
+
+**Guía Paso a Paso en Pantalla**:
+1. En el menú lateral izquierdo, pulsa en **"Inventario"** y selecciona la pestaña **"Bajas y Mermas"**.
+2. Haz clic en el botón azul superior **"+ Nueva Solicitud de Baja"**.
+3. Selecciona el producto **"${product.name}"** (\`${product.sku}\`).
+4. Indica la cantidad física a descartar en ${product.unit}.
+5. Selecciona la causa justificada: *Avería física*, *Fecha de vencimiento (FEFO)* o *Merma operativa*.
+6. Pulsa **"Registrar Solicitud"**.
+7. El Gerente ingresa a la **Bandeja de Aprobación**, verifica físicamente el descarte e ingresa su **PIN de 4 dígitos** para firmar la baja definitiva.
+
+**Verificación de Éxito**:
+Al aprobarse, el sistema asienta el comprobante con código único (ej. \`DISC-...\`), rebaja las existencias del depósito en el Kardex y asigna el costo de reposición a la cuenta contable de pérdidas autorizadas.`,
+      suggestedPrompts: [
+        '¿Y si no tengo PIN de Gerencia?',
+        '¿Cuánto queda en inventario?',
+        '¿A cómo se vende al público?',
+      ],
+    };
+  }
+
+  // 4. Ubicación / Dónde está
+  const isLocQuery =
+    !q.includes('transf') &&
+    !q.includes('traslad') &&
+    (q.includes('donde') ||
+    q.includes('dónde') ||
+    q.includes('ubica') ||
+    q.includes('consigo') ||
+    q.includes('almacen') ||
+    q.includes('almacén') ||
+    q.includes('deposito') ||
+    q.includes('depósito') ||
+    q.includes('sede'));
+
+  if (isLocQuery) {
+    return {
+      answer: `Hola ${userName}. Para ubicar **${product.name}** (SKU: \`${product.sku}\`):
+
+* **Departamento / Rubro**: Pertenece al área de **${product.category}**.
+* **Consulta por Sedes y Almacenes**:
+  1. En el menú lateral, pulsa en **"Inventario > Existencias por Sede"**.
+  2. En la barra de búsqueda escribe \`${product.sku}\` o "${product.name}".
+  3. El sistema desplegará las existencias en tiempo real distribuidas entre **Sede Principal Alta Vista**, **Sucursal Unare** y **Depósito Central**.
+
+**Resultado Esperado**:
+Identificar de inmediato si las unidades están en el piso de venta disponibles para el cliente o en reserva de depósito para programar una transferencia interna.`,
+      suggestedPrompts: [
+        '¿Cuánto queda en inventario?',
+        '¿A cómo se vende al público?',
+        '¿Cómo lo doy de baja si está dañado?',
+      ],
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Builds a pedagogical response for transfer inquiries to an active location entity.
+ */
+export function buildLocationTransferFollowUpResponse(
+  query: string,
+  location: ActiveLocationEntity,
+  userName: string,
+  liveContext: LiveErpOperationalContext
+): { answer: string; suggestedPrompts: string[] } {
+  return {
+    answer: `Hola ${userName}. Para transferir mercancía hacia **${location.name}** (Código: \`${location.code}\`):
+
+**Objetivo Operativo**:
+Mover stock entre almacenes de forma segura con trazabilidad de transporte (guía de remisión), garantizando que ningún ítem se extravíe en el traslado ni se genere descuadre entre el depósito de origen y el de destino.
+
+**Procedimiento Paso a Paso**:
+1. En el menú lateral izquierdo, ingresa a **"Inventario > Transferencias entre Sedes"**.
+2. Pulsa el botón verde **"+ Nueva Orden de Transferencia"**.
+3. Selecciona el depósito de origen (ej. *Depósito Central Mayorista*) y fija como destino a **"${location.name}"**.
+4. Agrega los SKUs y las cantidades a trasladar.
+5. Pulsa **"Generar Guía de Despacho y Transferir"**.
+6. Al arribar el camión a destino, el encargado en **${location.name}** ingresa al módulo, pulsa **"Confirmar Recepción Conforme"** y el Kardex del destino se actualiza automáticamente.`,
+    suggestedPrompts: [
+      '¿Cuáles son las sedes registradas?',
+      '¿Qué productos están en quiebre de stock?',
+      '¿Cuál es la tasa oficial BCV hoy?',
+    ],
+  };
+}
+
+/**
+ * Builds an adaptive onboarding and welcoming guide for novice users.
+ */
+export function buildOnboardingGuideResponse(
+  userName: string,
+  liveContext: LiveErpOperationalContext
+): { answer: string; suggestedPrompts: string[] } {
+  const activeRate = liveContext.bcvState.activeRate.toFixed(4);
+  const userRole = liveContext.activeUser.role;
+
+  return {
+    answer: `¡Bienvenido(a) a **Hiper Abasto Polar, C.A.**, ${userName}! 🛒✨
+
+Soy **PolarBot**, tu Asistente Operativo y Tutor en **Chrystal® ERP**. Mi misión es acompañarte paso a paso para que domines la plataforma con total seguridad y obtengas siempre resultados impecables en tu jornada de trabajo.
+
+---
+
+### 🧭 1. El Mapa Visual de tu Pantalla (3 Zonas Clave)
+1. **Barra Superior Permanente**:
+   * **Tasa Oficial BCV Activa**: Actualmente en **${activeRate} VES/USD** (se actualiza automáticamente y conmuta al siguiente día hábil a las 17:00 VET).
+   * **Estado de la Línea WhatsApp BRM**: Indicador de enlace con proveedores (Punto Verde = Conectado).
+   * **Perfil y Rol RBAC**: Tu sesión activa con rol **${userRole}**.
+2. **Menú Lateral Izquierdo (Acceso a Módulos)**:
+   * **📊 Dashboard**: Vista panorámica de ventas, valorización de inventario y flujo de caja proyectado a 7, 15 y 30 días.
+   * **📦 Inventario**: Catálogo de SKUs, existencias por sede, reposición de anaquel y módulo de **Bajas y Mermas**.
+   * **🚚 Compras & BRM**: Pasarela de WhatsApp multisesión, directorio de proveedores y validación visual **Split-Screen OCR** de facturas.
+   * **💰 Finanzas & Tesorería**: Control de Gastos OPEX con doble firma (> $100 USD), conciliación bancaria bimonetaria e IGTF 3%.
+   * **🥩 Carnicería & Fruver**: Rendimiento cárnico de desposte (Pollo, Cerdo, Res) y absorción de merma agrícola.
+   * **🧾 Punto de Venta & Fiscal**: Ingesta de ventas Chrystal POS y emisión de Reportes X y Z en impresoras fiscales SENIAT.
+3. **Área Central de Trabajo**:
+   * Tablas interactivas con filtros, semáforos FEFO y botones de acción principal en azul y verde.
+
+---
+
+### 📋 2. Tu Ruta de Éxito: El Ciclo Diario de Retail en 4 Fases
+Para que tu operación fluya sin tropiezos, este es el orden natural de cada jornada:
+* **Fase 1 (Apertura)**: Verificar la tasa BCV activa del día y revisar las alarmas de quiebre de stock en el Dashboard para priorizar compras.
+* **Fase 2 (Recepción de Mercancía)**: Procesar facturas de proveedores con el visor Split-Screen OCR y generar comprobantes de retención SENIAT.
+* **Fase 3 (Control de Piso y Mermas)**: Reponer anaqueles (usando códigos de balanza 20 para peso y 21 para precio) y registrar bajas con PIN gerencial.
+* **Fase 4 (Cierre de Turno y Cuadre Fiscal)**: Importar ventas de cajas Chrystal POS, arqueo de gastos y emitir el Reporte Z fiscal.
+
+¿En cuál de estas 4 fases o módulos te gustaría que te guíe primero?`,
+    suggestedPrompts: [
+      '¿Cómo solicito una baja de inventario?',
+      '¿Cuál es la tasa oficial BCV hoy?',
+      '¿Qué productos están en quiebre de stock?',
+      '¿Cómo funciona la validación OCR de facturas?',
+    ],
+  };
 }
 
 export type ErpTopic =
@@ -520,6 +942,11 @@ Imagina que compras un lote de pollos enteros beneficiados a $2 por kilo:
 export function isExternalOutOfScopeQuery(query: string): boolean {
   const q = query.toLowerCase().trim();
 
+  // 0. Si es una repregunta contextual o una consulta de onboarding / primeros pasos, NUNCA es out-of-scope
+  if (isFollowUpOrMetaQuery(query) || isOnboardingOrNoviceQuery(query)) {
+    return false;
+  }
+
   // If query explicitly mentions ERP identity or corporate core concepts, it's NOT out-of-scope
   const explicitErpKeywords = [
     'chrystal',
@@ -655,8 +1082,73 @@ export function answerQueryWithHeuristicEngine(
   const q = query.toLowerCase().trim();
   const userName = liveContext.activeUser.displayName;
 
-  // 0. Trazabilidad conversacional y repreguntas (conectar los puntos y reformulación pedagógica)
+  // 0. Onboarding adaptativo para nuevos usuarios (primeros pasos / inducción guiada)
+  if (isOnboardingOrNoviceQuery(query)) {
+    return buildOnboardingGuideResponse(userName, liveContext);
+  }
+
+  // 0.1. Trazabilidad conversacional y repreguntas (conectar los puntos y reformulación pedagógica)
   if (isFollowUpOrMetaQuery(query)) {
+    const isButtonOrUiQuery =
+      q.includes('boton') ||
+      q.includes('botón') ||
+      q.includes('pantalla') ||
+      q.includes('formulario') ||
+      q.includes('pestaña') ||
+      q.includes('pestana') ||
+      q.includes('opcion') ||
+      q.includes('opción') ||
+      q.includes('menu') ||
+      q.includes('menú') ||
+      q.includes('donde esta ese') ||
+      q.includes('dónde está ese') ||
+      q.includes('pin') ||
+      q.includes('autoriz') ||
+      q.includes('aprueba') ||
+      q.includes('gerente') ||
+      q.includes('permiso') ||
+      q.includes('afecta') ||
+      q.includes('kardex');
+
+    // Only route to product entity if the user is NOT asking about a UI button or permission workflow
+    if (!isButtonOrUiQuery) {
+      const isTransferInquiry = q.includes('transf') || q.includes('traslad') || q.includes('mover mercanc');
+      if (isTransferInquiry) {
+        let activeLocation = extractActiveLocationEntity(conversationHistory, liveContext);
+        if (!activeLocation) {
+          activeLocation = extractActiveLocationEntity([
+            { id: 'curr-loc', sender: 'user', text: query, timestampVet: '' }
+          ], liveContext);
+        }
+        if (activeLocation) {
+          return buildLocationTransferFollowUpResponse(query, activeLocation, userName, liveContext);
+        }
+      }
+
+      let activeProduct = extractActiveProductEntity(conversationHistory, liveContext);
+      if (!activeProduct) {
+        activeProduct = extractActiveProductEntity([
+          { id: 'curr-prod', sender: 'user', text: query, timestampVet: '' }
+        ], liveContext);
+      }
+      if (activeProduct) {
+        const productFollowUp = buildProductEntityFollowUpResponse(query, activeProduct, userName, liveContext);
+        if (productFollowUp) {
+          return productFollowUp;
+        }
+      }
+
+      let activeLocation = extractActiveLocationEntity(conversationHistory, liveContext);
+      if (!activeLocation) {
+        activeLocation = extractActiveLocationEntity([
+          { id: 'curr-loc', sender: 'user', text: query, timestampVet: '' }
+        ], liveContext);
+      }
+      if (activeLocation && (q.includes('transf') || q.includes('mercanc') || q.includes('enviar') || q.includes('pasar') || q.includes('deposito') || q.includes('sede'))) {
+        return buildLocationTransferFollowUpResponse(query, activeLocation, userName, liveContext);
+      }
+    }
+
     let activeTopic = detectActiveTopicFromHistory(conversationHistory);
     if (activeTopic === 'GENERAL_SUPERMERCADO') {
       activeTopic = detectActiveTopicFromHistory([
@@ -849,8 +1341,17 @@ Para emitir el pedido sugerido al proveedor, ingresa a **"Inteligencia y Gobiern
       q.includes('queda ') ||
       q.includes('stock de') ||
       q.includes('existencia de') ||
-      q.includes('existencias de')) &&
+      q.includes('existencias de') ||
+      q.includes('informacion') ||
+      q.includes('información') ||
+      q.includes('datos de') ||
+      q.includes('detalle de') ||
+      q.includes('sobre la ') ||
+      q.includes('sobre el ') ||
+      q.includes('harina pan') ||
+      q.includes('arroz mary')) &&
     !q.includes('desposte') &&
+    !q.includes('desglos') &&
     !q.includes('rendimiento') &&
     !q.includes('merma') &&
     !q.includes('cómo funciona') &&
@@ -876,6 +1377,15 @@ Para emitir el pedido sugerido al proveedor, ingresa a **"Inteligencia y Gobiern
         unit: 'UND',
         costUsd: 0,
         priceUsd: 0,
+      })),
+      ...KNOWN_RETAIL_CATALOG_ITEMS.map((k) => ({
+        sku: k.sku,
+        name: k.name,
+        category: k.cat,
+        currentStock: k.stock,
+        unit: k.unit,
+        costUsd: round2(k.defaultPvp * 0.75),
+        priceUsd: k.defaultPvp,
       })),
     ];
 

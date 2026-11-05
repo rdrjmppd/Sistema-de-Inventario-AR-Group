@@ -135,6 +135,9 @@ import {
   isFollowUpOrMetaQuery,
   detectActiveTopicFromHistory,
   buildPedagogicalFollowUpResponse,
+  isOnboardingOrNoviceQuery,
+  extractActiveProductEntity,
+  extractActiveLocationEntity,
   queryAssistant,
   ERP_KNOWLEDGE_BASE,
   JUNIOR_GLOSSARY,
@@ -8120,5 +8123,154 @@ test('91. Certificación de Coherencia Temporal y Memoria Cambiaria PolarBot: Ta
   assert.ok(turn5Bot.answer.includes('un incremento de'));
   assert.ok(turn5Bot.answer.includes('+0.5000 Bs.'));
   assert.ok(turn5Bot.answer.includes('+1.01%'));
+});
+
+test('92. Certificación de Memoria Universal de Contexto, Trazabilidad de Entidades (SKU/Stock/PVP/Baja), Onboarding Adaptativo y Asesoría Orientada al Resultado', async () => {
+  // A. Contexto Operativo con catálogo factual y sedes
+  const sampleHarina: Product = {
+    id: 'prod-har-01',
+    sku: 'SKU-HAR-01',
+    barcode: '7591000100011',
+    name: 'Harina PAN 1kg',
+    category: 'Víveres y Abarrotes',
+    unit: 'UND',
+    costUsd: 0.95,
+    priceUsd: 1.25,
+    targetMarginPercent: 24.0,
+    ivaRate: 0,
+    stockByLocation: { 'loc-main': 450 },
+    minStockByLocation: { 'loc-main': 50 },
+    monthlyUnitsSold: 980,
+    abcClass: 'A',
+    supplierId: 'sup-polar-01',
+    lastUpdatedVet: '05/11/2026 12:00',
+  };
+
+  const testContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-nuevo-01',
+      displayName: 'Alejandro Principiante',
+      email: 'alejandro@hiperabastopolar.com',
+      role: UserRole.ANALISTA,
+      locationAccess: ['all'],
+      active: true,
+      pin: '1234',
+      createdAt: '2026-11-05',
+    },
+    products: [sampleHarina],
+    locations: [
+      { id: 'loc-main', code: 'LOC-ALTA-VISTA', name: 'Sede Principal Alta Vista', type: 'SEDE', city: 'Puerto Ordaz', manager: 'Gerente Tienda', active: true },
+      { id: 'dep-central', code: 'DEP-CENTRAL', name: 'Depósito Central Mayorista', type: 'DEPOSITO', city: 'Ciudad Guayana', manager: 'Jefe Depósito', active: true },
+    ],
+    bcvState: {
+      activeRate: 50.0,
+      spotRateToday: 50.0,
+      nextDayRateAfter5Pm: 50.5,
+      previousDayRate: 49.5,
+      previousDayDateFormatted: '04/11/2026',
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial Spot Regular',
+      caracasDateFormatted: '05/11/2026',
+      caracasTimeFormatted: '11:00:00 AM',
+    },
+    discards: [],
+  });
+
+  // 1. Verificación de Onboarding Adaptativo (Primeros Pasos / Usuario Novato)
+  const onboardingQuery = 'Hola, soy nuevo en la empresa, son mis primeros pasos en el sistema, ¿cómo empiezo?';
+  assert.strictEqual(isOnboardingOrNoviceQuery(onboardingQuery), true, 'Debe detectar solicitud de primeros pasos / inducción');
+  assert.strictEqual(isExternalOutOfScopeQuery(onboardingQuery), false, 'La inducción NUNCA es fuera de alcance');
+
+  const onboardingRes = answerQueryWithHeuristicEngine(onboardingQuery, testContext);
+  assert.ok(onboardingRes.answer.includes('¡Bienvenido(a) a **Hiper Abasto Polar, C.A.**'), 'Debe saludar y dar la bienvenida oficial');
+  assert.ok(onboardingRes.answer.includes('Barra Superior Permanente'), 'Debe explicar la barra superior');
+  assert.ok(onboardingRes.answer.includes('50.0000 VES/USD'), 'Debe reportar la tasa activa');
+  assert.ok(onboardingRes.answer.includes('Menú Lateral Izquierdo'), 'Debe mapear los accesos de módulos');
+  assert.ok(onboardingRes.answer.includes('El Ciclo Diario de Retail en 4 Fases'), 'Debe estructurar la hoja de ruta en 4 fases');
+  assert.ok(onboardingRes.answer.includes('Fase 1 (Apertura)'), 'Debe explicar apertura y tasa BCV');
+  assert.ok(onboardingRes.answer.includes('Fase 2 (Recepción de Mercancía)'), 'Debe explicar OCR y retenciones');
+  assert.ok(onboardingRes.answer.includes('Fase 3 (Control de Piso y Mermas)'), 'Debe explicar balanzas 20/21 y bajas');
+  assert.ok(onboardingRes.answer.includes('Fase 4 (Cierre de Turno y Cuadre Fiscal)'), 'Debe explicar ventas POS y Reporte Z');
+
+  // 2. Flujo Multi-Turno con Memoria Universal de Entidades
+  // Turno 1: Usuario consulta información sobre Harina PAN
+  const turn1User = 'Dime información sobre la Harina PAN 1kg';
+  const turn1Bot = answerQueryWithHeuristicEngine(turn1User, testContext);
+  assert.ok(turn1Bot.answer.includes('Harina PAN 1kg'));
+  assert.ok(turn1Bot.answer.includes('SKU-HAR-01'));
+  assert.ok(turn1Bot.answer.includes('450 UND'));
+
+  const historyTurn1: ChatMessage[] = [
+    { id: 'msg-h1', sender: 'user', text: turn1User, timestampVet: '11:05:00 AM' },
+    { id: 'msg-h2', sender: 'assistant', text: turn1Bot.answer, timestampVet: '11:05:02 AM' },
+  ];
+
+  // 2.1. Extracción de entidad activa del historial
+  const activeProduct = extractActiveProductEntity(historyTurn1, testContext);
+  assert.ok(activeProduct !== null, 'Debe extraer la entidad activa del producto');
+  assert.strictEqual(activeProduct?.sku, 'SKU-HAR-01');
+  assert.strictEqual(activeProduct?.name, 'Harina PAN 1kg');
+
+  // Turno 2: Usuario formula una repregunta elíptica sobre stock ("¿Y cuánto queda en inventario?")
+  const turn2User = '¿Y cuánto queda en inventario?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn2User), true, 'Debe detectar repregunta sobre stock');
+  const turn2Bot = answerQueryWithHeuristicEngine(turn2User, testContext, historyTurn1);
+  assert.ok(turn2Bot.answer.includes('Harina PAN 1kg'), 'Debe resolver la anáfora hacia Harina PAN');
+  assert.ok(turn2Bot.answer.includes('SKU-HAR-01'));
+  assert.ok(turn2Bot.answer.includes('450 UND'), 'Debe devolver las existencias reales');
+  assert.ok(turn2Bot.answer.includes('Víveres y Abarrotes'));
+  assert.ok(turn2Bot.answer.includes('Inventario > Control de Anaquel y Reposición'), 'Debe orientar al resultado de reposición');
+
+  const historyTurn2: ChatMessage[] = [
+    ...historyTurn1,
+    { id: 'msg-h3', sender: 'user', text: turn2User, timestampVet: '11:06:00 AM' },
+    { id: 'msg-h4', sender: 'assistant', text: turn2Bot.answer, timestampVet: '11:06:02 AM' },
+  ];
+
+  // Turno 3: Usuario formula una repregunta sobre PVP ("¿A cómo se vende al público?")
+  const turn3User = '¿A cómo se vende al público?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn3User), true, 'Debe detectar consulta sobre PVP');
+  const turn3Bot = answerQueryWithHeuristicEngine(turn3User, testContext, historyTurn2);
+  assert.ok(turn3Bot.answer.includes('Harina PAN 1kg'));
+  assert.ok(turn3Bot.answer.includes('$1.25 USD'), 'Debe informar el precio en divisas');
+  assert.ok(turn3Bot.answer.includes('62.50 Bs.'), 'Debe calcular exactamente 1.25 * 50.00 = 62.50 Bs.');
+  assert.ok(turn3Bot.answer.includes('ROUND_HALF_UP'), 'Debe documentar la regla de redondeo');
+  assert.ok(turn3Bot.answer.includes('Chrystal POS'), 'Debe orientar a la protección fiscal contra el SENIAT');
+
+  const historyTurn3: ChatMessage[] = [
+    ...historyTurn2,
+    { id: 'msg-h5', sender: 'user', text: turn3User, timestampVet: '11:07:00 AM' },
+    { id: 'msg-h6', sender: 'assistant', text: turn3Bot.answer, timestampVet: '11:07:02 AM' },
+  ];
+
+  // Turno 4: Usuario pregunta cómo descartarlo ante daño físico ("¿Cómo lo doy de baja si está dañado?")
+  const turn4User = '¿Cómo lo doy de baja si está dañado?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn4User), true, 'Debe detectar procedimiento de baja para el producto activo');
+  const turn4Bot = answerQueryWithHeuristicEngine(turn4User, testContext, historyTurn3);
+  assert.ok(turn4Bot.answer.includes('Harina PAN 1kg'));
+  assert.ok(turn4Bot.answer.includes('SKU-HAR-01'));
+  assert.ok(turn4Bot.answer.includes('Objetivo de la Operación'), 'Debe articular el objetivo financiero y contable');
+  assert.ok(turn4Bot.answer.includes('PIN de Gerencia'), 'Debe advertir el prerrequisito de doble firma gerencial');
+  assert.ok(turn4Bot.answer.includes('+ Nueva Solicitud de Baja'), 'Debe citar el botón en negrita');
+  assert.ok(turn4Bot.answer.includes('Kardex'), 'Debe certificar la verificación de éxito en el Kardex');
+
+  // Turno 5: Usuario pregunta por transferencia a una sede específica
+  const turn5User = '¿Cómo transfiero mercancía para la Sede Principal Alta Vista?';
+  const historyTurn4: ChatMessage[] = [
+    ...historyTurn3,
+    { id: 'msg-h7', sender: 'user', text: turn4User, timestampVet: '11:08:00 AM' },
+    { id: 'msg-h8', sender: 'assistant', text: turn4Bot.answer, timestampVet: '11:08:02 AM' },
+  ];
+  const activeLoc = extractActiveLocationEntity([
+    { id: 'msg-loc', sender: 'user', text: turn5User, timestampVet: '11:09:00 AM' },
+  ], testContext);
+  assert.ok(activeLoc !== null);
+  assert.strictEqual(activeLoc?.code, 'LOC-ALTA-VISTA');
+  const turn5Bot = answerQueryWithHeuristicEngine(turn5User, testContext, historyTurn4);
+  assert.ok(turn5Bot.answer.includes('Sede Principal Alta Vista'));
+  assert.ok(turn5Bot.answer.includes('LOC-ALTA-VISTA'));
+  assert.ok(turn5Bot.answer.includes('Transferencias entre Sedes'));
+  assert.ok(turn5Bot.answer.includes('+ Nueva Orden de Transferencia'));
+  assert.ok(turn5Bot.answer.includes('Confirmar Recepción Conforme'));
 });
 
