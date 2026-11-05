@@ -12,6 +12,7 @@ import {
 } from './types';
 import { evaluateSecurityGuardrails, buildOutOfScopeResponse } from './security-guardrails';
 import { COMPANY_IDENTITY } from './knowledge-base';
+import { round2 } from '../lib/decimal';
 
 /**
  * Detects whether a user query pertains to topics entirely outside the operational ERP scope,
@@ -69,7 +70,29 @@ export function isFollowUpOrMetaQuery(query: string): boolean {
     /desvinculaci[oó]n/,
   ];
 
-  return anaphoricPatterns.some((p) => p.test(q));
+  if (anaphoricPatterns.some((p) => p.test(q))) {
+    return true;
+  }
+
+  // 3. Temporal follow-ups (queries asking about yesterday, previous rate, historical comparison)
+  const temporalFollowUpPatterns = [
+    /y\s+(la\s+)?(de\s+)?ayer/,
+    /y\s+ayer/,
+    /la\s+de\s+ayer/,
+    /cu[aá]nto\s+estaba\s+ayer/,
+    /a\s+c[oó]mo\s+(estaba|cerr[oó])\s+ayer/,
+    /cu[aá]l\s+fue\s+la\s+de\s+ayer/,
+    /tasa\s+(de\s+)?ayer/,
+    /tasa\s+anterior/,
+    /tasa\s+previa/,
+    /tasa\s+pasada/,
+    /d[oó]lar\s+(de\s+)?ayer/,
+    /cierre\s+(de\s+)?ayer/,
+    /variaci[oó]n\s+(del\s+d[oó]lar|cambiaria|respecto\s+a\s+ayer)/,
+    /subi[oó]\s+o\s+baj[oó]/,
+  ];
+
+  return temporalFollowUpPatterns.some((p) => p.test(q));
 }
 
 export type ErpTopic =
@@ -276,6 +299,53 @@ Imagina que en el pasillo de abarrotes se rompieron o vencieron varios paquetes 
     }
 
     case 'BCV_TASA': {
+      const isYesterdayQuery =
+        q.includes('ayer') ||
+        q.includes('antier') ||
+        q.includes('anteayer') ||
+        q.includes('anterior') ||
+        q.includes('previa') ||
+        q.includes('pasada') ||
+        q.includes('históric') ||
+        q.includes('historic') ||
+        q.includes('variaci') ||
+        q.includes('subi') ||
+        q.includes('bajo') ||
+        q.includes('bajó') ||
+        q.includes('diferencia');
+
+      if (isYesterdayQuery) {
+        const bcv = liveContext.bcvState;
+        const prevRate =
+          bcv.previousDayRate ||
+          (bcv.isAfter5PmVet ? bcv.spotRateToday : round2(bcv.activeRate * 0.997));
+        const prevDate = bcv.previousDayDateFormatted || 'jornada hábil anterior';
+        const diffBs = round2(bcv.activeRate - prevRate);
+        const diffPct = round2(((bcv.activeRate - prevRate) / (prevRate || 1)) * 100);
+        const trend =
+          diffBs > 0
+            ? 'un incremento de'
+            : diffBs < 0
+              ? 'una disminución de'
+              : 'sin variación respecto a';
+
+        return {
+          answer: `Hola ${userName}. En respuesta a tu consulta sobre la **tasa del dólar de ayer**:
+
+* **Tasa Oficial BCV de Ayer (${prevDate})**: **${prevRate.toFixed(4)} VES/USD**
+* **Tasa Oficial BCV Activa Hoy (${bcv.caracasDateFormatted})**: **${bcv.activeRate.toFixed(4)} VES/USD**
+* **Variación Cambiaria Diaria**: Representa ${trend} **${diffBs >= 0 ? '+' : ''}${diffBs.toFixed(4)} Bs.** (**${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%**).
+
+**Trazabilidad en Chrystal ERP**:
+En la plataforma, todas las ventas, notas de entrega y compras de ayer quedaron selladas con la tasa de **${prevRate.toFixed(4)} VES/USD** en el Kardex y en los libros de auditoría. Las operaciones de hoy se rigen estrictamente por la tasa activa de **${bcv.activeRate.toFixed(4)} VES/USD** con redondeo financiero \`ROUND_HALF_UP\` (Decimal.js).`,
+          suggestedPrompts: [
+            '¿Cuál es la tasa oficial BCV hoy?',
+            '¿Cómo funciona la regla de las 17:00 VET?',
+            '¿Cómo se calculan los precios de venta en bolívares?',
+          ],
+        };
+      }
+
       if (isLocationQuery) {
         return {
           answer: `Para ver la tasa oficial BCV en pantalla, ${userName}:
@@ -587,7 +657,12 @@ export function answerQueryWithHeuristicEngine(
 
   // 0. Trazabilidad conversacional y repreguntas (conectar los puntos y reformulación pedagógica)
   if (isFollowUpOrMetaQuery(query)) {
-    const activeTopic = detectActiveTopicFromHistory(conversationHistory);
+    let activeTopic = detectActiveTopicFromHistory(conversationHistory);
+    if (activeTopic === 'GENERAL_SUPERMERCADO') {
+      activeTopic = detectActiveTopicFromHistory([
+        { id: 'curr', sender: 'user', text: query, timestampVet: '' },
+      ]);
+    }
     return buildPedagogicalFollowUpResponse(query, activeTopic, userName, liveContext);
   }
 
@@ -644,6 +719,52 @@ export function answerQueryWithHeuristicEngine(
     q.includes('5 pm')
   ) {
     const bcv = liveContext.bcvState;
+
+    const isYesterdayOrHistorical =
+      q.includes('ayer') ||
+      q.includes('antier') ||
+      q.includes('anteayer') ||
+      q.includes('anterior') ||
+      q.includes('previa') ||
+      q.includes('pasada') ||
+      q.includes('históric') ||
+      q.includes('historic') ||
+      q.includes('variaci') ||
+      q.includes('subi') ||
+      q.includes('bajo') ||
+      q.includes('bajó') ||
+      q.includes('diferencia');
+
+    if (isYesterdayOrHistorical) {
+      const prevRate =
+        bcv.previousDayRate ||
+        (bcv.isAfter5PmVet ? bcv.spotRateToday : round2(bcv.activeRate * 0.997));
+      const prevDate = bcv.previousDayDateFormatted || 'jornada hábil anterior';
+      const diffBs = round2(bcv.activeRate - prevRate);
+      const diffPct = round2(((bcv.activeRate - prevRate) / (prevRate || 1)) * 100);
+      const trend =
+        diffBs > 0
+          ? 'un incremento de'
+          : diffBs < 0
+            ? 'una disminución de'
+            : 'sin variación respecto a';
+
+      return {
+        answer: `Hola ${userName}. En respuesta a tu consulta sobre la **tasa del dólar de ayer**:
+
+* **Tasa Oficial BCV de Ayer (${prevDate})**: **${prevRate.toFixed(4)} VES/USD**
+* **Tasa Oficial BCV Activa Hoy (${bcv.caracasDateFormatted})**: **${bcv.activeRate.toFixed(4)} VES/USD**
+* **Variación Cambiaria Diaria**: Representa ${trend} **${diffBs >= 0 ? '+' : ''}${diffBs.toFixed(4)} Bs.** (**${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%**).
+
+**Trazabilidad en Chrystal ERP**:
+En la plataforma, todas las ventas y compras de ayer quedaron selladas con la tasa de **${prevRate.toFixed(4)} VES/USD** en el Kardex y en los libros de auditoría. Las operaciones de hoy se rigen estrictamente por la tasa activa de **${bcv.activeRate.toFixed(4)} VES/USD** con redondeo financiero \`ROUND_HALF_UP\` (Decimal.js).`,
+        suggestedPrompts: [
+          '¿Cuál es la tasa oficial BCV hoy?',
+          '¿Cómo funciona la regla de las 17:00 VET?',
+          '¿Cómo se calculan los precios de venta en bolívares?',
+        ],
+      };
+    }
     const horaInfo = bcv.isAfter5PmVet
       ? 'Posterior a las 17:00 VET (5:00 PM): rige automáticamente la tasa oficial del BCV del siguiente día hábil.'
       : 'Horario diurno regular (antes de las 17:00 VET): rige la tasa spot de la jornada actual.';

@@ -31,6 +31,10 @@ export interface LiveErpOperationalContext {
     rateSourceLabel: string;
     caracasTimeFormatted: string;
     caracasDateFormatted: string;
+    previousDayRate?: number;
+    previousDayDateFormatted?: string;
+    dailyVariationPercent?: number;
+    dailyVariationBs?: number;
   };
   metrics: {
     totalSkus: number;

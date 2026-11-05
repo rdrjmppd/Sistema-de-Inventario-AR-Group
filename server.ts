@@ -828,7 +828,7 @@ async function startServer() {
             .join('\n\n');
 
           const promptWithHistory = historyContext
-            ? `=== CONTEXTO DE CONVERSACIÓN PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===\n${historyContext}\n\n=== REGLA DE TRAZABILIDAD: Si el usuario realiza una repregunta, anáfora o pide aclaratoria/simplificación (ej: "¿me lo explicas de otra manera?", "¿dónde está ese botón?", "¿y si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagogía ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto ni decir que careces de información. ===\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
+            ? `=== CONTEXTO DE CONVERSACIÓN PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===\n${historyContext}\n\n=== REGLA DE TRAZABILIDAD Y DIFERENCIACIÓN TEMPORAL: 1. Si el usuario realiza una repregunta o anáfora (ej: "¿me lo explicas de otra manera?", "¿dónde está ese botón?", "¿y si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagogía ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto. 2. Si el usuario pregunta por la tasa de ayer, tasa anterior o variación cambiaria (ej: "¿y la de ayer?", "¿cuál fue la tasa de ayer?"), NUNCA respondas con la tasa de hoy como si fuera la de ayer: compara la tasa de la jornada anterior con la tasa activa de hoy, muestra la variación y explica la trazabilidad contable. ===\n\nNueva consulta del usuario (${liveContext?.activeUser?.displayName || 'Analista'}):\n${query}`
             : String(query);
 
           let response;

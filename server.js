@@ -61,8 +61,10 @@ function formatLiveContextForPrompt(ctx) {
 ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
 - Usuario Activo en Sesi\xF3n: ${ctx.activeUser.displayName} (${ctx.activeUser.email}) \u2014 Rol RBAC: ${ctx.activeUser.role}
 - Fecha y Hora Legal VET: ${ctx.bcvState.caracasDateFormatted} ${ctx.bcvState.caracasTimeFormatted}
-- Tasa Oficial BCV Activa: Bs. ${ctx.bcvState.activeRate.toFixed(4)} / USD (${ctx.bcvState.rateSourceLabel})
-- Horario BCV: ${ctx.bcvState.isAfter5PmVet ? "Posterior a 17:00 VET (Tasa del D\xEDa Siguiente)" : "Horario Diurno Regular"}
+- Tasa Oficial BCV Activa (Hoy): Bs. ${ctx.bcvState.activeRate.toFixed(4)} / USD (${ctx.bcvState.rateSourceLabel})
+- Tasa Oficial BCV de la Jornada Anterior (Ayer): Bs. ${(ctx.bcvState.previousDayRate || ctx.bcvState.activeRate).toFixed(4)} / USD (Fecha: ${ctx.bcvState.previousDayDateFormatted || "Jornada anterior"})
+- Variaci\xF3n Cambiaria Diaria: ${ctx.bcvState.dailyVariationBs !== void 0 ? (ctx.bcvState.dailyVariationBs >= 0 ? "+" : "") + ctx.bcvState.dailyVariationBs.toFixed(4) : "+0.0000"} Bs. (${ctx.bcvState.dailyVariationPercent !== void 0 ? (ctx.bcvState.dailyVariationPercent >= 0 ? "+" : "") + ctx.bcvState.dailyVariationPercent.toFixed(2) : "+0.00"}%)
+- Horario BCV: ${ctx.bcvState.isAfter5PmVet ? "Posterior a 17:00 VET (Tasa del Siguiente D\xEDa H\xE1bil)" : "Horario Diurno Regular"}
 - Resumen de Inventario:
   * Total SKUs Activos: ${ctx.metrics.totalSkus}
   * Total Sedes y Dep\xF3sitos en Red: ${ctx.metrics.totalLocations}
@@ -272,6 +274,10 @@ Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le
    - Si el usuario te pide: *"\xBFme lo puedes explicar de otra manera?"*, *"expl\xEDcamelo m\xE1s sencillo"*, *"no entend\xED"* o *"en resumen"*:
      * **PROHIBICI\xD3N ESTRICTA**: Jam\xE1s repitas la respuesta anterior palabra por palabra, ni digas que "no tienes informaci\xF3n sobre c\xF3mo explicarlo de otra manera".
      * **OBLIGACI\xD3N PEDAG\xD3GICA**: Desglosa el concepto usando una analog\xEDa cotidiana sencilla, un resumen en 2 o 3 pasos muy claros y lenguaje directo de conversaci\xF3n diaria, aclarando el rol del analista vs. el gerente.
+3. **DIFERENCIACI\xD3N TEMPORAL ESTRICTA Y MEMORIA CAMBIARIA (HOY VS AYER VS HIST\xD3RICO)**:
+   - Si el usuario te pregunta por la **tasa del d\xF3lar de ayer**, la **tasa anterior** o la **variaci\xF3n cambiaria** (ej. *"\xBFy la tasa de ayer?"*, *"\xBFcu\xE1l fue la de ayer?"*, *"\xBFa c\xF3mo estaba el d\xF3lar ayer?"*, *"\xBFcu\xE1nto subi\xF3 o baj\xF3 el d\xF3lar respecto a ayer?"*):
+     * **PROHIBICI\xD3N ABSOLUTA**: Prohibido terminantemente responder con la tasa de hoy como si fuera la de ayer o repetir la misma plantilla actual.
+     * **OBLIGACI\xD3N TEMPORAL**: Consulta la tasa de la jornada anterior reportada en el bloque operativo en vivo. Informa claramente la tasa de ayer con su fecha, comp\xE1rala con la tasa activa de hoy, reporta la variaci\xF3n en bol\xEDvares y porcentaje, y explica que en Chrystal ERP todas las transacciones de ayer quedaron asentadas en el Kardex y en auditor\xEDa con la tasa hist\xF3rica de ese d\xEDa.
 
 ${liveDataBlock}
 `;
@@ -2802,7 +2808,7 @@ async function startServer() {
           const promptWithHistory = historyContext ? `=== CONTEXTO DE CONVERSACI\xD3N PREVIA (TRAZABILIDAD Y MEMORIA ACTIVA) ===
 ${historyContext}
 
-=== REGLA DE TRAZABILIDAD: Si el usuario realiza una repregunta, an\xE1fora o pide aclaratoria/simplificaci\xF3n (ej: "\xBFme lo explicas de otra manera?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagog\xEDa ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto ni decir que careces de informaci\xF3n. ===
+=== REGLA DE TRAZABILIDAD Y DIFERENCIACI\xD3N TEMPORAL: 1. Si el usuario realiza una repregunta o an\xE1fora (ej: "\xBFme lo explicas de otra manera?", "\xBFd\xF3nde est\xE1 ese bot\xF3n?", "\xBFy si no tengo pin?"), analiza el historial previo para identificar el tema activo de ERP y reformula la respuesta con pedagog\xEDa ejecutiva y simplificada, conectando los puntos sin reiniciar el contexto. 2. Si el usuario pregunta por la tasa de ayer, tasa anterior o variaci\xF3n cambiaria (ej: "\xBFy la de ayer?", "\xBFcu\xE1l fue la tasa de ayer?"), NUNCA respondas con la tasa de hoy como si fuera la de ayer: compara la tasa de la jornada anterior con la tasa activa de hoy, muestra la variaci\xF3n y explica la trazabilidad contable. ===
 
 Nueva consulta del usuario (${liveContext?.activeUser?.displayName || "Analista"}):
 ${query}` : String(query);

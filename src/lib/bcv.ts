@@ -157,6 +157,10 @@ export function buildBcvRateState(
       | 'providerSource'
       | 'latencyMs'
       | 'isLiveConnected'
+      | 'previousDayRate'
+      | 'previousDayDateFormatted'
+      | 'dailyVariationBs'
+      | 'dailyVariationPercent'
     >
   >
 ): BcvRateState {
@@ -174,6 +178,12 @@ export function buildBcvRateState(
       ? `${String(effectiveHour).padStart(2, '0')}:${String(effectiveMinute).padStart(2, '0')}:00`
       : now.timeFormatted;
 
+  const rawPrev = telemetry?.previousDayRate
+    ? round2(telemetry.previousDayRate)
+    : (after5Pm ? round2(spotRateToday) : round2(spotRateToday * 0.997));
+  const diffBs = round2(activeRate - rawPrev);
+  const diffPct = round2(((activeRate - rawPrev) / (rawPrev || 1)) * 100);
+
   return {
     spotRateToday: round2(spotRateToday),
     nextDayRateAfter5Pm: round2(nextDayRateAfter5Pm),
@@ -190,6 +200,10 @@ export function buildBcvRateState(
     providerSource: telemetry?.providerSource || 'Portal Oficial BCV (www.bcv.org.ve)',
     latencyMs: telemetry?.latencyMs,
     isLiveConnected: telemetry?.isLiveConnected ?? true,
+    previousDayRate: rawPrev,
+    previousDayDateFormatted: telemetry?.previousDayDateFormatted,
+    dailyVariationBs: diffBs,
+    dailyVariationPercent: diffPct,
   };
 }
 

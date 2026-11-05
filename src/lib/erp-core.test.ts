@@ -8031,3 +8031,94 @@ test('90. Certificación de Trazabilidad Conversacional PolarBot, Reformulación
   }
 });
 
+test('91. Certificación de Coherencia Temporal y Memoria Cambiaria PolarBot: Tasa de Ayer vs Tasa de Hoy, Variación Diaria y Trazabilidad Histórica', async () => {
+  // A. Contexto con tasa de hoy y tasa de ayer diferenciadas
+  const testContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-finanzas-01',
+      displayName: 'María Finanzas',
+      email: 'maria@hiperabastopolar.com',
+      role: UserRole.ANALISTA,
+      locationAccess: ['all'],
+      active: true,
+      pin: '1234',
+      createdAt: '2026-11-05',
+    },
+    products: [],
+    locations: [],
+    bcvState: {
+      activeRate: 50.0,
+      spotRateToday: 50.0,
+      nextDayRateAfter5Pm: 50.5,
+      previousDayRate: 49.5,
+      previousDayDateFormatted: '04/11/2026',
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial Spot Regular',
+      caracasDateFormatted: '05/11/2026',
+      caracasTimeFormatted: '11:00:00 AM',
+    },
+    discards: [],
+  });
+
+  // 1. Verificación del bloque de prompt con diferenciación temporal inyectada
+  const promptContext = formatLiveContextForPrompt(testContext);
+  assert.ok(promptContext.includes('Tasa Oficial BCV Activa (Hoy): Bs. 50.0000 / USD'), 'Debe reportar tasa activa de hoy');
+  assert.ok(promptContext.includes('Tasa Oficial BCV de la Jornada Anterior (Ayer): Bs. 49.5000 / USD'), 'Debe reportar tasa de ayer');
+  assert.ok(promptContext.includes('04/11/2026'), 'Debe reportar fecha de ayer');
+  assert.ok(promptContext.includes('Variación Cambiaria Diaria: +0.5000 Bs.'), 'Debe reportar delta en bolívares');
+  assert.ok(promptContext.includes('+1.01%'), 'Debe reportar porcentaje de variación');
+
+  // 2. Turno 1: Usuario consulta la tasa de hoy
+  const turn1User = '¿Cuál es la tasa oficial del dólar hoy?';
+  const turn1Bot = answerQueryWithHeuristicEngine(turn1User, testContext);
+  assert.ok(turn1Bot.answer.includes('**tasa oficial del BCV activa** es **50.0000 VES/USD**'));
+  assert.strictEqual(turn1Bot.answer.includes('tasa del dólar de ayer'), false, 'La consulta de hoy no debe ser confundida con la de ayer');
+
+  const historyTurn1: ChatMessage[] = [
+    { id: 'm1', sender: 'user', text: turn1User, timestampVet: '11:00:00 AM' },
+    { id: 'm2', sender: 'assistant', text: turn1Bot.answer, timestampVet: '11:00:02 AM' },
+  ];
+
+  // 3. Turno 2: Usuario realiza una repregunta contextual sobre la tasa de ayer
+  // Caso exacto del usuario: preguntó por la tasa de hoy y luego preguntó por la tasa de ayer
+  const turn2User = '¿Y la tasa de ayer?';
+
+  // 3.1. Detección y clasificación
+  assert.strictEqual(isFollowUpOrMetaQuery(turn2User), true, 'Debe identificar "¿Y la tasa de ayer?" como repregunta');
+  assert.strictEqual(isExternalOutOfScopeQuery(turn2User), false, 'La consulta de ayer NUNCA es out-of-scope');
+
+  // 3.2. Detección de tema activo desde el historial
+  const activeTopic = detectActiveTopicFromHistory(historyTurn1);
+  assert.strictEqual(activeTopic, 'BCV_TASA', 'Debe mantener el tema activo de BCV');
+
+  // 3.3. Respuesta del Asistente: NUNCA debe devolver la tasa de hoy como si fuera la de ayer
+  const turn2Bot = answerQueryWithHeuristicEngine(turn2User, testContext, historyTurn1);
+  assert.ok(turn2Bot.answer.includes('tasa del dólar de ayer'), 'Debe reconocer que la pregunta es sobre ayer');
+  assert.ok(turn2Bot.answer.includes('Tasa Oficial BCV de Ayer (04/11/2026)**: **49.5000 VES/USD**'), 'Debe devolver la tasa de ayer');
+  assert.ok(turn2Bot.answer.includes('Tasa Oficial BCV Activa Hoy (05/11/2026)**: **50.0000 VES/USD**'), 'Debe comparar con la tasa de hoy');
+  assert.ok(turn2Bot.answer.includes('+0.5000 Bs.'), 'Debe calcular la variación en Bs.');
+  assert.ok(turn2Bot.answer.includes('+1.01%'), 'Debe calcular la variación porcentual');
+  assert.ok(turn2Bot.answer.includes('Kardex y en los libros de auditoría'), 'Debe explicar la trazabilidad histórica en Chrystal ERP');
+
+  // 4. Turno 3: Consulta elíptica sin palabras "tasa" ni "dólar" ("¿Y la de ayer?")
+  const turn3User = '¿Y la de ayer?';
+  assert.strictEqual(isFollowUpOrMetaQuery(turn3User), true, 'Debe detectar "¿Y la de ayer?" como repregunta temporal elíptica');
+  const turn3Bot = answerQueryWithHeuristicEngine(turn3User, testContext, historyTurn1);
+  assert.ok(turn3Bot.answer.includes('49.5000 VES/USD'), 'Debe devolver la tasa de ayer ante consulta elíptica');
+  assert.ok(turn3Bot.answer.includes('50.0000 VES/USD'), 'Debe mantener la comparación con hoy');
+
+  // 5. Turno 4: Consulta directa sin historial previo ("¿A cómo estaba el dólar ayer?")
+  const turn4Direct = '¿A cómo estaba el dólar ayer?';
+  const turn4Bot = answerQueryWithHeuristicEngine(turn4Direct, testContext);
+  assert.ok(turn4Bot.answer.includes('tasa del dólar de ayer'));
+  assert.ok(turn4Bot.answer.includes('49.5000 VES/USD'));
+  assert.ok(turn4Bot.answer.includes('50.0000 VES/USD'));
+
+  // 6. Turno 5: Consulta de variación cambiaria ("¿Subió o bajó el dólar respecto a ayer?")
+  const turn5Variation = '¿Subió o bajó el dólar respecto a ayer?';
+  const turn5Bot = answerQueryWithHeuristicEngine(turn5Variation, testContext);
+  assert.ok(turn5Bot.answer.includes('un incremento de'));
+  assert.ok(turn5Bot.answer.includes('+0.5000 Bs.'));
+  assert.ok(turn5Bot.answer.includes('+1.01%'));
+});
+

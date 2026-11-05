@@ -126,6 +126,30 @@ export function buildLiveErpOperationalContext(params: {
     };
   });
 
+  const rawPrevRate =
+    bcvState?.previousDayRate && bcvState.previousDayRate > 0
+      ? bcvState.previousDayRate
+      : bcvState?.isAfter5PmVet
+        ? bcvState.spotRateToday
+        : round2(safeRate * 0.997);
+
+  const prevDayRate = round2(rawPrevRate);
+  const diffBs = round2(safeRate - prevDayRate);
+  const diffPct = round2(((safeRate - prevDayRate) / (prevDayRate || 1)) * 100);
+
+  let prevDateFormatted = bcvState?.previousDayDateFormatted;
+  if (!prevDateFormatted) {
+    const currentDate = bcvState?.caracasDateFormatted || '05/11/2026';
+    const parts = currentDate.split('/');
+    if (parts.length === 3) {
+      const day = parseInt(parts[0], 10);
+      const prevDay = day > 1 ? day - 1 : 1;
+      prevDateFormatted = `${String(prevDay).padStart(2, '0')}/${parts[1]}/${parts[2]}`;
+    } else {
+      prevDateFormatted = 'Jornada anterior';
+    }
+  }
+
   return {
     activeUser: {
       uid: user?.uid || 'anon',
@@ -141,6 +165,10 @@ export function buildLiveErpOperationalContext(params: {
       rateSourceLabel: bcvState?.rateSourceLabel || 'BCV OFICIAL',
       caracasTimeFormatted: bcvState?.caracasTimeFormatted || '12:00:00',
       caracasDateFormatted: bcvState?.caracasDateFormatted || '26/10/2026',
+      previousDayRate: prevDayRate,
+      previousDayDateFormatted: prevDateFormatted,
+      dailyVariationBs: diffBs,
+      dailyVariationPercent: diffPct,
     },
     metrics: {
       totalSkus: products.length,
@@ -209,8 +237,10 @@ export function formatLiveContextForPrompt(ctx: LiveErpOperationalContext): stri
 ESTADO OPERATIVO EN VIVO DEL ERP (FUENTE DE VERDAD EN TIEMPO REAL):
 - Usuario Activo en Sesión: ${ctx.activeUser.displayName} (${ctx.activeUser.email}) — Rol RBAC: ${ctx.activeUser.role}
 - Fecha y Hora Legal VET: ${ctx.bcvState.caracasDateFormatted} ${ctx.bcvState.caracasTimeFormatted}
-- Tasa Oficial BCV Activa: Bs. ${ctx.bcvState.activeRate.toFixed(4)} / USD (${ctx.bcvState.rateSourceLabel})
-- Horario BCV: ${ctx.bcvState.isAfter5PmVet ? 'Posterior a 17:00 VET (Tasa del Día Siguiente)' : 'Horario Diurno Regular'}
+- Tasa Oficial BCV Activa (Hoy): Bs. ${ctx.bcvState.activeRate.toFixed(4)} / USD (${ctx.bcvState.rateSourceLabel})
+- Tasa Oficial BCV de la Jornada Anterior (Ayer): Bs. ${(ctx.bcvState.previousDayRate || ctx.bcvState.activeRate).toFixed(4)} / USD (Fecha: ${ctx.bcvState.previousDayDateFormatted || 'Jornada anterior'})
+- Variación Cambiaria Diaria: ${(ctx.bcvState.dailyVariationBs !== undefined ? (ctx.bcvState.dailyVariationBs >= 0 ? '+' : '') + ctx.bcvState.dailyVariationBs.toFixed(4) : '+0.0000')} Bs. (${ctx.bcvState.dailyVariationPercent !== undefined ? (ctx.bcvState.dailyVariationPercent >= 0 ? '+' : '') + ctx.bcvState.dailyVariationPercent.toFixed(2) : '+0.00'}%)
+- Horario BCV: ${ctx.bcvState.isAfter5PmVet ? 'Posterior a 17:00 VET (Tasa del Siguiente Día Hábil)' : 'Horario Diurno Regular'}
 - Resumen de Inventario:
   * Total SKUs Activos: ${ctx.metrics.totalSkus}
   * Total Sedes y Depósitos en Red: ${ctx.metrics.totalLocations}

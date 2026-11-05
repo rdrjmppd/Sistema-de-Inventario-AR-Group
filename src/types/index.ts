@@ -145,6 +145,10 @@ export interface BcvRateState {
   providerSource?: string;
   latencyMs?: number;
   isLiveConnected?: boolean;
+  previousDayRate?: number;
+  previousDayDateFormatted?: string;
+  dailyVariationPercent?: number;
+  dailyVariationBs?: number;
 }
 
 export interface StockTransfer {
