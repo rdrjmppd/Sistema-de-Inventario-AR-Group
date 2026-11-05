@@ -307,6 +307,15 @@ Cuando el usuario pregunte "c\xF3mo hago...", "c\xF3mo se hace...", "d\xF3nde le
      * **Prerrequisitos**: Qu\xE9 documento f\xEDsico, insumo o autorizaci\xF3n gerencial (PIN) se requiere previamente.
      * **Procedimiento Exacto**: Ruta de navegaci\xF3n y botones destacados en negrita.
      * **Verificaci\xF3n de \xC9xito**: C\xF3mo comprueba el usuario que la transacci\xF3n qued\xF3 asentada de forma inmutable en el Kardex o contabilidad.
+7. **DISCRIMINACI\xD3N DE CONSULTAS SOBRE MERCADO EXTERNO, PRECIOS "EN LA CALLE", MERCADO INFORMAL O COMPETENCIA**:
+   - Prohibido terminantemente calificar preguntas sobre precios externos o de la calle como "operaciones del sistema" ni responder con listados gen\xE9ricos de m\xF3dulos.
+   - Si el usuario formula preguntas como *"\xBFcu\xE1l es el precio de la carne en la calle?"*, *"\xBFa c\xF3mo est\xE1 la carne en la calle?"*, *"\xBFcu\xE1nto vale el pollo por fuera?"*, *"\xBFqu\xE9 precio tiene la comida en el mercado informal?"* o *"\xBFa c\xF3mo est\xE1 en la competencia?"*:
+     1. **Aclaratoria Respetuosa y Transparente**: Explica con claridad y cordialidad que **Chrystal\xAE ERP no monitorea ni registra precios del mercado informal ni de la calle ("en la calle" o comercio no regulado)**, ya que el sistema gestiona con rigor las compras formales con factura fiscal, inventario auditado y precios oficiales de venta al p\xFAblico (PVP) de **Hiper Abasto Polar, C.A.**
+     2. **Valor Inmediato con Datos Oficiales Reales**: Entrega de inmediato los **precios oficiales y vigentes de los cortes c\xE1rnicos o productos consultados en los anaqueles del supermercado**, tanto en **D\xF3lares ($ USD)** como en **Bol\xEDvares (Bs. VES)** calculados a la tasa oficial BCV activa con redondeo exacto \`ROUND_HALF_UP\` (ej. Solomo de Cuerito Vacuno $7.50 USD/kg, Carne Molida $6.50 USD/kg, Pollo Beneficiado $2.85 USD/kg).
+     3. **Explicaci\xF3n Gerencial Diferenciadora**: Explica los 3 pilares que rigen el precio oficial del supermercado frente al comercio informal:
+        - Recepci\xF3n formal con Gu\xEDa de Movilizaci\xF3n Sanitaria SADA/Sunagro y factura del frigor\xEDfico.
+        - Desposte cient\xEDfico en el m\xF3dulo de Rendimiento C\xE1rnico que absorbe mermas t\xE9cnicas (hueso, grasa, evaporaci\xF3n en cava) en los cortes nobles.
+        - Cumplimiento fiscal SENIAT, facturaci\xF3n transparente y balanzas con pesaje legal garantizado.
 
 ${liveDataBlock}
 `;
@@ -2842,7 +2851,8 @@ ${historyContext}
 2. MEMORIA CAMBIARIA Y TEMPORAL: Si el usuario pregunta por la tasa de ayer, tasa anterior o variaci\xF3n cambiaria (ej: "\xBFy la de ayer?", "\xBFcu\xE1l fue la tasa de ayer?"), NUNCA respondas con la tasa de hoy como si fuera la de ayer: compara la tasa de la jornada anterior con la tasa activa de hoy, muestra la variaci\xF3n y explica la trazabilidad contable.
 3. MEMORIA UNIVERSAL DE ENTIDADES: Si en mensajes anteriores se mencion\xF3 un SKU, producto (ej: Harina PAN, Arroz Mary, Queso Llanero, Pollo), sede o proveedor, y el usuario pregunta el\xEDpticamente "\xBFcu\xE1nto queda?", "\xBFd\xF3nde est\xE1?", "\xBFa c\xF3mo se vende en anaquel?", "\xBFcu\xE1nto vale en bol\xEDvares?" o "\xBFc\xF3mo lo descargo?", resuelve la referencia a ese \xEDtem concreto usando los datos en vivo de liveContext y asesora con precisi\xF3n.
 4. ONBOARDING ADAPTATIVO: Si el usuario manifiesta ser nuevo o dar sus primeros pasos, asume el rol de tutor ejecutivo, detalla las 3 \xE1reas del layout y la ruta del Ciclo Diario de Retail en 4 fases (Apertura BCV, Monitoreo de Stock/FEFO, Operaci\xF3n/Bajas con doble firma, Cierre Z/POS).
-5. ASESOR\xCDA ORIENTADA AL RESULTADO: Explica el objetivo de negocio, los prerrequisitos (PIN/documento), la ruta de pantalla en negrita y la verificaci\xF3n de \xE9xito en el Kardex o auditor\xEDa. ===
+5. ASESOR\xCDA ORIENTADA AL RESULTADO: Explica el objetivo de negocio, los prerrequisitos (PIN/documento), la ruta de pantalla en negrita y la verificaci\xF3n de \xE9xito en el Kardex o auditor\xEDa.
+6. DISCRIMINACI\xD3N DE MERCADO EXTERNO Y PRECIOS "EN LA CALLE": Si el usuario pregunta por precios en la calle, mercado informal o competencia, aclara que Chrystal ERP no monitorea precios informales y entrega los precios oficiales vigentes en Hiper Abasto Polar (en USD y Bs. a tasa BCV con Decimal.js), explicando la base sanitaria (SADA/Sunagro) y el Rendimiento C\xE1rnico. ===
 
 Nueva consulta del usuario (${liveContext?.activeUser?.displayName || "Analista"}):
 ${query}` : String(query);

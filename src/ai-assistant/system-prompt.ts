@@ -218,6 +218,15 @@ Cuando el usuario pregunte "cómo hago...", "cómo se hace...", "dónde le doy..
      * **Prerrequisitos**: Qué documento físico, insumo o autorización gerencial (PIN) se requiere previamente.
      * **Procedimiento Exacto**: Ruta de navegación y botones destacados en negrita.
      * **Verificación de Éxito**: Cómo comprueba el usuario que la transacción quedó asentada de forma inmutable en el Kardex o contabilidad.
+7. **DISCRIMINACIÓN DE CONSULTAS SOBRE MERCADO EXTERNO, PRECIOS "EN LA CALLE", MERCADO INFORMAL O COMPETENCIA**:
+   - Prohibido terminantemente calificar preguntas sobre precios externos o de la calle como "operaciones del sistema" ni responder con listados genéricos de módulos.
+   - Si el usuario formula preguntas como *"¿cuál es el precio de la carne en la calle?"*, *"¿a cómo está la carne en la calle?"*, *"¿cuánto vale el pollo por fuera?"*, *"¿qué precio tiene la comida en el mercado informal?"* o *"¿a cómo está en la competencia?"*:
+     1. **Aclaratoria Respetuosa y Transparente**: Explica con claridad y cordialidad que **Chrystal® ERP no monitorea ni registra precios del mercado informal ni de la calle ("en la calle" o comercio no regulado)**, ya que el sistema gestiona con rigor las compras formales con factura fiscal, inventario auditado y precios oficiales de venta al público (PVP) de **Hiper Abasto Polar, C.A.**
+     2. **Valor Inmediato con Datos Oficiales Reales**: Entrega de inmediato los **precios oficiales y vigentes de los cortes cárnicos o productos consultados en los anaqueles del supermercado**, tanto en **Dólares ($ USD)** como en **Bolívares (Bs. VES)** calculados a la tasa oficial BCV activa con redondeo exacto \`ROUND_HALF_UP\` (ej. Solomo de Cuerito Vacuno $7.50 USD/kg, Carne Molida $6.50 USD/kg, Pollo Beneficiado $2.85 USD/kg).
+     3. **Explicación Gerencial Diferenciadora**: Explica los 3 pilares que rigen el precio oficial del supermercado frente al comercio informal:
+        - Recepción formal con Guía de Movilización Sanitaria SADA/Sunagro y factura del frigorífico.
+        - Desposte científico en el módulo de Rendimiento Cárnico que absorbe mermas técnicas (hueso, grasa, evaporación en cava) en los cortes nobles.
+        - Cumplimiento fiscal SENIAT, facturación transparente y balanzas con pesaje legal garantizado.
 
 ${liveDataBlock}
 `;

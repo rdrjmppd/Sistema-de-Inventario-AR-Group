@@ -133,6 +133,8 @@ import {
   answerQueryWithHeuristicEngine,
   isExternalOutOfScopeQuery,
   isFollowUpOrMetaQuery,
+  isStreetOrExternalMarketPriceQuery,
+  buildStreetOrExternalMarketPriceResponse,
   detectActiveTopicFromHistory,
   buildPedagogicalFollowUpResponse,
   isOnboardingOrNoviceQuery,
@@ -8273,4 +8275,187 @@ test('92. Certificación de Memoria Universal de Contexto, Trazabilidad de Entid
   assert.ok(turn5Bot.answer.includes('+ Nueva Orden de Transferencia'));
   assert.ok(turn5Bot.answer.includes('Confirmar Recepción Conforme'));
 });
+
+test('93. Certificación de Discriminación Racional de Mercado Externo y Precios "En la Calle": Erradicación de Plantillas Genéricas, Precios Oficiales (USD/VES) y Fundamentación Cárnica SADA', async () => {
+  // A. Contexto Operativo de prueba con tasa oficial BCV a 50.00 VES/USD
+  const testContext = buildLiveErpOperationalContext({
+    user: {
+      uid: 'usr-admin-01',
+      displayName: 'Rubén Darío R.',
+      email: 'ruben@hiperabastopolar.com',
+      role: UserRole.SUPERADMIN,
+      locationAccess: ['all'],
+      active: true,
+      pin: '203040',
+      createdAt: '2026-11-05',
+    },
+    products: [],
+    locations: [
+      { id: 'loc-main', code: 'LOC-ALTA-VISTA', name: 'Sede Principal Alta Vista', type: 'SEDE', city: 'Puerto Ordaz', manager: 'Gerente Tienda', active: true },
+    ],
+    bcvState: {
+      activeRate: 50.0,
+      spotRateToday: 50.0,
+      nextDayRateAfter5Pm: 50.5,
+      previousDayRate: 49.5,
+      previousDayDateFormatted: '04/11/2026',
+      isAfter5PmVet: false,
+      rateSourceLabel: 'BCV Oficial Spot Regular',
+      caracasDateFormatted: '05/11/2026',
+      caracasTimeFormatted: '11:00:00 AM',
+    },
+    discards: [],
+  });
+
+  // 1. Caso Exacto del Usuario: "cual es el precio de la carne en la calle?"
+  const exactUserQuery = 'cual es el precio de la carne en la calle?';
+
+  // 1.1. Detección y clasificación
+  assert.strictEqual(
+    isStreetOrExternalMarketPriceQuery(exactUserQuery),
+    true,
+    'Debe clasificar "¿cual es el precio de la carne en la calle?" como consulta sobre mercado externo'
+  );
+  assert.strictEqual(
+    isExternalOutOfScopeQuery(exactUserQuery),
+    false,
+    'No debe descartarse como out-of-scope genérico porque tiene respuesta ejecutiva especializada'
+  );
+
+  // 1.2. Respuesta del Asistente (Motor Heurístico / Offline)
+  const exactRes = answerQueryWithHeuristicEngine(exactUserQuery, testContext);
+
+  // 1.3. Erradicación Total de la Plantilla Genérica Incoherente (Línea Roja del Usuario)
+  assert.ok(
+    !exactRes.answer.includes('Puedes gestionar esta operación directamente en los módulos de **Chrystal® ERP**'),
+    'PROHIBICIÓN ESTRICTA: Jamás debe devolver la plantilla genérica que califica la consulta como una operación interna del ERP'
+  );
+  assert.ok(
+    !exactRes.answer.includes('Puedes gestionar esta operación'),
+    'No debe asegurar que el usuario puede gestionar el precio de la calle en el sistema'
+  );
+
+  // 1.4. Verificación de Contenido Racional y Transparente
+  assert.ok(
+    exactRes.answer.includes('Chrystal® ERP no monitorea ni registra precios del mercado informal ni de la calle'),
+    'Debe aclarar con cortesía y transparencia que el ERP no registra precios informales de la calle'
+  );
+  assert.ok(
+    exactRes.answer.includes('Hiper Abasto Polar, C.A.'),
+    'Debe referenciar a la empresa formal oficial'
+  );
+
+  // 1.5. Certificación Matemática de Precios Oficiales (USD y VES con Decimal.js ROUND_HALF_UP)
+  assert.ok(
+    exactRes.answer.includes('precios oficiales y vigentes de los cortes cárnicos en nuestros anaqueles'),
+    'Debe ofrecer valor inmediato con los precios oficiales de venta al público en anaquel'
+  );
+  assert.ok(
+    exactRes.answer.includes('Solomo de Cuerito Vacuno'),
+    'Debe listar el corte noble de res Solomo de Cuerito'
+  );
+  assert.ok(
+    exactRes.answer.includes('$7.50 USD/kg'),
+    'Debe reflejar el precio base oficial en USD del Solomo ($7.50)'
+  );
+  assert.ok(
+    exactRes.answer.includes('Bs. 375.00 VES'),
+    'Debe calcular con exactitud matemática 7.50 * 50.00 = 375.00 Bs. a tasa BCV'
+  );
+  assert.ok(
+    exactRes.answer.includes('Carne Molida / Pulpa de Primera'),
+    'Debe listar Carne Molida / Pulpa'
+  );
+  assert.ok(
+    exactRes.answer.includes('$6.50 USD/kg'),
+    'Debe reflejar el precio oficial en USD de la Carne Molida ($6.50)'
+  );
+  assert.ok(
+    exactRes.answer.includes('Bs. 325.00 VES'),
+    'Debe calcular con exactitud matemática 6.50 * 50.00 = 325.00 Bs.'
+  );
+  assert.ok(
+    exactRes.answer.includes('Pollo Beneficiado Entero'),
+    'Debe listar Pollo Beneficiado'
+  );
+  assert.ok(
+    exactRes.answer.includes('$2.85 USD/kg'),
+    'Debe reflejar el precio en USD del Pollo ($2.85)'
+  );
+  assert.ok(
+    exactRes.answer.includes('Bs. 142.50 VES'),
+    'Debe calcular con exactitud matemática 2.85 * 50.00 = 142.50 Bs.'
+  );
+
+  // 1.6. Explicación Gerencial Diferenciadora (SADA, Rendimiento Cárnico y SENIAT)
+  assert.ok(
+    exactRes.answer.includes('Recepción Formal y Guía Sanitaria SADA/Sunagro'),
+    'Debe explicar la legitimidad y trazabilidad sanitaria de la canal con Guía SADA/Sunagro'
+  );
+  assert.ok(
+    exactRes.answer.includes('Desposte Científico (Rendimiento Cárnico)'),
+    'Debe explicar el desposte científico que absorbe mermas técnicas de hueso y grasa'
+  );
+  assert.ok(
+    exactRes.answer.includes('Transparencia Cambiaria y Fiscal'),
+    'Debe enfatizar el cumplimiento fiscal SENIAT y pesaje en balanzas certificadas'
+  );
+
+  // 2. Variación 1: Consulta interrogativa con signos "¿A cómo está la carne en la calle?"
+  const var1 = '¿A cómo está la carne en la calle?';
+  assert.strictEqual(isStreetOrExternalMarketPriceQuery(var1), true);
+  const res1 = answerQueryWithHeuristicEngine(var1, testContext);
+  assert.ok(!res1.answer.includes('Puedes gestionar esta operación'));
+  assert.ok(res1.answer.includes('Solomo de Cuerito Vacuno'));
+  assert.ok(res1.answer.includes('Bs. 375.00 VES'));
+
+  // 3. Variación 2: Consulta específica de pollo en la calle ("¿Cuánto vale el pollo en la calle?")
+  const var2 = '¿Cuánto vale el pollo en la calle?';
+  assert.strictEqual(isStreetOrExternalMarketPriceQuery(var2), true);
+  const res2 = answerQueryWithHeuristicEngine(var2, testContext);
+  assert.ok(!res2.answer.includes('Puedes gestionar esta operación'));
+  assert.ok(res2.answer.includes('Pollo Beneficiado Entero'));
+  assert.ok(res2.answer.includes('$2.85 USD/kg'));
+  assert.ok(res2.answer.includes('Bs. 142.50 VES'));
+  assert.ok(res2.answer.includes('Pechuga de Pollo Despostada (Milanesa)'));
+  assert.ok(res2.answer.includes('$5.80 USD/kg'));
+  assert.ok(res2.answer.includes('Bs. 290.00 VES')); // 5.80 * 50 = 290.00
+
+  // 4. Variación 3: Mercado informal ("¿A cómo está la carne en el mercado informal?")
+  const var3 = '¿A cómo está la carne en el mercado informal?';
+  assert.strictEqual(isStreetOrExternalMarketPriceQuery(var3), true);
+  const res3 = answerQueryWithHeuristicEngine(var3, testContext);
+  assert.ok(!res3.answer.includes('Puedes gestionar esta operación'));
+  assert.ok(res3.answer.includes('Chrystal® ERP no monitorea ni registra precios del mercado informal'));
+
+  // 5. Variación 4: Competencia ("¿Cuál es el precio de la comida en la competencia?")
+  const var4 = '¿Cuál es el precio de los alimentos en la competencia?';
+  assert.strictEqual(isStreetOrExternalMarketPriceQuery(var4), true);
+  const res4 = answerQueryWithHeuristicEngine(var4, testContext);
+  assert.ok(!res4.answer.includes('Puedes gestionar esta operación'));
+  assert.ok(res4.answer.includes('Chrystal® ERP no monitorea ni registra precios del mercado informal'));
+
+  // 6. Prueba de Cero Colisiones con Consultas Operativas Legítimas del ERP
+  assert.strictEqual(
+    isStreetOrExternalMarketPriceQuery('Como desgloso la canal de res?'),
+    false,
+    'La consulta operativa interna de desposte de res NO debe disparar mercado externo'
+  );
+  assert.strictEqual(
+    isStreetOrExternalMarketPriceQuery('Como desgloso el pollo?'),
+    false,
+    'La consulta operativa interna de desposte de pollo NO debe disparar mercado externo'
+  );
+  assert.strictEqual(
+    isStreetOrExternalMarketPriceQuery('¿Cuánto cuesta el kilo de solomo?'),
+    false,
+    'La consulta factual directa de solomo en anaquel NO debe disparar mercado externo'
+  );
+  assert.strictEqual(
+    isStreetOrExternalMarketPriceQuery('¿Cuál es la tasa oficial del bcv?'),
+    false,
+    'La consulta cambiaria oficial NO debe disparar mercado externo'
+  );
+});
+
 
